@@ -10,7 +10,7 @@ Ready:
 
 - football ticker at `/ticker/football.html`;
 - responsive football layout with diagnostics at `/ticker/football.html?debug=1`;
-- tennis ticker at `/ticker/tennis.html` and `?height=small`;
+- tennis ticker at `/ticker/tennis.html?height=normal` and `/ticker/tennis.html?height=small`;
 - live Sports.ru parsing: 20 football World Cup items and 15 tennis items;
 - production KV cache/state/manual-news storage;
 - protected admin API;
@@ -18,6 +18,20 @@ Ready:
 - protected Telegram webhook and complete bot menu logic;
 - supplied `PFDinTextCompPro-BoldItal` font;
 - local tests, HTTP checks and 1920x1080 browser verification.
+
+Tennis visual assets:
+
+```text
+public/assets/tennis-ticker-normal.png
+public/assets/tennis-ticker-small.png
+```
+
+Tennis text coordinates:
+
+```text
+normal: left 220px, right 40px, bottom 18px, height 60px, font-size 42px
+small:  left 220px, right 40px, bottom 8px,  height 42px, font-size 31px
+```
 
 Secrets are stored in ignored local `.dev.vars` and in Cloudflare:
 

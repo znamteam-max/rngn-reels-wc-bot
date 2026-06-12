@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import worker from '../src/index.js';
 import { fetchAutoNews, parseSportsNewsPage } from '../src/news.js';
-import { renderFootballTicker } from '../src/render.js';
+import { renderFootballTicker, renderTennisTicker } from '../src/render.js';
 
 function request(path, init) {
   return new Request(`https://ticker.test${path}`, init);
@@ -171,6 +171,41 @@ test('football ticker includes the supplied font and background', async () => {
   assert.match(body, /width: 100%/);
   assert.match(body, /height: 100%/);
   assert.match(body, /background: #000/);
+});
+
+test('tennis ticker uses ready-made normal and small image assets', async () => {
+  const normal = await worker.fetch(request('/ticker/tennis.html?height=normal&ticker=100&cta=0&mode=flex&refresh=60000&limit=15'), {});
+  const small = await worker.fetch(request('/ticker/tennis.html?height=small'), {});
+  const normalBody = await normal.text();
+  const smallBody = await small.text();
+
+  assert.equal(normal.status, 200);
+  assert.equal(small.status, 200);
+  assert.match(normalBody, /<img class="ticker-bg" src="\/assets\/tennis-ticker-normal\.png"/);
+  assert.match(smallBody, /<img class="ticker-bg" src="\/assets\/tennis-ticker-small\.png"/);
+  assert.doesNotMatch(normalBody, /background: url\('\/assets\/tennis/);
+  assert.match(normalBody, /left: 220px/);
+  assert.match(normalBody, /bottom: 18px/);
+  assert.match(normalBody, /height: 60px/);
+  assert.match(smallBody, /bottom: 8px/);
+  assert.match(smallBody, /height: 42px/);
+  assert.match(smallBody, /font-size: 31px/);
+});
+
+test('tennis ticker renderer respects the requested limit', () => {
+  const items = Array.from({ length: 3 }, (_, index) => ({ title: `News ${index + 1}` }));
+  const body = renderTennisTicker(items, {
+    enabled: true,
+    speed: 100,
+    refreshSeconds: 120,
+  }, {
+    size: 'normal',
+    limit: 2,
+  });
+
+  assert.match(body, /News 1/);
+  assert.match(body, /News 2/);
+  assert.doesNotMatch(body, /News 3/);
 });
 
 test('football ticker has a visible fallback and debug diagnostics', () => {

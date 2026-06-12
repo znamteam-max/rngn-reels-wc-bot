@@ -99,7 +99,14 @@ async function handleTicker(request, env, sport) {
       debug: url.searchParams.get('debug') === '1',
     }));
   }
-  return html(renderTennisTicker(news.items, state, url.searchParams.get('height') || 'normal'));
+  const size = ['small', 'normal'].includes(url.searchParams.get('height'))
+    ? url.searchParams.get('height')
+    : 'normal';
+  const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || state.limit || 15), 1), 15);
+  return html(renderTennisTicker(news.items, state, {
+    size,
+    limit,
+  }));
 }
 
 async function handleState(request, env, url) {

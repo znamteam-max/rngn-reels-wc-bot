@@ -1,4 +1,11 @@
-import { addManualNews, clearManualNews, deleteManualNews, fetchAutoNews, getManualNews, getTickerNews } from './news.js';
+import {
+  addManualNews,
+  clearManualNews,
+  deleteManualNews,
+  fetchAutoNews,
+  getManualNews,
+  getTickerNews,
+} from './news.js';
 import { getState, updateState } from './state.js';
 import { deleteKey, getJson, setJson } from './storage.js';
 
@@ -7,6 +14,32 @@ const MODE_LABELS = {
   manual: 'ручной',
   mixed: 'смешанный',
 };
+
+const TICKER_VARIANTS = {
+  football: {
+    sport: 'football',
+    token: 'football',
+    label: '⚽ Футбол ЧМ',
+    path: '/ticker/football.html',
+  },
+  'tennis-normal': {
+    sport: 'tennis',
+    token: 'tennis-normal',
+    label: '🎾 Теннис — большой',
+    path: '/ticker/tennis.html?height=normal',
+  },
+  'tennis-small': {
+    sport: 'tennis',
+    token: 'tennis-small',
+    label: '🎾 Теннис — маленький',
+    path: '/ticker/tennis.html?height=small',
+  },
+};
+
+function tickerVariant(token) {
+  if (token === 'tennis') return TICKER_VARIANTS['tennis-normal'];
+  return TICKER_VARIANTS[token] || null;
+}
 
 function button(text, callbackData) {
   return { text, callback_data: callbackData };
@@ -65,11 +98,12 @@ function answerCallback(env, callbackQueryId, text = '') {
 }
 
 async function showHome(env, chatId, messageId = null) {
-  const text = 'Бегущие строки\n\nВыберите вид спорта:';
+  const text = 'Бегущие строки\n\nВыберите тикер:';
   const replyMarkup = {
     inline_keyboard: [
-      [button('Теннис', 'sport:tennis')],
-      [button('Футбол / Чемпионат мира', 'sport:football')],
+      [button(TICKER_VARIANTS.football.label, 'sport:football')],
+      [button(TICKER_VARIANTS['tennis-normal'].label, 'sport:tennis-normal')],
+      [button(TICKER_VARIANTS['tennis-small'].label, 'sport:tennis-small')],
     ],
   };
 
@@ -78,12 +112,14 @@ async function showHome(env, chatId, messageId = null) {
     : sendMessage(env, chatId, text, replyMarkup);
 }
 
-async function showSportMenu(env, chatId, sport, origin, messageId = null) {
+async function showSportMenu(env, chatId, sport, origin, messageId = null, variantToken = sport) {
+  const variant = tickerVariant(variantToken) || tickerVariant(sport);
   const state = await getState(env, sport);
   const news = await getTickerNews(env, sport, state);
   const baseUrl = publicBaseUrl(env, origin);
-  const label = sport === 'football' ? 'Футбол / Чемпионат мира' : 'Теннис';
-  const tickerPath = sport === 'football' ? '/ticker/football.html' : '/ticker/tennis.html';
+  const label = variant?.label || sport;
+  const tickerPath = variant?.path || (sport === 'football' ? '/ticker/football.html' : '/ticker/tennis.html?height=normal');
+  const callbackToken = variant?.token || sport;
   const text = [
     `${label} ticker`,
     '',
@@ -96,11 +132,11 @@ async function showSportMenu(env, chatId, sport, origin, messageId = null) {
   ].join('\n');
   const replyMarkup = {
     inline_keyboard: [
-      [button('Ссылка для vMix', `${sport}:url`), button('Preview', `${sport}:preview`)],
-      [button('Добавить новость', `${sport}:add`), button('Удалить новость', `${sport}:manual`)],
-      [button('Очистить ручные', `${sport}:clear`), button('Обновить auto news', `${sport}:refresh`)],
-      [button(state.enabled ? 'Выключить' : 'Включить', `${sport}:toggle`)],
-      [button(`Режим: ${MODE_LABELS[state.mode]}`, `${sport}:mode`), button(`Скорость: ${state.speed}`, `${sport}:speed`)],
+      [button('Ссылка для vMix', `${callbackToken}:url`), button('Preview', `${callbackToken}:preview`)],
+      [button('Добавить новость', `${callbackToken}:add`), button('Удалить новость', `${callbackToken}:manual`)],
+      [button('Очистить ручные', `${callbackToken}:clear`), button('Обновить auto news', `${callbackToken}:refresh`)],
+      [button(state.enabled ? 'Выключить' : 'Включить', `${callbackToken}:toggle`)],
+      [button(`Режим: ${MODE_LABELS[state.mode]}`, `${callbackToken}:mode`), button(`Скорость: ${state.speed}`, `${callbackToken}:speed`)],
       [button('Назад', 'home')],
     ],
   };
@@ -110,12 +146,12 @@ async function showSportMenu(env, chatId, sport, origin, messageId = null) {
     : sendMessage(env, chatId, text, replyMarkup);
 }
 
-async function showManualNews(env, chatId, sport, origin, messageId) {
+async function showManualNews(env, chatId, sport, messageId, variantToken = sport) {
   const items = await getManualNews(env, sport);
   const rows = items.slice(0, 10).map((item, index) => [
-    button(`${index + 1}. ${item.title.slice(0, 42)}`, `${sport}:delete:${item.id}`),
+    button(`${index + 1}. ${item.title.slice(0, 42)}`, `${variantToken}:delete:${item.id}`),
   ]);
-  rows.push([button('Назад', `sport:${sport}`)]);
+  rows.push([button('Назад', `sport:${variantToken}`)]);
   const text = items.length
     ? 'Нажмите на ручную новость, чтобы удалить её.'
     : 'Ручных новостей пока нет.';
@@ -154,7 +190,7 @@ async function handleMessage(env, message, origin) {
     const result = await addManualNews(env, session.sport, { title: text });
     await deleteKey(env, sessionKey(chatId));
     await sendMessage(env, chatId, `Новость добавлена:\n${result.item.title}`);
-    await showSportMenu(env, chatId, session.sport, origin);
+    await showSportMenu(env, chatId, session.sport, origin, null, session.variantToken || session.sport);
     return;
   }
 
@@ -184,59 +220,69 @@ async function handleCallback(env, query, origin) {
   }
 
   if (data.startsWith('sport:')) {
-    const selectedSport = data.slice('sport:'.length);
-    if (['football', 'tennis'].includes(selectedSport)) {
-      await showSportMenu(env, chatId, selectedSport, origin, messageId);
+    const selectedToken = data.slice('sport:'.length);
+    const variant = tickerVariant(selectedToken);
+    if (variant) {
+      await showSportMenu(env, chatId, variant.sport, origin, messageId, variant.token);
       await answerCallback(env, query.id);
       return;
     }
   }
 
-  const [sport, action, itemId] = data.split(':');
+  const [sportToken, action, itemId] = data.split(':');
+  const variant = tickerVariant(sportToken);
+  const sport = variant?.sport || sportToken;
+  const variantToken = variant?.token || sport;
+
   if (!['football', 'tennis'].includes(sport)) {
     await answerCallback(env, query.id, 'Неизвестная команда');
     return;
   }
 
   if (action === undefined || action === 'menu') {
-    await showSportMenu(env, chatId, sport, origin, messageId);
+    await showSportMenu(env, chatId, sport, origin, messageId, variantToken);
     await answerCallback(env, query.id);
     return;
   }
 
   const state = await getState(env, sport);
   const baseUrl = publicBaseUrl(env, origin);
-  const tickerPath = sport === 'football' ? '/ticker/football.html' : '/ticker/tennis.html';
+  const tickerPath = variant?.path || (sport === 'football' ? '/ticker/football.html' : '/ticker/tennis.html?height=normal');
 
   if (action === 'url' || action === 'preview') {
     await sendMessage(env, chatId, `${baseUrl}${tickerPath}`);
   } else if (action === 'add') {
-    await setJson(env, sessionKey(chatId), { action: 'add', sport, createdAt: new Date().toISOString() });
+    await setJson(env, sessionKey(chatId), {
+      action: 'add',
+      sport,
+      variantToken,
+      createdAt: new Date().toISOString(),
+    });
     await sendMessage(env, chatId, 'Пришлите текст новости одним сообщением. Максимум 180 символов.');
   } else if (action === 'manual') {
-    await showManualNews(env, chatId, sport, origin, messageId);
+    await showManualNews(env, chatId, sport, messageId, variantToken);
   } else if (action === 'delete' && itemId) {
     const deleted = await deleteManualNews(env, sport, itemId);
-    await showManualNews(env, chatId, sport, origin, messageId);
+    await showManualNews(env, chatId, sport, messageId, variantToken);
     await answerCallback(env, query.id, deleted ? 'Удалено' : 'Новость уже удалена');
     return;
   } else if (action === 'clear') {
     await clearManualNews(env, sport);
-    await showSportMenu(env, chatId, sport, origin, messageId);
+    await showSportMenu(env, chatId, sport, origin, messageId, variantToken);
   } else if (action === 'refresh') {
     const result = await fetchAutoNews(env, sport, { force: true });
-    await showSportMenu(env, chatId, sport, origin, messageId);
+    await showSportMenu(env, chatId, sport, origin, messageId, variantToken);
     await answerCallback(env, query.id, `Обновлено: ${result.count}`);
     return;
   } else if (action === 'toggle') {
     await updateState(env, sport, { enabled: !state.enabled });
-    await showSportMenu(env, chatId, sport, origin, messageId);
+    await showSportMenu(env, chatId, sport, origin, messageId, variantToken);
   } else if (action === 'mode') {
     await updateState(env, sport, { mode: nextMode(state.mode) });
-    await showSportMenu(env, chatId, sport, origin, messageId);
+    await showSportMenu(env, chatId, sport, origin, messageId, variantToken);
   } else if (action === 'speed') {
     await updateState(env, sport, { speed: nextSpeed(state.speed) });
-    await showSportMenu(env, chatId, sport, origin, messageId);
+    await showSportMenu(env, chatId, sport, origin, messageId, variantToken);
   }
 
   await answerCallback(env, query.id);

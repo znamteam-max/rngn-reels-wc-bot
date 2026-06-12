@@ -78,6 +78,29 @@ npx wrangler secret put ADMIN_CHAT_ID
 Для vMix используйте Browser Source `1920x1080` и URL `/ticker/football.html`.
 Футбольная страница использует исходный `/assets/football-ticker-bg.png` как единое изображение в координатах `1920x1080`; responsive масштабирует весь stage целиком. Текстовая маска: `left: 275px`, `right: 40px`, `bottom: 6px`, `height: 70px`. Диагностический overlay доступен через `?debug=1`; прозрачный фон для broadcast source можно включить через `?transparent=1`.
 
+Теннисная строка перенесена в hub как две готовые PNG-подложки, без пересборки дизайна в CSS:
+
+```text
+/assets/tennis-ticker-normal.png
+/assets/tennis-ticker-small.png
+```
+
+URL для vMix:
+
+```text
+/ticker/tennis.html?height=normal
+/ticker/tennis.html?height=small
+```
+
+Поддерживаются старые параметры теннисной строки: `ticker`, `height`, `cta`, `mode`, `refresh`, `limit`. Параметры `cta` и `mode` принимаются для совместимости, но visual layout строится по готовым PNG.
+
+Координаты текста:
+
+```text
+normal: left 220px, right 40px, bottom 18px, height 60px, font-size 42px
+small:  left 220px, right 40px, bottom 8px,  height 42px, font-size 31px
+```
+
 ## Архив для передачи
 
 После каждого завершённого и закоммиченного обновления собрать один безопасный ZIP:
