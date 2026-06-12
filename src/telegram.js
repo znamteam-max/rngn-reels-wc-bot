@@ -21,6 +21,7 @@ const TICKER_VARIANTS = {
     token: 'football',
     label: '⚽ Футбол ЧМ',
     path: '/ticker/football.html',
+    vmixPath: '/ticker/football.html?transparent=1',
   },
   'tennis-normal': {
     sport: 'tennis',
@@ -39,6 +40,12 @@ const TICKER_VARIANTS = {
 function tickerVariant(token) {
   if (token === 'tennis') return TICKER_VARIANTS['tennis-normal'];
   return TICKER_VARIANTS[token] || null;
+}
+
+function tickerPathFor(variant, sport, action = 'preview') {
+  const previewPath = variant?.path
+    || (sport === 'football' ? '/ticker/football.html' : '/ticker/tennis.html?height=normal');
+  return action === 'url' ? variant?.vmixPath || previewPath : previewPath;
 }
 
 function button(text, callbackData) {
@@ -118,7 +125,7 @@ async function showSportMenu(env, chatId, sport, origin, messageId = null, varia
   const news = await getTickerNews(env, sport, state);
   const baseUrl = publicBaseUrl(env, origin);
   const label = variant?.label || sport;
-  const tickerPath = variant?.path || (sport === 'football' ? '/ticker/football.html' : '/ticker/tennis.html?height=normal');
+  const tickerPath = tickerPathFor(variant, sport, 'url');
   const callbackToken = variant?.token || sport;
   const text = [
     `${label} ticker`,
@@ -247,9 +254,9 @@ async function handleCallback(env, query, origin) {
 
   const state = await getState(env, sport);
   const baseUrl = publicBaseUrl(env, origin);
-  const tickerPath = variant?.path || (sport === 'football' ? '/ticker/football.html' : '/ticker/tennis.html?height=normal');
 
   if (action === 'url' || action === 'preview') {
+    const tickerPath = tickerPathFor(variant, sport, action);
     await sendMessage(env, chatId, `${baseUrl}${tickerPath}`);
   } else if (action === 'add') {
     await setJson(env, sessionKey(chatId), {

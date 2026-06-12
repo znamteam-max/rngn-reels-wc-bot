@@ -9,6 +9,7 @@ https://bolshe-ticker-hub.znamteam-903.workers.dev
 Ready:
 
 - football ticker at `/ticker/football.html`;
+- transparent football vMix ticker at `/ticker/football.html?transparent=1`;
 - responsive football layout with diagnostics at `/ticker/football.html?debug=1`;
 - tennis ticker at `/ticker/tennis.html?height=normal` and `/ticker/tennis.html?height=small`;
 - live Sports.ru parsing: 20 football World Cup items and 15 tennis items;
@@ -18,6 +19,16 @@ Ready:
 - protected Telegram webhook and complete bot menu logic;
 - supplied `PFDinTextCompPro-BoldItal` font;
 - local tests, HTTP checks and 1920x1080 browser verification.
+
+Football visual:
+
+```text
+asset: public/assets/football-ticker-bg.png
+visible plate: bottom 54px of the 1920x1080 transparent PNG
+mask: left 110px, right 36px, bottom 3px, height 48px
+font-size: 29px
+vMix URL: /ticker/football.html?transparent=1
+```
 
 Tennis visual assets:
 

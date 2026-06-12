@@ -6,6 +6,7 @@
 - [ ] `npm run dev` запускает Worker locally.
 - [ ] `/api/health` -> ok.
 - [ ] `/ticker/football.html` -> HTTP 200.
+- [ ] `/ticker/football.html?transparent=1` -> transparent HTML/body/stage.
 - [ ] `/ticker/tennis.html?height=normal` -> HTTP 200.
 - [ ] `/ticker/tennis.html?height=small` -> HTTP 200.
 - [ ] `/api/news/football-world-cup` -> JSON.
@@ -27,6 +28,7 @@
 - [ ] Cloudflare deploy проходит.
 - [ ] Production `/api/health` ok.
 - [ ] Production `/ticker/football.html` открывается без авторизации.
+- [ ] Production `/ticker/football.html?transparent=1` показывает только плашку и текст без чёрного фона.
 - [ ] Production `/ticker/tennis.html?height=normal` открывается без авторизации.
 - [ ] Production `/ticker/tennis.html?height=small` открывается без авторизации.
 - [ ] `GET /api/cron/refresh?secret=wrong` -> HTTP 401.

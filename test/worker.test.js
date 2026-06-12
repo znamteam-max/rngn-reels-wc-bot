@@ -163,11 +163,13 @@ test('football ticker includes the supplied font and background', async () => {
   assert.match(body, /width: 1920px/);
   assert.match(body, /height: 1080px/);
   assert.match(body, /\.ticker-mask \{/);
-  assert.match(body, /left: 275px/);
-  assert.match(body, /right: 40px/);
-  assert.match(body, /bottom: 6px/);
-  assert.match(body, /height: 70px/);
-  assert.match(body, /font-size: 34px/);
+  assert.match(body, /left: 110px/);
+  assert.match(body, /right: 36px/);
+  assert.match(body, /bottom: 3px/);
+  assert.match(body, /height: 48px/);
+  assert.match(body, /z-index: 1/);
+  assert.match(body, /display: inline-block/);
+  assert.match(body, /font-size: 29px/);
   assert.match(body, /width: 100%/);
   assert.match(body, /height: 100%/);
   assert.match(body, /background: #000/);
@@ -226,4 +228,63 @@ test('football ticker has a visible fallback and debug diagnostics', () => {
   assert.match(body, /background loaded:/);
   assert.match(body, /font loaded:/);
   assert.match(body, /last JS error:/);
+});
+
+test('football ticker supports transparent vMix mode', async () => {
+  const response = await worker.fetch(request('/ticker/football.html?transparent=1'), {});
+  const body = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(body, /document\.body\.classList\.toggle\('transparent', transparent\)/);
+  assert.match(body, /body\.transparent \{ background: transparent; \}/);
+  assert.match(body, /\.ticker-stage \{/);
+  assert.match(body, /background: transparent/);
+});
+
+test('Telegram football links separate transparent vMix and preview URLs', async () => {
+  const originalFetch = globalThis.fetch;
+  const telegramCalls = [];
+
+  try {
+    globalThis.fetch = async (input, init = {}) => {
+      if (String(input).includes('api.telegram.org')) {
+        telegramCalls.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('', { status: 404 });
+    };
+
+    const env = {
+      TELEGRAM_BOT_TOKEN: 'test-token',
+      PUBLIC_BASE_URL: 'https://bolshe-ticker-hub.znamteam-903.workers.dev',
+    };
+    const callback = (data) => request('/telegram/webhook', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        callback_query: {
+          id: `callback-${data}`,
+          data,
+          message: { message_id: 1, chat: { id: 1 } },
+        },
+      }),
+    });
+
+    await worker.fetch(callback('football:url'), env);
+    assert.equal(
+      telegramCalls.find((call) => call.text)?.text,
+      'https://bolshe-ticker-hub.znamteam-903.workers.dev/ticker/football.html?transparent=1',
+    );
+
+    telegramCalls.length = 0;
+    await worker.fetch(callback('football:preview'), env);
+    assert.equal(
+      telegramCalls.find((call) => call.text)?.text,
+      'https://bolshe-ticker-hub.znamteam-903.workers.dev/ticker/football.html',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

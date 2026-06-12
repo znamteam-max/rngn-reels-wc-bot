@@ -150,9 +150,9 @@ function renderTickerClient(config) {
       fitStage();
       restart(activeText);
     });
-    if (params.get('transparent') === '1') {
-      document.documentElement.classList.add('transparent-mode');
-    }
+    const transparent = params.get('transparent') === '1';
+    document.documentElement.classList.toggle('transparent-mode', transparent);
+    document.body.classList.toggle('transparent', transparent);
     fitStage();
     setEnabled(serverConfig.enabled);
     updateDiagnostics();
@@ -208,7 +208,8 @@ function renderSharedStageStyles() {
       background: #000;
     }
     html.transparent-mode,
-    html.transparent-mode body { background: transparent; }
+    html.transparent-mode body,
+    body.transparent { background: transparent; }
     .ticker-stage {
       position: fixed;
       width: 1920px;
@@ -267,17 +268,17 @@ export function renderFootballTicker(items, state, metadata = {}) {
   <style>
     ${renderSharedStageStyles()}
     .football .ticker-mask {
-      left: 275px;
-      right: 40px;
-      bottom: 6px;
-      height: 70px;
-      -webkit-mask-image: linear-gradient(to right, transparent 0, #000 35px, #000 calc(100% - 80px), transparent 100%);
-      mask-image: linear-gradient(to right, transparent 0, #000 35px, #000 calc(100% - 80px), transparent 100%);
+      left: 110px;
+      right: 36px;
+      bottom: 3px;
+      height: 48px;
+      z-index: 1;
     }
     .football .ticker-track {
+      display: inline-block;
       color: #f2f2f2;
       font-family: 'PFDinTextCompPro-BoldItal', sans-serif;
-      font-size: 34px;
+      font-size: 29px;
       font-weight: 700;
     }
     .debug-panel {
@@ -326,7 +327,7 @@ export function renderFootballTicker(items, state, metadata = {}) {
     updatedAt: metadata.updatedAt,
     backgroundUrl: '/assets/football-ticker-bg.png',
     fontFamily: 'PFDinTextCompPro-BoldItal',
-    fontProbeSize: 34,
+    fontProbeSize: 29,
     stageSelector: '.ticker-stage',
     stageWidth: 1920,
     stageHeight: 1080,

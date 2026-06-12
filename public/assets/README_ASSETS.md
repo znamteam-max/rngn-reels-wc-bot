@@ -6,9 +6,9 @@ Current football ticker background:
 football-ticker-bg.png
 ```
 
-Original size: `1920×1080`.
+Size: `1920×1080`.
 
-This image already includes the lower plate, logo and decorative elements.
+This compact user-supplied image has a transparent upper area and a `54px` lower plate with the logo and frame.
 Do not redraw the logo in HTML; render only moving text over it.
 
 Current tennis ticker backgrounds:
