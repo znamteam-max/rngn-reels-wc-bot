@@ -1,13 +1,13 @@
 {
   "name": "bolshe-ticker-hub",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "check": "node --check src/index.js && node --check src/news.js && node --check src/render.js && node --check src/telegram.js",
-    "test": "node --test",
+    "test": "node --test test/worker.test.js",
     "verify": "npm run check && npm test",
     "package:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1"
   },

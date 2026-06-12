@@ -114,6 +114,18 @@ test('cron refresh rejects a wrong secret', async () => {
   assert.equal(response.status, 401);
 });
 
+test('cron refresh accepts a trailing slash and HEAD probes', async () => {
+  const trailingSlash = await worker.fetch(request('/api/cron/refresh/?secret=wrong'), {
+    TICKER_CRON_SECRET: 'correct',
+  });
+  const head = await worker.fetch(request('/api/cron/refresh?secret=wrong', { method: 'HEAD' }), {
+    TICKER_CRON_SECRET: 'correct',
+  });
+  assert.equal(trailingSlash.status, 401);
+  assert.equal(head.status, 401);
+  assert.equal(await head.text(), '');
+});
+
 test('cron refresh updates football and tennis sources', async () => {
   const originalFetch = globalThis.fetch;
   try {

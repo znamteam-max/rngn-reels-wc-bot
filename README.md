@@ -72,7 +72,7 @@ npx wrangler secret put ADMIN_CHAT_ID
 5. Выполнить `npm run deploy`.
 6. Вызвать `POST /api/telegram/setup` с admin secret, чтобы зарегистрировать Telegram webhook.
 
-Внешний cron вызывает `GET /api/cron/refresh?secret=<TICKER_CRON_SECRET>` без headers и обновляет football + tennis cache.
+Внешний cron вызывает `GET /api/cron/refresh?secret=<TICKER_CRON_SECRET>` без headers и обновляет football + tennis cache. Маршрут также принимает trailing slash и безопасные `HEAD`-проверки сервисов мониторинга.
 
 Для vMix используйте Browser Source `1920x1080` и URL `/ticker/football.html`.
 

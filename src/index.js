@@ -243,8 +243,12 @@ async function routeRequest(request, env) {
     return handleRefresh(request, env, url);
   }
 
-  if (path === '/api/cron/refresh' && request.method === 'GET') {
-    return handleCronRefresh(env, url);
+  if ((path === '/api/cron/refresh' || path === '/api/cron/refresh/')
+    && ['GET', 'HEAD'].includes(request.method)) {
+    const response = await handleCronRefresh(env, url);
+    return request.method === 'HEAD'
+      ? new Response(null, { status: response.status, headers: response.headers })
+      : response;
   }
 
   if (path === '/api/admin/env-check' && request.method === 'GET') {
