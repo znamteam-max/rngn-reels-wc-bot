@@ -25,8 +25,10 @@ Football visual:
 ```text
 asset: public/assets/football-ticker-bg.png
 visible plate: bottom 54px of the 1920x1080 transparent PNG
-mask: left 110px, right 36px, bottom 3px, height 48px
+mask: left 0, right 0, bottom 3px, height 48px
+fade: transparent through 170px, transition to fully visible at 255px
 font-size: 29px
+animation: start 2000px, end -(trackWidth + 320px)
 vMix URL: /ticker/football.html?transparent=1
 ```
 

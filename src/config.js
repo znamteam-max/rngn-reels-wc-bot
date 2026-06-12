@@ -1,4 +1,4 @@
-export const BUILD_VERSION = 'ticker-hub-football-compact-v6-2026-06-12';
+export const BUILD_VERSION = 'ticker-hub-football-fade-v7-2026-06-12';
 export const ADMIN_SECRET_HEADER = 'x-ticker-admin-secret';
 export const ADMIN_SECRET_HEADER_ALIAS = 'x-admin-secret';
 export const SPORTS = ['football', 'tennis'];

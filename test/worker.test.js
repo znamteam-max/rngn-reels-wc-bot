@@ -163,11 +163,12 @@ test('football ticker includes the supplied font and background', async () => {
   assert.match(body, /width: 1920px/);
   assert.match(body, /height: 1080px/);
   assert.match(body, /\.ticker-mask \{/);
-  assert.match(body, /left: 110px/);
-  assert.match(body, /right: 36px/);
+  assert.match(body, /left: 0/);
+  assert.match(body, /right: 0/);
   assert.match(body, /bottom: 3px/);
   assert.match(body, /height: 48px/);
   assert.match(body, /z-index: 1/);
+  assert.match(body, /transparent 170px, #000 255px/);
   assert.match(body, /display: inline-block/);
   assert.match(body, /font-size: 29px/);
   assert.match(body, /width: 100%/);
@@ -239,6 +240,23 @@ test('football ticker supports transparent vMix mode', async () => {
   assert.match(body, /body\.transparent \{ background: transparent; \}/);
   assert.match(body, /\.ticker-stage \{/);
   assert.match(body, /background: transparent/);
+});
+
+test('football ticker starts outside the stage and clears the protected logo zone', () => {
+  const body = renderFootballTicker([{ title: 'Test football headline' }], {
+    enabled: true,
+    speed: 70,
+    refreshSeconds: 120,
+  }, {
+    buildVersion: 'test-build',
+  });
+
+  assert.match(body, /"startOutsideStage":true/);
+  assert.match(body, /"startPadding":80/);
+  assert.match(body, /"endPadding":320/);
+  assert.match(body, /stageWidth \+ Number\(serverConfig\.startPadding \|\| 80\)/);
+  assert.match(body, /-\(trackWidth \+ Number\(serverConfig\.endPadding \|\| 0\)\)/);
+  assert.match(body, /--ticker-end/);
 });
 
 test('Telegram football links separate transparent vMix and preview URLs', async () => {

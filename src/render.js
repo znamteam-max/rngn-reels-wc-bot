@@ -94,8 +94,16 @@ function renderTickerClient(config) {
       activeText = text || fallbackText;
       track.style.animation = 'none';
       track.textContent = activeText;
-      const distance = (viewport.clientWidth || 1600) + (track.scrollWidth || 1200);
-      track.style.setProperty('--ticker-start', (viewport.clientWidth || 1600) + 'px');
+      const viewportWidth = viewport.clientWidth || 1600;
+      const trackWidth = track.scrollWidth || 1200;
+      const stageWidth = Number(serverConfig.stageWidth || 1920);
+      const startX = serverConfig.startOutsideStage
+        ? stageWidth + Number(serverConfig.startPadding || 80)
+        : viewportWidth;
+      const endX = -(trackWidth + Number(serverConfig.endPadding || 0));
+      const distance = startX - endX;
+      track.style.setProperty('--ticker-start', startX + 'px');
+      track.style.setProperty('--ticker-end', endX + 'px');
       track.style.setProperty('--ticker-duration', Math.max(12, Math.round(distance / speed)) + 's');
       void track.offsetWidth;
       track.style.animation = 'ticker-scroll var(--ticker-duration) linear 1';
@@ -249,7 +257,7 @@ function renderSharedStageStyles() {
     }
     @keyframes ticker-scroll {
       from { transform: translateX(var(--ticker-start, 85vw)); }
-      to { transform: translateX(-100%); }
+      to { transform: translateX(var(--ticker-end, -100%)); }
     }
   `;
 }
@@ -268,11 +276,13 @@ export function renderFootballTicker(items, state, metadata = {}) {
   <style>
     ${renderSharedStageStyles()}
     .football .ticker-mask {
-      left: 110px;
-      right: 36px;
+      left: 0;
+      right: 0;
       bottom: 3px;
       height: 48px;
       z-index: 1;
+      -webkit-mask-image: linear-gradient(to right, transparent 0, transparent 170px, #000 255px, #000 100%);
+      mask-image: linear-gradient(to right, transparent 0, transparent 170px, #000 255px, #000 100%);
     }
     .football .ticker-track {
       display: inline-block;
@@ -331,6 +341,9 @@ export function renderFootballTicker(items, state, metadata = {}) {
     stageSelector: '.ticker-stage',
     stageWidth: 1920,
     stageHeight: 1080,
+    startOutsideStage: true,
+    startPadding: 80,
+    endPadding: 320,
     enabled: state.enabled,
     speed: state.speed,
     refreshSeconds: state.refreshSeconds,
