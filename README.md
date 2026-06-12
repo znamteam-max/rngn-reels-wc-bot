@@ -75,3 +75,13 @@ npx wrangler secret put ADMIN_CHAT_ID
 Внешний cron вызывает `GET /api/cron/refresh?secret=<TICKER_CRON_SECRET>` без headers и обновляет football + tennis cache.
 
 Для vMix используйте Browser Source `1920x1080` и URL `/ticker/football.html`.
+
+## Архив для передачи
+
+После каждого завершённого и закоммиченного обновления собрать один безопасный ZIP:
+
+```powershell
+npm run package:release
+```
+
+Архив появится в `releases/`. Он содержит зафиксированную версию проекта и не включает локальные secrets, `.git`, `node_modules` или служебные файлы.
