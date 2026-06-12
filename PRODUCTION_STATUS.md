@@ -9,6 +9,7 @@ https://bolshe-ticker-hub.znamteam-903.workers.dev
 Ready:
 
 - football ticker at `/ticker/football.html`;
+- responsive football layout with diagnostics at `/ticker/football.html?debug=1`;
 - tennis ticker at `/ticker/tennis.html` and `?height=small`;
 - live Sports.ru parsing: 20 football World Cup items and 15 tennis items;
 - production KV cache/state/manual-news storage;

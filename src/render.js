@@ -12,22 +12,62 @@ function renderTickerClient(config) {
     const serverConfig = ${JSON.stringify(config)};
     const params = new URLSearchParams(location.search);
     const endpoint = serverConfig.endpoint;
+    const fallbackText = serverConfig.fallbackText || 'НОВОСТИ ВРЕМЕННО НЕДОСТУПНЫ';
     const track = document.getElementById('newsTrack');
     const viewport = document.querySelector('.news-viewport');
     const panel = document.querySelector('.ticker-panel');
+    const debugPanel = document.getElementById('debugPanel');
+    const debugEnabled = params.get('debug') === '1' && Boolean(debugPanel);
     let speed = Math.min(Math.max(Number(params.get('speed') || serverConfig.speed), 12), 220);
     let refreshMs = Math.max(15000, Number(params.get('refresh') || serverConfig.refreshSeconds * 1000));
     let activeText = track.textContent;
     let queuedText = '';
     let started = false;
     let inFlight = null;
+    const diagnostics = {
+      newsCount: Number(serverConfig.initialCount || 0),
+      updatedAt: serverConfig.updatedAt || 'unknown',
+      backgroundLoaded: 'checking',
+      fontLoaded: 'checking',
+      lastError: 'none',
+    };
+
+    function diagnosticValue(id, value) {
+      const element = document.getElementById(id);
+      if (element) element.textContent = String(value);
+    }
+
+    function updateDiagnostics() {
+      if (!debugEnabled) return;
+      diagnosticValue('debugBuildVersion', serverConfig.buildVersion || 'unknown');
+      diagnosticValue('debugNewsCount', diagnostics.newsCount);
+      diagnosticValue('debugUpdatedAt', diagnostics.updatedAt);
+      diagnosticValue('debugBackground', diagnostics.backgroundLoaded);
+      diagnosticValue('debugFont', diagnostics.fontLoaded);
+      diagnosticValue('debugEndpoint', endpoint);
+      diagnosticValue('debugLastError', diagnostics.lastError);
+    }
+
+    function reportError(error) {
+      diagnostics.lastError = String(error && (error.message || error.reason || error) || 'unknown error');
+      updateDiagnostics();
+    }
+
+    window.addEventListener('error', (event) => {
+      if (event.target && event.target !== window) {
+        reportError('resource: ' + (event.target.currentSrc || event.target.src || event.target.href || event.target.tagName));
+        return;
+      }
+      reportError(event.error || event.message);
+    }, true);
+    window.addEventListener('unhandledrejection', (event) => reportError(event.reason));
 
     function setEnabled(enabled) {
       panel.hidden = enabled === false;
     }
 
     function restart(text) {
-      activeText = text || 'Новости временно недоступны';
+      activeText = text || fallbackText;
       track.style.animation = 'none';
       track.textContent = activeText;
       const distance = (viewport.clientWidth || 1600) + (track.scrollWidth || 1200);
@@ -40,7 +80,7 @@ function renderTickerClient(config) {
 
     function textFromItems(items) {
       const titles = items.map((item) => String(item && item.title || '').trim()).filter(Boolean);
-      return titles.join('   •   ') || 'Новости временно недоступны';
+      return titles.join('   •   ') || fallbackText;
     }
 
     async function refreshNews() {
@@ -51,18 +91,25 @@ function renderTickerClient(config) {
           return response.json();
         })
         .then((data) => {
-          queuedText = textFromItems(Array.isArray(data.items) ? data.items : []);
+          const items = Array.isArray(data.items) ? data.items : [];
+          queuedText = textFromItems(items);
+          diagnostics.newsCount = items.length;
+          diagnostics.updatedAt = data.updatedAt || diagnostics.updatedAt;
           if (data.state) {
             speed = Math.min(Math.max(Number(params.get('speed') || data.state.speed || speed), 12), 220);
             refreshMs = Math.max(15000, Number(params.get('refresh') || data.state.refreshSeconds * 1000 || refreshMs));
             setEnabled(data.state.enabled);
           }
+          updateDiagnostics();
           if (!started) {
             restart(queuedText);
             queuedText = '';
           }
         })
-        .catch(() => {})
+        .catch((error) => {
+          reportError('news API: ' + (error && error.message || error));
+          if (!started) restart(fallbackText);
+        })
         .finally(() => {
           inFlight = null;
         });
@@ -76,22 +123,59 @@ function renderTickerClient(config) {
     });
 
     window.addEventListener('resize', () => restart(activeText));
+    if (params.get('transparent') === '1') {
+      document.documentElement.classList.add('transparent-mode');
+    }
     setEnabled(serverConfig.enabled);
-    Promise.resolve(document.fonts && document.fonts.ready).finally(() => restart(activeText));
+    updateDiagnostics();
+
+    if (serverConfig.backgroundUrl) {
+      const backgroundProbe = new Image();
+      backgroundProbe.onload = () => {
+        diagnostics.backgroundLoaded = 'yes';
+        updateDiagnostics();
+      };
+      backgroundProbe.onerror = () => {
+        diagnostics.backgroundLoaded = 'no';
+        reportError('background failed: ' + serverConfig.backgroundUrl);
+      };
+      backgroundProbe.src = serverConfig.backgroundUrl + '?probe=' + encodeURIComponent(serverConfig.buildVersion || Date.now());
+    } else {
+      diagnostics.backgroundLoaded = 'n/a';
+    }
+
+    const fontReady = serverConfig.fontFamily && document.fonts
+      ? document.fonts.load('700 40px "' + serverConfig.fontFamily + '"')
+        .then((fonts) => {
+          diagnostics.fontLoaded = fonts.length > 0 ? 'yes' : 'no';
+        })
+        .catch((error) => {
+          diagnostics.fontLoaded = 'no';
+          reportError('font failed: ' + (error && error.message || error));
+        })
+      : Promise.resolve().then(() => {
+        diagnostics.fontLoaded = serverConfig.fontFamily ? 'no' : 'n/a';
+      });
+
+    fontReady.finally(() => {
+      updateDiagnostics();
+      restart(activeText);
+    });
     refreshNews();
     setInterval(refreshNews, refreshMs);
   </script>`;
 }
 
-export function renderFootballTicker(items, state) {
+export function renderFootballTicker(items, state, metadata = {}) {
+  const fallbackText = 'НОВОСТИ ЧМ ЗАГРУЖАЮТСЯ';
   const initialText = items.map((item) => escapeHtml(item.title)).join('   •   ')
-    || 'Новости чемпионата мира появятся здесь';
+    || fallbackText;
 
   return `<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=1920, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Football World Cup ticker</title>
   <style>
     @font-face {
@@ -104,30 +188,41 @@ export function renderFootballTicker(items, state) {
     * { box-sizing: border-box; }
     html, body {
       margin: 0;
-      width: 1920px;
-      height: 1080px;
+      width: 100%;
+      height: 100%;
       overflow: hidden;
-      background: transparent;
+      background: #000;
     }
+    html.transparent-mode,
+    html.transparent-mode body { background: transparent; }
     .frame {
-      position: relative;
-      width: 1920px;
-      height: 1080px;
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
       overflow: hidden;
-      background: url('/assets/football-ticker-bg.png') center / 1920px 1080px no-repeat;
+      background-color: #05060a;
+      background-image:
+        url('/assets/football-ticker-bg.png'),
+        linear-gradient(180deg, #000 0%, #000 86%, #111218 86%, #111218 100%);
+      background-position: center bottom, center;
+      background-size: 100% 100%, cover;
+      background-repeat: no-repeat;
     }
+    .ticker-panel { position: absolute; inset: 0; }
     .ticker-panel[hidden] { display: none; }
     .news-viewport {
       position: absolute;
-      left: 260px;
-      right: 32px;
-      bottom: 20px;
-      height: 76px;
+      left: 13.5417%;
+      right: 1.6667%;
+      bottom: 1.8519%;
+      height: 7.037%;
+      min-height: 36px;
       overflow: hidden;
       display: flex;
       align-items: center;
-      -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 100px, #000 100%);
-      mask-image: linear-gradient(90deg, transparent 0, #000 100px, #000 100%);
+      -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 6.15%, #000 100%);
+      mask-image: linear-gradient(90deg, transparent 0, #000 6.15%, #000 100%);
     }
     .news-track {
       position: absolute;
@@ -135,7 +230,7 @@ export function renderFootballTicker(items, state) {
       display: inline-block;
       color: #fff;
       font-family: 'PFDinTextCompPro-BoldItal', 'Arial Narrow', Arial, sans-serif;
-      font-size: 40px;
+      font-size: clamp(24px, min(2.0833vw, 3.7037vh), 40px);
       font-style: italic;
       font-weight: 700;
       letter-spacing: .02em;
@@ -146,19 +241,51 @@ export function renderFootballTicker(items, state) {
       will-change: transform;
     }
     @keyframes ticker-scroll {
-      from { transform: translateX(var(--ticker-start, 1628px)); }
+      from { transform: translateX(var(--ticker-start, 85vw)); }
       to { transform: translateX(-100%); }
     }
+    .debug-panel {
+      position: fixed;
+      z-index: 20;
+      top: 16px;
+      left: 16px;
+      display: none;
+      width: min(620px, calc(100vw - 32px));
+      padding: 14px 16px;
+      border: 1px solid rgba(255, 106, 22, .9);
+      border-radius: 8px;
+      background: rgba(0, 0, 0, .88);
+      color: #f5f7fb;
+      font: 14px/1.45 Consolas, 'Courier New', monospace;
+      overflow-wrap: anywhere;
+    }
+    .debug-panel strong { color: #ff6a16; }
+    .debug-mode .debug-panel { display: block; }
   </style>
 </head>
-<body>
+<body class="${metadata.debug ? 'debug-mode' : ''}">
   <main class="frame">
     <section class="ticker-panel" aria-label="Новости чемпионата мира">
       <div class="news-viewport"><div class="news-track" id="newsTrack">${initialText}</div></div>
     </section>
   </main>
+  <aside class="debug-panel" id="debugPanel" aria-label="Ticker diagnostics">
+    <div><strong>buildVersion:</strong> <span id="debugBuildVersion">checking</span></div>
+    <div><strong>loaded news count:</strong> <span id="debugNewsCount">0</span></div>
+    <div><strong>last updated:</strong> <span id="debugUpdatedAt">unknown</span></div>
+    <div><strong>background loaded:</strong> <span id="debugBackground">checking</span></div>
+    <div><strong>font loaded:</strong> <span id="debugFont">checking</span></div>
+    <div><strong>current API endpoint:</strong> <span id="debugEndpoint">unknown</span></div>
+    <div><strong>last JS error:</strong> <span id="debugLastError">none</span></div>
+  </aside>
   ${renderTickerClient({
     endpoint: '/api/news/football-world-cup',
+    fallbackText,
+    buildVersion: metadata.buildVersion,
+    initialCount: items.length,
+    updatedAt: metadata.updatedAt,
+    backgroundUrl: '/assets/football-ticker-bg.png',
+    fontFamily: 'PFDinTextCompPro-BoldItal',
     enabled: state.enabled,
     speed: state.speed,
     refreshSeconds: state.refreshSeconds,
@@ -171,7 +298,7 @@ export function renderTennisTicker(items, state, size = 'normal') {
   const small = size === 'small';
   const height = small ? 51 : 102;
   const initialText = items.map((item) => escapeHtml(item.title)).join('   ✦   ')
-    || 'Новости тенниса временно недоступны';
+    || 'НОВОСТИ ТЕННИСА ВРЕМЕННО НЕДОСТУПНЫ';
 
   return `<!doctype html>
 <html lang="ru">
@@ -241,6 +368,7 @@ export function renderTennisTicker(items, state, size = 'normal') {
   </main>
   ${renderTickerClient({
     endpoint: '/api/news/tennis',
+    fallbackText: 'НОВОСТИ ТЕННИСА ВРЕМЕННО НЕДОСТУПНЫ',
     enabled: state.enabled,
     speed: state.speed,
     refreshSeconds: state.refreshSeconds,

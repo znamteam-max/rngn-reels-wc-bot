@@ -92,7 +92,13 @@ async function handleTicker(request, env, sport) {
   const state = await getState(env, sport);
   const news = await getTickerNews(env, sport, state);
 
-  if (sport === 'football') return html(renderFootballTicker(news.items, state));
+  if (sport === 'football') {
+    return html(renderFootballTicker(news.items, state, {
+      buildVersion: BUILD_VERSION,
+      updatedAt: news.auto?.updatedAt || null,
+      debug: url.searchParams.get('debug') === '1',
+    }));
+  }
   return html(renderTennisTicker(news.items, state, url.searchParams.get('height') || 'normal'));
 }
 

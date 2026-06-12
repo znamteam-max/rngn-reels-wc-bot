@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import worker from '../src/index.js';
 import { fetchAutoNews, parseSportsNewsPage } from '../src/news.js';
+import { renderFootballTicker } from '../src/render.js';
 
 function request(path, init) {
   return new Request(`https://ticker.test${path}`, init);
@@ -157,4 +158,26 @@ test('football ticker includes the supplied font and background', async () => {
   assert.equal(response.status, 200);
   assert.match(body, /PFDinTextCompPro-BoldItal\.ttf/);
   assert.match(body, /football-ticker-bg\.png/);
+  assert.match(body, /width: 100%/);
+  assert.match(body, /height: 100%/);
+  assert.match(body, /background: #000/);
+});
+
+test('football ticker has a visible fallback and debug diagnostics', () => {
+  const body = renderFootballTicker([], {
+    enabled: true,
+    speed: 70,
+    refreshSeconds: 120,
+  }, {
+    buildVersion: 'test-build',
+    debug: true,
+  });
+
+  assert.match(body, /НОВОСТИ ЧМ ЗАГРУЖАЮТСЯ/);
+  assert.match(body, /class="debug-mode"/);
+  assert.match(body, /buildVersion:/);
+  assert.match(body, /loaded news count:/);
+  assert.match(body, /background loaded:/);
+  assert.match(body, /font loaded:/);
+  assert.match(body, /last JS error:/);
 });
