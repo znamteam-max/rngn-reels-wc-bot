@@ -158,6 +158,16 @@ test('football ticker includes the supplied font and background', async () => {
   assert.equal(response.status, 200);
   assert.match(body, /PFDinTextCompPro-BoldItal\.ttf/);
   assert.match(body, /football-ticker-bg\.png/);
+  assert.match(body, /<img class="ticker-bg" src="\/assets\/football-ticker-bg\.png"/);
+  assert.match(body, /\.ticker-stage \{/);
+  assert.match(body, /width: 1920px/);
+  assert.match(body, /height: 1080px/);
+  assert.match(body, /\.ticker-mask \{/);
+  assert.match(body, /left: 275px/);
+  assert.match(body, /right: 40px/);
+  assert.match(body, /bottom: 6px/);
+  assert.match(body, /height: 70px/);
+  assert.match(body, /font-size: 34px/);
   assert.match(body, /width: 100%/);
   assert.match(body, /height: 100%/);
   assert.match(body, /background: #000/);
@@ -177,6 +187,7 @@ test('football ticker has a visible fallback and debug diagnostics', () => {
   assert.match(body, /class="debug-mode"/);
   assert.match(body, /buildVersion:/);
   assert.match(body, /loaded news count:/);
+  assert.match(body, /background asset URL:/);
   assert.match(body, /background loaded:/);
   assert.match(body, /font loaded:/);
   assert.match(body, /last JS error:/);

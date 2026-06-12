@@ -76,7 +76,7 @@ npx wrangler secret put ADMIN_CHAT_ID
 Внешний cron вызывает `GET /api/cron/refresh?secret=<TICKER_CRON_SECRET>` без headers и обновляет football + tennis cache. Маршрут также принимает trailing slash и безопасные `HEAD`-проверки сервисов мониторинга.
 
 Для vMix используйте Browser Source `1920x1080` и URL `/ticker/football.html`.
-Футбольная страница адаптируется к обычному viewport, оставаясь пиксельно точной в `1920x1080`. Диагностический overlay доступен через `?debug=1`; прозрачный фон для broadcast source можно включить через `?transparent=1`.
+Футбольная страница использует исходный `/assets/football-ticker-bg.png` как единое изображение в координатах `1920x1080`; responsive масштабирует весь stage целиком. Текстовая маска: `left: 275px`, `right: 40px`, `bottom: 6px`, `height: 70px`. Диагностический overlay доступен через `?debug=1`; прозрачный фон для broadcast source можно включить через `?transparent=1`.
 
 ## Архив для передачи
 

@@ -16,6 +16,7 @@ function renderTickerClient(config) {
     const track = document.getElementById('newsTrack');
     const viewport = document.querySelector('.news-viewport');
     const panel = document.querySelector('.ticker-panel');
+    const stage = serverConfig.stageSelector ? document.querySelector(serverConfig.stageSelector) : null;
     const debugPanel = document.getElementById('debugPanel');
     const debugEnabled = params.get('debug') === '1' && Boolean(debugPanel);
     let speed = Math.min(Math.max(Number(params.get('speed') || serverConfig.speed), 12), 220);
@@ -42,6 +43,7 @@ function renderTickerClient(config) {
       diagnosticValue('debugBuildVersion', serverConfig.buildVersion || 'unknown');
       diagnosticValue('debugNewsCount', diagnostics.newsCount);
       diagnosticValue('debugUpdatedAt', diagnostics.updatedAt);
+      diagnosticValue('debugBackgroundUrl', serverConfig.backgroundUrl || 'n/a');
       diagnosticValue('debugBackground', diagnostics.backgroundLoaded);
       diagnosticValue('debugFont', diagnostics.fontLoaded);
       diagnosticValue('debugEndpoint', endpoint);
@@ -64,6 +66,18 @@ function renderTickerClient(config) {
 
     function setEnabled(enabled) {
       panel.hidden = enabled === false;
+    }
+
+    function fitStage() {
+      if (!stage) return;
+      const baseWidth = Number(serverConfig.stageWidth || 1920);
+      const baseHeight = Number(serverConfig.stageHeight || 1080);
+      const scale = Math.min(window.innerWidth / baseWidth, window.innerHeight / baseHeight);
+      const left = Math.round((window.innerWidth - baseWidth * scale) / 2);
+      const top = Math.round((window.innerHeight - baseHeight * scale) / 2);
+      stage.style.left = left + 'px';
+      stage.style.top = top + 'px';
+      stage.style.transform = 'scale(' + scale + ')';
     }
 
     function restart(text) {
@@ -122,10 +136,14 @@ function renderTickerClient(config) {
       refreshNews();
     });
 
-    window.addEventListener('resize', () => restart(activeText));
+    window.addEventListener('resize', () => {
+      fitStage();
+      restart(activeText);
+    });
     if (params.get('transparent') === '1') {
       document.documentElement.classList.add('transparent-mode');
     }
+    fitStage();
     setEnabled(serverConfig.enabled);
     updateDiagnostics();
 
@@ -145,7 +163,7 @@ function renderTickerClient(config) {
     }
 
     const fontReady = serverConfig.fontFamily && document.fonts
-      ? document.fonts.load('700 40px "' + serverConfig.fontFamily + '"')
+      ? document.fonts.load('700 ' + Number(serverConfig.fontProbeSize || 40) + 'px "' + serverConfig.fontFamily + '"')
         .then((fonts) => {
           diagnostics.fontLoaded = fonts.length > 0 ? 'yes' : 'no';
         })
@@ -195,47 +213,48 @@ export function renderFootballTicker(items, state, metadata = {}) {
     }
     html.transparent-mode,
     html.transparent-mode body { background: transparent; }
-    .frame {
+    .ticker-stage {
       position: fixed;
-      inset: 0;
-      width: 100vw;
-      height: 100vh;
+      width: 1920px;
+      height: 1080px;
       overflow: hidden;
-      background-color: #05060a;
-      background-image:
-        url('/assets/football-ticker-bg.png'),
-        linear-gradient(180deg, #000 0%, #000 86%, #111218 86%, #111218 100%);
-      background-position: center bottom, center;
-      background-size: 100% 100%, cover;
-      background-repeat: no-repeat;
+      background: transparent;
+      transform-origin: top left;
     }
-    .ticker-panel { position: absolute; inset: 0; }
-    .ticker-panel[hidden] { display: none; }
-    .news-viewport {
+    .ticker-bg {
       position: absolute;
-      left: 13.5417%;
-      right: 1.6667%;
-      bottom: 1.8519%;
-      height: 7.037%;
-      min-height: 36px;
+      left: 0;
+      bottom: 0;
+      width: 1920px;
+      height: auto;
+      display: block;
+      pointer-events: none;
+      user-select: none;
+    }
+    .ticker-panel[hidden] { display: none; }
+    .ticker-mask {
+      position: absolute;
+      left: 275px;
+      right: 40px;
+      bottom: 6px;
+      height: 70px;
       overflow: hidden;
       display: flex;
       align-items: center;
-      -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 6.15%, #000 100%);
-      mask-image: linear-gradient(90deg, transparent 0, #000 6.15%, #000 100%);
+      pointer-events: none;
+      -webkit-mask-image: linear-gradient(to right, transparent 0, #000 35px, #000 calc(100% - 80px), transparent 100%);
+      mask-image: linear-gradient(to right, transparent 0, #000 35px, #000 calc(100% - 80px), transparent 100%);
     }
-    .news-track {
+    .ticker-track {
       position: absolute;
       left: 0;
-      display: inline-block;
-      color: #fff;
-      font-family: 'PFDinTextCompPro-BoldItal', 'Arial Narrow', Arial, sans-serif;
-      font-size: clamp(24px, min(2.0833vw, 3.7037vh), 40px);
-      font-style: italic;
-      font-weight: 700;
-      letter-spacing: .02em;
+      display: inline-flex;
+      align-items: center;
+      gap: 28px;
+      color: #f2f2f2;
+      font-family: 'PFDinTextCompPro-BoldItal', sans-serif;
+      font-size: 34px;
       line-height: 1;
-      text-shadow: 0 2px 6px rgba(0, 0, 0, .55);
       text-transform: uppercase;
       white-space: nowrap;
       will-change: transform;
@@ -264,15 +283,17 @@ export function renderFootballTicker(items, state, metadata = {}) {
   </style>
 </head>
 <body class="${metadata.debug ? 'debug-mode' : ''}">
-  <main class="frame">
-    <section class="ticker-panel" aria-label="Новости чемпионата мира">
-      <div class="news-viewport"><div class="news-track" id="newsTrack">${initialText}</div></div>
-    </section>
+  <main class="ticker-stage ticker-panel" aria-label="Новости чемпионата мира">
+    <img class="ticker-bg" src="/assets/football-ticker-bg.png" alt="">
+    <div class="ticker-mask news-viewport">
+      <div class="ticker-track news-track" id="newsTrack">${initialText}</div>
+    </div>
   </main>
   <aside class="debug-panel" id="debugPanel" aria-label="Ticker diagnostics">
     <div><strong>buildVersion:</strong> <span id="debugBuildVersion">checking</span></div>
     <div><strong>loaded news count:</strong> <span id="debugNewsCount">0</span></div>
     <div><strong>last updated:</strong> <span id="debugUpdatedAt">unknown</span></div>
+    <div><strong>background asset URL:</strong> <span id="debugBackgroundUrl">checking</span></div>
     <div><strong>background loaded:</strong> <span id="debugBackground">checking</span></div>
     <div><strong>font loaded:</strong> <span id="debugFont">checking</span></div>
     <div><strong>current API endpoint:</strong> <span id="debugEndpoint">unknown</span></div>
@@ -286,6 +307,10 @@ export function renderFootballTicker(items, state, metadata = {}) {
     updatedAt: metadata.updatedAt,
     backgroundUrl: '/assets/football-ticker-bg.png',
     fontFamily: 'PFDinTextCompPro-BoldItal',
+    fontProbeSize: 34,
+    stageSelector: '.ticker-stage',
+    stageWidth: 1920,
+    stageHeight: 1080,
     enabled: state.enabled,
     speed: state.speed,
     refreshSeconds: state.refreshSeconds,
