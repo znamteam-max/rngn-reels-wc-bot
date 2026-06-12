@@ -1,0 +1,7 @@
+node_modules/
+.dev.vars
+.cron-jobs-url.txt
+.wrangler/
+.wrangler-dev.pid
+dist/
+*.log

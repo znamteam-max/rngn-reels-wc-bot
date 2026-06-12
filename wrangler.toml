@@ -1,0 +1,19 @@
+name = "bolshe-ticker-hub"
+main = "src/index.js"
+compatibility_date = "2026-04-08"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+[vars]
+PUBLIC_BASE_URL = "https://bolshe-ticker-hub.znamteam-903.workers.dev"
+NEWS_REFRESH_SECONDS = "120"
+DEFAULT_FOOTBALL_TICKER_SPEED = "70"
+DEFAULT_TENNIS_TICKER_SPEED = "100"
+
+[[kv_namespaces]]
+binding = "TICKER_KV"
+id = "6b7fe6916f92457f964702e35e66073f"
+preview_id = "2db5ca9c607846fa99ca866dc6910cb3"

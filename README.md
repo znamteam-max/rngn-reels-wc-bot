@@ -1,0 +1,77 @@
+# Ticker Hub
+
+Отдельный Cloudflare Worker для эфирных бегущих строк. В проект входят:
+
+- футбольная строка ЧМ с 20 последними новостями Sports.ru;
+- перенесённая теннисная строка в двух размерах;
+- ручные новости, режимы `auto` / `manual` / `mixed`, скорость и включение/выключение;
+- KV-кэш с последним успешным ответом и demo fallback;
+- отдельный Telegram-бот управления;
+- автоматическое обновление новостей открытой строкой каждые две минуты.
+
+## Локальный запуск
+
+```powershell
+npm install
+npm run verify
+npm run dev
+```
+
+Основные URL:
+
+```text
+http://localhost:8787/api/health
+http://localhost:8787/ticker/football.html
+http://localhost:8787/ticker/tennis.html
+http://localhost:8787/ticker/tennis.html?height=small
+http://localhost:8787/api/news/football-world-cup
+http://localhost:8787/api/news/tennis
+```
+
+Без KV локальный Worker использует память текущего isolate, поэтому ручные новости и state работают до перезапуска.
+
+## Управляющий API
+
+```text
+GET    /api/ticker/state?sport=football
+POST   /api/ticker/state
+POST   /api/ticker/manual
+DELETE /api/ticker/manual?id=...
+POST   /api/ticker/clear
+POST   /api/ticker/refresh
+GET    /api/cron/refresh?secret=...
+GET    /api/admin/env-check
+POST   /api/telegram/setup
+GET    /api/telegram/status
+POST   /telegram/webhook
+```
+
+Если задан `TICKER_ADMIN_SECRET`, управляющие маршруты требуют заголовок:
+
+```text
+x-ticker-admin-secret: <secret>
+# или совместимый alias:
+x-admin-secret: <secret>
+```
+
+## Production
+
+1. Создать KV: `npx wrangler kv namespace create TICKER_KV`.
+2. Вставить полученный ID в `wrangler.toml` и раскомментировать `[[kv_namespaces]]`.
+3. Добавить секреты:
+
+```powershell
+npx wrangler secret put TICKER_ADMIN_SECRET
+npx wrangler secret put TICKER_CRON_SECRET
+npx wrangler secret put TELEGRAM_BOT_TOKEN
+npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+npx wrangler secret put ADMIN_CHAT_ID
+```
+
+4. Указать настоящий `PUBLIC_BASE_URL` в `wrangler.toml`.
+5. Выполнить `npm run deploy`.
+6. Вызвать `POST /api/telegram/setup` с admin secret, чтобы зарегистрировать Telegram webhook.
+
+Внешний cron вызывает `GET /api/cron/refresh?secret=<TICKER_CRON_SECRET>` без headers и обновляет football + tennis cache.
+
+Для vMix используйте Browser Source `1920x1080` и URL `/ticker/football.html`.
