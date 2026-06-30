@@ -83,11 +83,31 @@ def _counts(cur: psycopg.Cursor) -> dict[str, Any]:
         for video_id, status, publish_date, instagram_id, batch_id, sheet_row in cur.fetchall()
     ]
 
+    cur.execute(
+        """
+        SELECT id, action, entity_type, entity_id, created_at
+        FROM logs
+        ORDER BY id DESC
+        LIMIT 20
+        """
+    )
+    recent_logs = [
+        {
+            "id": int(log_id),
+            "action": str(action),
+            "entity_type": entity_type,
+            "entity_id": int(entity_id) if entity_id else None,
+            "created_at": created_at.isoformat() if created_at else None,
+        }
+        for log_id, action, entity_type, entity_id, created_at in cur.fetchall()
+    ]
+
     return {
         "tables": table_counts,
         "roles": role_counts,
         "active_people": active_people,
         "recent_videos": recent_videos,
+        "recent_logs": recent_logs,
     }
 
 
