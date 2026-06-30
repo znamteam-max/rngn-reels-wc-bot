@@ -1,0 +1,5 @@
+psycopg[binary]>=3.2.3,<4
+requests>=2.32.0,<3
+google-api-python-client>=2.170.0,<3
+google-auth>=2.40.0,<3
+tzdata>=2025.2

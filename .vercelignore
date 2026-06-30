@@ -1,0 +1,15 @@
+node_modules
+public
+src
+test
+tests
+reference
+releases
+.wrangler
+package.json
+package-lock.json
+wrangler.toml
+wrangler.toml.example
+*.md
+!README.md
+!PROJECT_REPORT_*.md

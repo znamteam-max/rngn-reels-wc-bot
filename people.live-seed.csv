@@ -1,0 +1,5 @@
+role,name,tg_id,username,sort_weight,is_active
+author,Test Author,,,1,true
+montage,Test Montage,,,1,true
+voice,Test Voice,,,1,true
+

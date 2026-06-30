@@ -1,0 +1,7 @@
+role,name,tg_id,username,sort_weight,is_active
+superadmin,Example Producer,123456789,producer,100,true
+admin,Example Admin,234567890,admin,90,true
+author,Example Author,,,10,true
+montage,Example Editor,,,10,true
+voice,Example Voice,,,10,true
+
