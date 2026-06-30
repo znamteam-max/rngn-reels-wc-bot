@@ -10,7 +10,6 @@ REQUIRED_GROUPS = {
     "DATABASE_URL": ("DATABASE_URL",),
     "GOOGLE_SHEETS_SPREADSHEET_ID": ("GOOGLE_SHEETS_SPREADSHEET_ID",),
     "GOOGLE_SERVICE_ACCOUNT_JSON_B64": ("GOOGLE_SERVICE_ACCOUNT_JSON_B64",),
-    "WORK_CHAT_ID": ("WORK_CHAT_ID",),
     "ADMIN_CHAT_ID": ("ADMIN_CHAT_ID",),
     "TZ": ("TZ", "TIMEZONE", "DEFAULT_TIMEZONE"),
 }
@@ -33,4 +32,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

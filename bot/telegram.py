@@ -7,6 +7,13 @@ import requests
 from bot.config import get_settings
 
 
+class TelegramAPIError(RuntimeError):
+    def __init__(self, description: str, status_code: int | None = None) -> None:
+        super().__init__(f"Telegram API error: {description}")
+        self.description = description
+        self.status_code = status_code
+
+
 class TelegramClient:
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -30,7 +37,7 @@ class TelegramClient:
             raise RuntimeError("Telegram API returned a non-JSON response") from exc
         if not data.get("ok"):
             description = data.get("description", "unknown Telegram API error")
-            raise RuntimeError(f"Telegram API error: {description}")
+            raise TelegramAPIError(description, response.status_code)
         return data
 
     def send_message(
@@ -89,4 +96,3 @@ def inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
             for row in rows
         ]
     }
-

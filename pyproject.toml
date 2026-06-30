@@ -1,6 +1,6 @@
 [project]
 name = "rngn-reels-wc-bot"
-version = "1.0.0"
+version = "1.0.7"
 requires-python = ">=3.12"
 dependencies = [
     "psycopg[binary]>=3.2.3,<4",

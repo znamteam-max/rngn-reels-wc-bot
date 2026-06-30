@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psycopg
@@ -14,8 +14,8 @@ from bot.links import (
     normalize_optional,
     parse_publish_date,
 )
-from bot.messages import format_batch_summary, format_final_card, format_video_card
-from bot.telegram import TelegramClient, inline_keyboard
+from bot.messages import format_batch_summary, format_final_card, format_video_card, person_display
+from bot.telegram import TelegramAPIError, TelegramClient, inline_keyboard
 
 
 ROLE_BY_SHORT = {"a": "author", "m": "montage", "v": "voice"}
@@ -30,16 +30,27 @@ VIDEO_SELECT = """
 SELECT
     v.*,
     COALESCE(v.author_name, author_p.name) AS author_name,
+    COALESCE(v.author_username, author_p.username) AS author_username,
     author_p.tg_id AS author_tg_id,
     COALESCE(v.montage_name, montage_p.name) AS montage_name,
+    COALESCE(v.montage_username, montage_p.username) AS montage_username,
     montage_p.tg_id AS montage_tg_id,
     COALESCE(v.voice_name, voice_p.name) AS voice_name,
+    COALESCE(v.voice_username, voice_p.username) AS voice_username,
     voice_p.tg_id AS voice_tg_id
 FROM videos v
 LEFT JOIN people author_p ON author_p.id = v.author_id
 LEFT JOIN people montage_p ON montage_p.id = v.montage_id
 LEFT JOIN people voice_p ON voice_p.id = v.voice_id
 """
+
+PENDING_VIDEOS_SQL = (
+    VIDEO_SELECT
+    + """
+WHERE v.status = 'pending'
+ORDER BY v.created_at ASC, v.id ASC
+"""
+)
 
 
 @dataclass(frozen=True)
@@ -48,6 +59,8 @@ class Actor:
     chat_id: int
     username: str | None = None
     first_name: str | None = None
+    chat_type: str = "private"
+    chat_title: str | None = None
 
 
 def handle_update(update: dict[str, Any]) -> None:
@@ -67,6 +80,8 @@ def _actor_from_message(message: dict[str, Any]) -> Actor | None:
         chat_id=int(chat["id"]),
         username=user.get("username"),
         first_name=user.get("first_name"),
+        chat_type=chat.get("type", "private"),
+        chat_title=chat.get("title"),
     )
 
 
@@ -81,6 +96,8 @@ def _actor_from_callback(callback: dict[str, Any]) -> Actor | None:
         chat_id=int(chat["id"]),
         username=user.get("username"),
         first_name=user.get("first_name"),
+        chat_type=chat.get("type", "private"),
+        chat_title=chat.get("title"),
     )
 
 
@@ -89,10 +106,96 @@ def _safe_error(exc: Exception) -> str:
     return text[:500]
 
 
+def telegram_failure_payload(
+    exc: Exception,
+    admin_chat_id: int,
+    stage: str = "send",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "admin_chat_id": admin_chat_id,
+        "stage": stage,
+        "error": _safe_error(exc),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if isinstance(exc, TelegramAPIError):
+        payload["telegram_status_code"] = exc.status_code
+        payload["telegram_description"] = exc.description
+    return payload
+
+
+def _message_id(response: dict[str, Any]) -> int | None:
+    message = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(message, dict) or message.get("message_id") is None:
+        return None
+    return int(message["message_id"])
+
+
+def store_admin_message(video_id: int, chat_id: int, response: dict[str, Any]) -> None:
+    db.execute(
+        """
+        UPDATE videos
+        SET admin_message_chat_id = %s,
+            admin_message_id = %s,
+            admin_notified_at = now(),
+            updated_at = now()
+        WHERE id = %s
+        """,
+        (chat_id, _message_id(response), video_id),
+    )
+
+
+def admin_delivery_message_matches(
+    video: dict[str, Any],
+    chat_id: int,
+    message_id: int | None,
+) -> bool:
+    if not message_id:
+        return False
+    return (
+        int(video.get("admin_message_chat_id") or 0) == int(chat_id)
+        and int(video.get("admin_message_id") or 0) == int(message_id)
+    )
+
+
 def _command_parts(text: str) -> tuple[str, str]:
     first, _, rest = text.strip().partition(" ")
     command = first.split("@", 1)[0].lower()
     return command, rest.strip()
+
+
+def build_chatid_text(chat: dict[str, Any], user: dict[str, Any]) -> str:
+    username = user.get("username")
+    lines = [
+        f"chat_id: {chat.get('id')}",
+        f"chat_type: {chat.get('type', 'unknown')}",
+        f"title: {chat.get('title', '')}",
+        f"from_id: {user.get('id')}",
+        f"from_username: @{username}" if username else "from_username: ",
+    ]
+    return "\n".join(lines)
+
+
+def send_chatid(
+    tg: TelegramClient,
+    actor: Actor,
+    chat: dict[str, Any],
+    user: dict[str, Any],
+) -> None:
+    text = build_chatid_text(chat, user)
+    tg.send_message(actor.chat_id, text)
+    record_system_log(
+        "chatid_requested",
+        "telegram_chat",
+        None,
+        {
+            "chat_id": chat.get("id"),
+            "chat_type": chat.get("type"),
+            "title": chat.get("title"),
+            "from_id": user.get("id"),
+            "from_username": user.get("username"),
+        },
+        actor,
+    )
 
 
 def _send_main_menu(tg: TelegramClient, actor: Actor, text: str) -> None:
@@ -102,6 +205,7 @@ def _send_main_menu(tg: TelegramClient, actor: Actor, text: str) -> None:
     ]
     if is_admin(actor.tg_id):
         rows.insert(1, [("Админка", "cmd:admin"), ("Сводка", "cmd:summary")])
+        rows.insert(2, [("Переотправить pending", "cmd:resend_pending")])
     tg.send_message(actor.chat_id, text, inline_keyboard(rows))
 
 
@@ -127,6 +231,8 @@ def handle_message(message: dict[str, Any]) -> None:
             send_help(tg, actor)
         elif command == "/new_video":
             start_new_video(tg, actor)
+        elif command == "/chatid":
+            send_chatid(tg, actor, message.get("chat") or {}, message.get("from") or {})
         elif command == "/my_requests":
             show_my_requests(tg, actor)
         elif command == "/admin":
@@ -141,6 +247,8 @@ def handle_message(message: dict[str, Any]) -> None:
             start_or_run_search(tg, actor, rest)
         elif command == "/sync_sheets":
             sync_sheets_command(tg, actor)
+        elif command == "/resend_pending":
+            resend_pending_command(tg, actor)
         elif command == "/add_person":
             add_person_command(tg, actor, rest)
         elif command == "/activate_person":
@@ -182,6 +290,8 @@ def handle_callback(callback: dict[str, Any]) -> None:
         show_admin(tg, actor)
     elif data == "cmd:summary":
         show_summary(tg, actor)
+    elif data == "cmd:resend_pending":
+        resend_pending_command(tg, actor)
     elif data == "cmd:calendar":
         show_calendar(tg, actor)
     elif data == "cmd:people":
@@ -211,6 +321,8 @@ def handle_callback(callback: dict[str, Any]) -> None:
     elif data.startswith("pm:"):
         _, short_role = data.split(":", 1)
         ask_manual_person(tg, actor, short_role)
+    elif data == "ms":
+        handle_montage_same_as_author(tg, actor)
     elif data == "vn":
         handle_voice_none(tg, actor)
     elif data.startswith("skip:"):
@@ -291,12 +403,14 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
             "Команды:",
             "/new_video — добавить Reels",
             "/my_requests — мои заявки и дополнение ссылок",
+            "/chatid — показать ID текущего Telegram-чата",
             "/admin — очередь проверки",
             "/summary — сводка для админов",
             "/calendar — календарь публикаций",
             "/people — участники",
             "/search — поиск",
             "/sync_sheets — повторная синхронизация Google Sheets",
+            "/resend_pending — переотправить pending в админский чат",
             "",
             "Для суперадминов:",
             "/add_person role name [tg_id] [@username]",
@@ -310,6 +424,13 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
 
 
 def start_new_video(tg: TelegramClient, actor: Actor) -> None:
+    if actor.chat_type != "private":
+        username = get_settings().bot_username or "rngn_reels_wc_bot"
+        tg.send_message(
+            actor.chat_id,
+            f"Видео нужно добавлять в личке с ботом.\nОткрой @{username} и нажми «Новое видео».",
+        )
+        return
     db.set_session(
         tg_id=actor.tg_id,
         chat_id=actor.chat_id,
@@ -395,10 +516,15 @@ def ask_people(tg: TelegramClient, actor: Actor, role: str) -> None:
     rows: list[list[tuple[str, str]]] = []
     if role == "voice":
         rows.append([("Нет", "vn")])
+    if role == "montage":
+        session = db.get_session(actor.tg_id)
+        data = session.get("data") if session else {}
+        if data and data.get("author_name"):
+            rows.append([("Смонтировал сам автор", "ms")])
     for index in range(0, len(people), 2):
         row: list[tuple[str, str]] = []
         for person in people[index : index + 2]:
-            row.append((person["name"], f"p:{short_role}:{person['id']}"))
+            row.append((person_display(person["name"], person.get("username")), f"p:{short_role}:{person['id']}"))
         rows.append(row)
     rows.append([("Нет в списке", f"pm:{short_role}")])
     label = {
@@ -444,7 +570,7 @@ def handle_person_pick(
         tg.send_message(actor.chat_id, "Начните заявку заново: /new_video.")
         return
     person = db.fetch_one(
-        "SELECT id, name FROM people WHERE id = %s AND role = %s AND is_active = true",
+        "SELECT id, name, username FROM people WHERE id = %s AND role = %s AND is_active = true",
         (person_id, role),
     )
     if not person:
@@ -454,7 +580,31 @@ def handle_person_pick(
     data = session.get("data") or {}
     data[f"{role}_id"] = person["id"]
     data[f"{role}_name"] = person["name"]
+    data[f"{role}_username"] = person.get("username")
+    if role == "montage":
+        data["montage_same_as_author"] = False
     next_after_person(tg, actor, role, data)
+
+
+def apply_montage_same_as_author(data: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(data)
+    updated["montage_id"] = updated.get("author_id")
+    updated["montage_name"] = updated.get("author_name")
+    updated["montage_username"] = updated.get("author_username")
+    updated["montage_same_as_author"] = True
+    return updated
+
+
+def handle_montage_same_as_author(tg: TelegramClient, actor: Actor) -> None:
+    session = db.get_session(actor.tg_id)
+    if not session:
+        tg.send_message(actor.chat_id, "Начните заявку заново: /new_video.")
+        return
+    data = session.get("data") or {}
+    if not data.get("author_name"):
+        tg.send_message(actor.chat_id, "Сначала выберите автора.")
+        return
+    next_after_person(tg, actor, "montage", apply_montage_same_as_author(data))
 
 
 def ask_manual_person(tg: TelegramClient, actor: Actor, short_role: str) -> None:
@@ -497,6 +647,9 @@ def handle_manual_person_value(
     data = session.get("data") or {}
     data[f"{role}_id"] = None
     data[f"{role}_name"] = value
+    data[f"{role}_username"] = None
+    if role == "montage":
+        data["montage_same_as_author"] = False
     next_after_person(tg, actor, role, data)
 
 
@@ -508,6 +661,7 @@ def handle_voice_none(tg: TelegramClient, actor: Actor) -> None:
     data = session.get("data") or {}
     data["voice_id"] = None
     data["voice_name"] = None
+    data["voice_username"] = None
     next_after_person(tg, actor, "voice", data)
 
 
@@ -678,7 +832,12 @@ def submit_video(tg: TelegramClient, actor: Actor) -> None:
 
     db.clear_session(actor.tg_id)
     tg.send_message(actor.chat_id, "Заявка отправлена на проверку.")
-    notify_admin_queue(tg, video)
+    if not notify_admin_queue(tg, video, actor):
+        tg.send_message(
+            actor.chat_id,
+            "Заявка создана, но бот не смог отправить её в админский чат.\n"
+            "Админу нужно проверить ADMIN_CHAT_ID или вызвать /resend_pending после исправления.",
+        )
 
 
 def update_revision_video(actor: Actor, video_id: int, data: dict[str, Any]) -> dict[str, Any]:
@@ -703,10 +862,14 @@ def update_revision_video(actor: Actor, video_id: int, data: dict[str, Any]) -> 
                     vk_id = %s,
                     author_id = %s,
                     author_name = %s,
+                    author_username = %s,
                     montage_id = %s,
                     montage_name = %s,
+                    montage_username = %s,
+                    montage_same_as_author = %s,
                     voice_id = %s,
                     voice_name = %s,
+                    voice_username = %s,
                     checked_by_tg_id = NULL,
                     checked_by_username = NULL,
                     checked_at = NULL,
@@ -727,10 +890,14 @@ def update_revision_video(actor: Actor, video_id: int, data: dict[str, Any]) -> 
                     data.get("vk_id"),
                     data.get("author_id"),
                     data.get("author_name"),
+                    data.get("author_username"),
                     data.get("montage_id"),
                     data.get("montage_name"),
+                    data.get("montage_username"),
+                    bool(data.get("montage_same_as_author")),
                     data.get("voice_id"),
                     data.get("voice_name"),
+                    data.get("voice_username"),
                     batch_id,
                     video_id,
                 ),
@@ -761,13 +928,17 @@ def insert_pending_video(actor: Actor, data: dict[str, Any]) -> dict[str, Any]:
                 INSERT INTO videos (
                     status, publish_date, instagram_url, instagram_id,
                     youtube_url, youtube_id, tiktok_url, tiktok_id, vk_url, vk_id,
-                    author_id, author_name, montage_id, montage_name, voice_id, voice_name,
+                    author_id, author_name, author_username,
+                    montage_id, montage_name, montage_username, montage_same_as_author,
+                    voice_id, voice_name, voice_username,
                     added_by_tg_id, added_by_username, batch_id
                 )
                 VALUES (
                     'pending', %s, %s, %s,
                     %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s,
                     %s, %s, %s
                 )
                 RETURNING id
@@ -784,10 +955,14 @@ def insert_pending_video(actor: Actor, data: dict[str, Any]) -> dict[str, Any]:
                     data.get("vk_id"),
                     data.get("author_id"),
                     data.get("author_name"),
+                    data.get("author_username"),
                     data.get("montage_id"),
                     data.get("montage_name"),
+                    data.get("montage_username"),
+                    bool(data.get("montage_same_as_author")),
                     data.get("voice_id"),
                     data.get("voice_name"),
+                    data.get("voice_username"),
                     actor.tg_id,
                     actor.username,
                     batch_id,
@@ -888,27 +1063,61 @@ def recalculate_batch(conn, batch_id: int) -> dict[str, Any]:
         return cur.fetchone()
 
 
-def notify_admin_queue(tg: TelegramClient, video: dict[str, Any]) -> None:
+def notify_admin_queue(
+    tg: TelegramClient,
+    video: dict[str, Any],
+    actor: Actor | None = None,
+) -> bool:
+    return send_admin_review_card(tg, video, "Новая заявка", actor)
+
+
+def send_admin_review_card(
+    tg: TelegramClient,
+    video: dict[str, Any],
+    title: str = "Заявка",
+    actor: Actor | None = None,
+) -> bool:
     settings = get_settings()
     try:
-        batch = db.fetch_one("SELECT * FROM batches WHERE id = %s", (video["batch_id"],))
-        if not batch:
-            return
-        if int(batch.get("total_count") or 0) <= 1:
-            tg.send_message(
-                settings.admin_chat_id,
-                format_video_card(video, title="Новая заявка"),
-                admin_video_keyboard(video["id"], video["batch_id"], 0),
-            )
-        else:
-            send_batch_summary(tg, settings.admin_chat_id, int(video["batch_id"]))
+        response = tg.send_message(
+            settings.admin_chat_id,
+            format_video_card(video, title=title),
+            admin_video_keyboard(int(video["id"]), int(video["batch_id"] or 0), 0),
+        )
+        store_admin_message(int(video["id"]), int(settings.admin_chat_id), response)
+        return True
     except Exception as exc:
         record_system_log(
             "admin_notify_failed",
             "video",
             int(video["id"]),
-            {"error": _safe_error(exc)},
+            telegram_failure_payload(exc, int(settings.admin_chat_id), "send_review_card"),
+            actor,
         )
+        return False
+
+
+def resend_pending_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_admin(tg, actor):
+        return
+    with db.transaction() as conn:
+        assign_orphan_pending(conn, actor)
+    rows = db.fetch_all(PENDING_VIDEOS_SQL)
+    if not rows:
+        tg.send_message(actor.chat_id, "Pending-заявок нет.")
+        return
+
+    sent = 0
+    failed = 0
+    for row in rows:
+        if send_admin_review_card(tg, row, "Pending-заявка", actor):
+            sent += 1
+        else:
+            failed += 1
+    tg.send_message(
+        actor.chat_id,
+        f"Переотправка pending завершена. Отправлено: {sent}, ошибок: {failed}.",
+    )
 
 
 def find_video_by_instagram_id(instagram_id: str) -> dict[str, Any] | None:
@@ -1366,10 +1575,20 @@ def approve_one(
         tg.send_message(actor.chat_id, "Заявка уже обработана другим админом.")
         show_queue_item(tg, actor, batch_id, index, edit_message_id)
         return
-    sync_video_after_approval(video, actor)
-    send_final_card(video, actor)
+    sheet_ok = sync_video_after_approval(video, actor)
+    send_admin_approved_card(tg, video, actor, edit_message_id)
+    if not sheet_ok:
+        send_admin_sync_warning(tg, video, actor)
     tg.send_message(actor.chat_id, f"Заявка #{video_id} одобрена.")
-    show_queue_item(tg, actor, batch_id, index, edit_message_id)
+    next_edit_message_id = None
+    current_message_is_admin_delivery = admin_delivery_message_matches(video, actor.chat_id, edit_message_id) or (
+        bool(edit_message_id)
+        and actor.chat_id == get_settings().admin_chat_id
+        and not video.get("admin_message_id")
+    )
+    if edit_message_id and not current_message_is_admin_delivery:
+        next_edit_message_id = edit_message_id
+    show_queue_item(tg, actor, batch_id, index, next_edit_message_id)
 
 
 def approve_video_in_db(video_id: int, actor: Actor) -> dict[str, Any] | None:
@@ -1409,7 +1628,7 @@ def approve_video_in_db(video_id: int, actor: Actor) -> dict[str, Any] | None:
         return video
 
 
-def sync_video_after_approval(video: dict[str, Any], actor: Actor) -> None:
+def sync_video_after_approval(video: dict[str, Any], actor: Actor) -> bool:
     try:
         row_number = sheets.upsert_video(video)
         if row_number:
@@ -1422,6 +1641,7 @@ def sync_video_after_approval(video: dict[str, Any], actor: Actor) -> None:
             {"sheet_row": row_number},
             actor,
         )
+        return True
     except Exception as exc:
         record_system_log(
             "sync_sheets_failed",
@@ -1430,17 +1650,73 @@ def sync_video_after_approval(video: dict[str, Any], actor: Actor) -> None:
             {"error": _safe_error(exc)},
             actor,
         )
+        return False
 
 
-def send_final_card(video: dict[str, Any], actor: Actor) -> None:
+def send_admin_approved_card(
+    tg: TelegramClient,
+    video: dict[str, Any],
+    actor: Actor,
+    fallback_message_id: int | None = None,
+) -> bool:
+    settings = get_settings()
+    text = format_final_card(video)
+    stored_chat_id = video.get("admin_message_chat_id")
+    stored_message_id = video.get("admin_message_id")
+    edit_chat_id = int(stored_chat_id) if stored_chat_id else None
+    edit_message_id = int(stored_message_id) if stored_message_id else None
+
+    if not edit_chat_id and actor.chat_id == settings.admin_chat_id and fallback_message_id:
+        edit_chat_id = actor.chat_id
+        edit_message_id = fallback_message_id
+
+    if edit_chat_id and edit_message_id:
+        try:
+            tg.edit_message_text(edit_chat_id, edit_message_id, text, {"inline_keyboard": []})
+            store_admin_message(
+                int(video["id"]),
+                int(edit_chat_id),
+                {"result": {"message_id": int(edit_message_id)}},
+            )
+            return True
+        except Exception as exc:
+            record_system_log(
+                "admin_notify_failed",
+                "video",
+                int(video["id"]),
+                telegram_failure_payload(exc, int(settings.admin_chat_id), "edit_approved_card"),
+                actor,
+            )
+
     try:
-        TelegramClient().send_message(get_settings().work_chat_id, format_final_card(video))
+        response = tg.send_message(settings.admin_chat_id, text)
+        store_admin_message(int(video["id"]), int(settings.admin_chat_id), response)
+        return True
     except Exception as exc:
         record_system_log(
-            "work_chat_notify_failed",
+            "admin_notify_failed",
             "video",
             int(video["id"]),
-            {"error": _safe_error(exc)},
+            telegram_failure_payload(exc, int(settings.admin_chat_id), "send_approved_card"),
+            actor,
+        )
+        return False
+
+
+def send_admin_sync_warning(tg: TelegramClient, video: dict[str, Any], actor: Actor) -> None:
+    settings = get_settings()
+    try:
+        tg.send_message(
+            settings.admin_chat_id,
+            f"Заявка #{video['id']} одобрена, но Google Sheets не обновился. "
+            "После исправления запустите /sync_sheets.",
+        )
+    except Exception as exc:
+        record_system_log(
+            "admin_notify_failed",
+            "video",
+            int(video["id"]),
+            telegram_failure_payload(exc, int(settings.admin_chat_id), "send_sync_warning"),
             actor,
         )
 
@@ -1525,8 +1801,10 @@ def approve_clean_batch(
         video = approve_video_in_db(int(row["id"]), actor)
         if not video:
             continue
-        sync_video_after_approval(video, actor)
-        send_final_card(video, actor)
+        sheet_ok = sync_video_after_approval(video, actor)
+        send_admin_approved_card(tg, video, actor)
+        if not sheet_ok:
+            send_admin_sync_warning(tg, video, actor)
         approved += 1
     tg.send_message(actor.chat_id, f"Одобрено чистых заявок: {approved}.")
     send_batch_summary(tg, actor.chat_id, batch_id, edit_message_id)
@@ -1800,7 +2078,8 @@ def finish_add_links(tg: TelegramClient, actor: Actor, data: dict[str, Any]) -> 
         )
     db.clear_session(actor.tg_id)
     if after.get("status") == "approved":
-        sync_video_after_approval(after, actor)
+        if not sync_video_after_approval(after, actor):
+            send_admin_sync_warning(tg, after, actor)
     tg.send_message(actor.chat_id, "Ссылки обновлены.")
 
 
@@ -1953,7 +2232,8 @@ def edit_video_command(tg: TelegramClient, actor: Actor, rest: str) -> None:
             after_data={field: update_value},
         )
     if after.get("status") == "approved":
-        sync_video_after_approval(after, actor)
+        if not sync_video_after_approval(after, actor):
+            send_admin_sync_warning(tg, after, actor)
     tg.send_message(actor.chat_id, "Запись обновлена.")
 
 

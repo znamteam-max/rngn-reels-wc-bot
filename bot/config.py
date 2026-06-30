@@ -6,7 +6,6 @@ from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 
-DEFAULT_WORK_CHAT_ID = -5425403129
 DEFAULT_ADMIN_CHAT_ID = -5520370963
 DEFAULT_TIMEZONE = "Europe/Helsinki"
 
@@ -51,7 +50,6 @@ class Settings:
     webhook_secret: str | None
     google_service_account_json_b64: str | None
     google_sheets_spreadsheet_id: str | None
-    work_chat_id: int
     admin_chat_id: int
     timezone: str
     bootstrap_superadmin_ids: set[int]
@@ -71,7 +69,6 @@ def get_settings() -> Settings:
         webhook_secret=_env("WEBHOOK_SECRET", "TELEGRAM_WEBHOOK_SECRET"),
         google_service_account_json_b64=_env("GOOGLE_SERVICE_ACCOUNT_JSON_B64"),
         google_sheets_spreadsheet_id=_env("GOOGLE_SHEETS_SPREADSHEET_ID"),
-        work_chat_id=_int_env("WORK_CHAT_ID", DEFAULT_WORK_CHAT_ID),
         admin_chat_id=_int_env("ADMIN_CHAT_ID", DEFAULT_ADMIN_CHAT_ID),
         timezone=_env("TIMEZONE", "TZ", "DEFAULT_TIMEZONE", default=DEFAULT_TIMEZONE) or DEFAULT_TIMEZONE,
         bootstrap_superadmin_ids=_int_list_env("BOOTSTRAP_SUPERADMIN_IDS", "ALLOWED_TELEGRAM_USER_IDS"),

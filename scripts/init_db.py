@@ -45,10 +45,14 @@ CREATE TABLE IF NOT EXISTS videos (
     vk_id text,
     author_id bigint NULL REFERENCES people(id),
     author_name text,
+    author_username text NULL,
     montage_id bigint NULL REFERENCES people(id),
     montage_name text,
+    montage_username text NULL,
+    montage_same_as_author boolean DEFAULT false,
     voice_id bigint NULL REFERENCES people(id),
     voice_name text,
+    voice_username text NULL,
     added_by_tg_id bigint,
     added_by_username text,
     checked_by_tg_id bigint,
@@ -61,6 +65,9 @@ CREATE TABLE IF NOT EXISTS videos (
     checked_at timestamptz,
     batch_id bigint NULL REFERENCES batches(id),
     sheet_row int NULL,
+    admin_message_chat_id bigint NULL,
+    admin_message_id bigint NULL,
+    admin_notified_at timestamptz NULL,
     comment text
 );
 
@@ -103,6 +110,31 @@ CREATE INDEX IF NOT EXISTS idx_user_sessions_updated_at ON user_sessions(updated
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS publish_date_set_by_tg_id bigint NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS publish_date_set_by_username text NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS publish_date_set_at timestamptz NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS montage_same_as_author boolean DEFAULT false;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS admin_message_chat_id bigint NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS admin_message_id bigint NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS admin_notified_at timestamptz NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS author_username text NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS montage_username text NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS voice_username text NULL;
+
+UPDATE videos v
+SET author_username = p.username
+FROM people p
+WHERE v.author_id = p.id
+  AND v.author_username IS NULL;
+
+UPDATE videos v
+SET montage_username = p.username
+FROM people p
+WHERE v.montage_id = p.id
+  AND v.montage_username IS NULL;
+
+UPDATE videos v
+SET voice_username = p.username
+FROM people p
+WHERE v.voice_id = p.id
+  AND v.voice_username IS NULL;
 
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS trigger AS $$

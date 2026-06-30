@@ -3,7 +3,6 @@
 Production-ready Telegram bot for Reels монтаж reporting during ЧМ-2026.
 
 Bot: `@rngn_reels_wc_bot`  
-Work chat: `-5425403129`  
 Admin chat: `-5520370963`  
 Runtime: Python 3.12 on Vercel Serverless Functions  
 Database: Neon Postgres via `DATABASE_URL`  
@@ -17,6 +16,7 @@ api/health.py           Separate health endpoint
 bot/                   Bot modules
 scripts/init_db.py      Neon schema bootstrap
 scripts/seed_people.py  People/admin seed loader
+scripts/setup_bot_ui.py Telegram command/menu setup
 people.example.csv      Seed file example
 requirements.txt        Python dependencies
 vercel.json             Vercel function config
@@ -31,7 +31,6 @@ BOT_TOKEN=Telegram bot token from BotFather
 BOT_USERNAME=rngn_reels_wc_bot
 WEBHOOK_SECRET=random long secret for Telegram webhook header
 DATABASE_URL=Neon Postgres connection string
-WORK_CHAT_ID=-5425403129
 ADMIN_CHAT_ID=-5520370963
 GOOGLE_SERVICE_ACCOUNT_JSON_B64=base64 encoded service account JSON
 GOOGLE_SHEETS_SPREADSHEET_ID=Google Spreadsheet ID
@@ -75,6 +74,12 @@ Check env presence without printing secret values:
 
 ```powershell
 python scripts/check_env.py
+```
+
+Configure Telegram commands and the bot menu:
+
+```powershell
+python scripts/setup_bot_ui.py
 ```
 
 You can also use a simple file with one name per line:
@@ -141,6 +146,7 @@ User commands:
 /start
 /new_video
 /my_requests
+/chatid
 /help
 ```
 
@@ -153,6 +159,7 @@ Admin commands:
 /people
 /search
 /sync_sheets
+/resend_pending
 /edit_video id field value
 ```
 
@@ -168,9 +175,9 @@ Roles: `author`, `montage`, `voice`, `admin`, `superadmin`.
 
 ## Main Flow
 
-`/new_video` asks for Instagram/Reels URL, author, optional voice, one editor, and optional YouTube/TikTok/VK links. Participants do not set the publication date. Instagram duplicates are detected by shortcode from `/reel/{id}`, `/p/{id}`, or `/tv/{id}`.
+`/new_video` works only in a private chat with the bot. In groups, the bot asks the user to open a private chat. The form asks for Instagram/Reels URL, author, optional voice, one editor, and optional YouTube/TikTok/VK links. The montage step includes `Смонтировал сам автор`. Participants do not set the publication date. Instagram duplicates are detected by shortcode from `/reel/{id}`, `/p/{id}`, or `/tv/{id}`.
 
-After preview, the user sends the request to review. The video becomes `pending`, gets a `batch_id`, and admins see a single card or a batch summary. The admin card shows whether `publish_date` is set. Admins must set the publication date during review before approval; approval is blocked until the date is present. Admin approval is atomic: the database update only succeeds while status is still `pending` and `publish_date` is not null, so two admins cannot approve the same video with a conflict.
+After preview, the user sends the request to review. The video becomes `pending`, gets a `batch_id`, and the bot sends a review card only to `ADMIN_CHAT_ID`. The stored admin Telegram message is saved in `admin_message_chat_id`, `admin_message_id`, and `admin_notified_at`. Admins can run `/resend_pending` to send every pending card to the current admin chat again. The admin card shows whether `publish_date` is set. Admins must set the publication date during review before approval; approval is blocked until the date is present. Admin approval is atomic: the database update only succeeds while status is still `pending` and `publish_date` is not null, so two admins cannot approve the same video with a conflict.
 
 Admin date controls support quick presets for today, yesterday, and the day before yesterday, plus manual input in `YYYY-MM-DD`, `DD.MM`, or `D.M` format. `DD.MM` and `D.M` use the current year from `TIMEZONE`.
 
@@ -179,9 +186,11 @@ After approval:
 1. `videos.status` becomes `approved`.
 2. `checked_by_*` and `checked_at` are set.
 3. The `Videos` sheet row is inserted or updated by `id`.
-4. The final card is sent to `WORK_CHAT_ID`.
+4. The original admin review card is edited to an approved card when possible; otherwise a new approved card is sent to `ADMIN_CHAT_ID`.
 
 If Google Sheets is temporarily unavailable, the video remains `approved`; the failure is recorded in `logs` as `sync_sheets_failed`. Run `/sync_sheets` later to upsert approved videos again.
+
+Use `/chatid` in the target admin group or supergroup to get the real `chat_id`, then update `ADMIN_CHAT_ID` in Vercel and run `/resend_pending`.
 
 ## Supported Link Normalization
 

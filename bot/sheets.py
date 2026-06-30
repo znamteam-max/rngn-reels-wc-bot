@@ -9,6 +9,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 from bot.config import get_settings
+from bot.messages import person_value
 
 
 SHEET_NAME = "Videos"
@@ -73,11 +74,11 @@ def video_to_row(video: dict[str, Any]) -> list[str]:
         "youtube_url": video.get("youtube_url"),
         "tiktok_url": video.get("tiktok_url"),
         "vk_url": video.get("vk_url"),
-        "author": video.get("author_name"),
+        "author": person_value(video, "author"),
         "author_tg_id": video.get("author_tg_id"),
-        "montage": video.get("montage_name"),
+        "montage": person_value(video, "montage"),
         "montage_tg_id": video.get("montage_tg_id"),
-        "voice": video.get("voice_name"),
+        "voice": person_value(video, "voice") if video.get("voice_name") else "",
         "voice_tg_id": video.get("voice_tg_id"),
         "added_by": _user_cell(video.get("added_by_username"), video.get("added_by_tg_id")),
         "checked_by": _user_cell(video.get("checked_by_username"), video.get("checked_by_tg_id")),
@@ -144,4 +145,3 @@ def upsert_video(video: dict[str, Any]) -> int:
         return int(match.group(1))
     found = _find_row_by_id(service, spreadsheet_id, int(video["id"]))
     return int(found or 0)
-
