@@ -43,7 +43,52 @@ def _counts(cur: psycopg.Cursor) -> dict[str, Any]:
         str(role): {"total": int(total_count), "active": int(active_count)}
         for role, total_count, active_count in cur.fetchall()
     }
-    return {"tables": table_counts, "roles": role_counts}
+    cur.execute(
+        """
+        SELECT id, role, name, username, sort_weight
+        FROM people
+        WHERE is_active = true
+          AND role IN ('author', 'montage', 'voice')
+        ORDER BY role, sort_weight DESC, name
+        """
+    )
+    active_people = [
+        {
+            "id": int(person_id),
+            "role": str(role),
+            "name": str(name),
+            "username": username,
+            "sort_weight": int(sort_weight or 0),
+        }
+        for person_id, role, name, username, sort_weight in cur.fetchall()
+    ]
+
+    cur.execute(
+        """
+        SELECT id, status, publish_date, instagram_id, batch_id, sheet_row
+        FROM videos
+        ORDER BY id DESC
+        LIMIT 10
+        """
+    )
+    recent_videos = [
+        {
+            "id": int(video_id),
+            "status": str(status),
+            "publish_date": publish_date.isoformat() if publish_date else None,
+            "instagram_id": instagram_id,
+            "batch_id": int(batch_id) if batch_id else None,
+            "sheet_row": int(sheet_row) if sheet_row else None,
+        }
+        for video_id, status, publish_date, instagram_id, batch_id, sheet_row in cur.fetchall()
+    ]
+
+    return {
+        "tables": table_counts,
+        "roles": role_counts,
+        "active_people": active_people,
+        "recent_videos": recent_videos,
+    }
 
 
 def _deactivate_stale_people(conn: psycopg.Connection, rows: list[dict[str, Any]]) -> int:
