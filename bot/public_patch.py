@@ -162,12 +162,7 @@ def handle_message(message: dict[str, Any]) -> None:
     text = (message.get("text") or "").strip()
     tg = TelegramClient()
 
-    if (
-        actor.tg_id == TARGET_USER_ID
-        and actor.chat_type in {"group", "supergroup"}
-        and text
-        and _hearing_mode_enabled()
-    ):
+    if actor.tg_id == TARGET_USER_ID and text and _hearing_mode_enabled():
         _reply_like_bad_hearing(tg, message, actor)
         return
 
