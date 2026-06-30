@@ -65,6 +65,12 @@ Seed people:
 python scripts/seed_people.py people.example.csv
 ```
 
+Production people seed:
+
+```powershell
+python scripts/seed_people.py people.live-seed.csv
+```
+
 Check env presence without printing secret values:
 
 ```powershell
@@ -162,9 +168,11 @@ Roles: `author`, `montage`, `voice`, `admin`, `superadmin`.
 
 ## Main Flow
 
-`/new_video` asks for Instagram/Reels URL, publication date, author, optional voice, one editor, and optional YouTube/TikTok/VK links. Instagram duplicates are detected by shortcode from `/reel/{id}`, `/p/{id}`, or `/tv/{id}`.
+`/new_video` asks for Instagram/Reels URL, author, optional voice, one editor, and optional YouTube/TikTok/VK links. Participants do not set the publication date. Instagram duplicates are detected by shortcode from `/reel/{id}`, `/p/{id}`, or `/tv/{id}`.
 
-After preview, the user sends the request to review. The video becomes `pending`, gets a `batch_id`, and admins see a single card or a batch summary. Admin approval is atomic: the database update only succeeds while status is still `pending`, so two admins cannot approve the same video with a conflict.
+After preview, the user sends the request to review. The video becomes `pending`, gets a `batch_id`, and admins see a single card or a batch summary. The admin card shows whether `publish_date` is set. Admins must set the publication date during review before approval; approval is blocked until the date is present. Admin approval is atomic: the database update only succeeds while status is still `pending` and `publish_date` is not null, so two admins cannot approve the same video with a conflict.
+
+Admin date controls support quick presets for today, yesterday, and the day before yesterday, plus manual input in `YYYY-MM-DD`, `DD.MM`, or `D.M` format. `DD.MM` and `D.M` use the current year from `TIMEZONE`.
 
 After approval:
 

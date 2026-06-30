@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS videos (
     added_by_username text,
     checked_by_tg_id bigint,
     checked_by_username text,
+    publish_date_set_by_tg_id bigint NULL,
+    publish_date_set_by_username text NULL,
+    publish_date_set_at timestamptz NULL,
     created_at timestamptz DEFAULT now(),
     updated_at timestamptz DEFAULT now(),
     checked_at timestamptz,
@@ -96,6 +99,10 @@ CREATE INDEX IF NOT EXISTS idx_videos_batch_id ON videos(batch_id);
 CREATE INDEX IF NOT EXISTS idx_people_role_active ON people(role, is_active);
 CREATE INDEX IF NOT EXISTS idx_logs_entity ON logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_updated_at ON user_sessions(updated_at);
+
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS publish_date_set_by_tg_id bigint NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS publish_date_set_by_username text NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS publish_date_set_at timestamptz NULL;
 
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS trigger AS $$
@@ -142,4 +149,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -1,5 +1,29 @@
-role,name,tg_id,username,sort_weight,is_active
-author,Test Author,,,1,true
-montage,Test Montage,,,1,true
-voice,Test Voice,,,1,true
-
+role,name,username,sort_weight
+author,Знамбо,znambo,100
+author,Егор,RayBallPro,90
+author,Хамидулин,kkkkkk13_13,80
+author,Пойда,alexanderpoyda,70
+author,Тихонов,tikhonov32,60
+author,Левченко,milovaantseva,50
+author,Зеленкин,nzelenkin,40
+author,Алексеев,cherrypie144p,30
+author,Ермолаев,Snotrodd,20
+author,Юдкин,yudkiin,10
+montage,Каленский,usernameisinvaliid,130
+montage,Смоковдин,smkvdn,120
+montage,Ермаков,ermakovv63,110
+montage,Жаворонков,KosZhavoronkov,100
+montage,Филиппов,basicdepo,90
+montage,Детков,Ageraonly,80
+montage,Бобровницкий,Stepagrad,70
+montage,Куликов,monsieur_kulikov,60
+montage,Куншин,jdayke,50
+montage,Святун,sviatoyalexandr,40
+montage,Михайлов,kirya_mikhaylov,30
+montage,Рябошапка,igormoll,20
+montage,Иванов,Skaddii,10
+voice,Саша Пойда,alexanderpoyda,50
+voice,Артём Тихонов,tikhonov32,40
+voice,Митя Хамидулин,kkkkkk13_13,30
+voice,Знамбо,znambo,20
+voice,Юдкин,yudkiin,10

@@ -149,5 +149,4 @@ def parse_publish_date(raw: str) -> date:
     if re.fullmatch(r"\d{1,2}\.\d{1,2}", value):
         day, month = (int(part) for part in value.split("."))
         return date(today.year, month, day)
-    raise ValueError("Введите дату в формате YYYY-MM-DD или DD.MM.")
-
+    raise ValueError("Введите дату в формате YYYY-MM-DD, DD.MM или D.M.")

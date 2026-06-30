@@ -36,6 +36,10 @@ def _format_date(value: Any) -> str:
     return str(value)
 
 
+def _format_publish_date(value: Any) -> str:
+    return _format_date(value) if value else "не указана"
+
+
 def _line(label: str, value: Any) -> str:
     value_text = str(value).strip() if value else "нет"
     return f"{label}: {value_text}"
@@ -54,7 +58,7 @@ def format_video_card(
             header,
             f"ID: {row.get('id', 'новая')}",
             _line("Статус", row.get("status")),
-            _line("Дата", _format_date(row.get("publish_date"))),
+            _line("Дата публикации", _format_publish_date(row.get("publish_date"))),
             _line("Instagram", row.get("instagram_url")),
             _line("Instagram ID", row.get("instagram_id")),
             _line("YouTube", row.get("youtube_url")),
@@ -75,7 +79,7 @@ def format_final_card(row: dict[str, Any]) -> str:
     return "\n".join(
         [
             "Видео проверено и добавлено в отчёт",
-            _line("Дата", _format_date(row.get("publish_date"))),
+            _line("Дата публикации", _format_publish_date(row.get("publish_date"))),
             _line("Instagram", row.get("instagram_url")),
             _line("YouTube", row.get("youtube_url")),
             _line("TikTok", row.get("tiktok_url")),
@@ -95,4 +99,3 @@ def format_batch_summary(batch: dict[str, Any]) -> str:
         f"возможных дублей {batch.get('duplicate_count', 0)}, "
         f"проблемных {batch.get('problem_count', 0)}"
     )
-

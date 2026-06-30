@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from collections import Counter
+from pathlib import Path
 
 from bot.links import (
     normalize_instagram,
@@ -9,6 +11,7 @@ from bot.links import (
     normalize_youtube,
     parse_publish_date,
 )
+from scripts.seed_people import iter_rows
 
 
 class LinkNormalizationTests(unittest.TestCase):
@@ -42,7 +45,18 @@ class LinkNormalizationTests(unittest.TestCase):
         self.assertEqual(value.month, 7)
         self.assertEqual(value.day, 1)
 
+    def test_parse_d_m(self) -> None:
+        value = parse_publish_date("3.7")
+        self.assertEqual(value.month, 7)
+        self.assertEqual(value.day, 3)
+
+    def test_live_seed_role_counts(self) -> None:
+        rows = iter_rows(Path("people.live-seed.csv"))
+        counts = Counter(row["role"] for row in rows)
+        self.assertEqual(counts["author"], 10)
+        self.assertEqual(counts["montage"], 13)
+        self.assertEqual(counts["voice"], 5)
+
 
 if __name__ == "__main__":
     unittest.main()
-

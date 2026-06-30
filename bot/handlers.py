@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import psycopg
@@ -188,9 +188,23 @@ def handle_callback(callback: dict[str, Any]) -> None:
         show_people(tg, actor)
     elif data == "cmd:help":
         send_help(tg, actor)
-    elif data == "date:today":
-        today = datetime.now(get_settings().tz).date().isoformat()
-        handle_new_date(tg, actor, today)
+    elif data.startswith("adm:date:"):
+        _, _, raw_video_id, raw_batch_id, raw_index = data.split(":", 4)
+        show_admin_date_options(tg, actor, int(raw_video_id), int(raw_batch_id), int(raw_index), message_id)
+    elif data.startswith("adm:setdate:"):
+        _, _, raw_video_id, raw_batch_id, raw_index, preset = data.split(":", 5)
+        set_admin_date_preset(
+            tg,
+            actor,
+            int(raw_video_id),
+            int(raw_batch_id),
+            int(raw_index),
+            preset,
+            message_id,
+        )
+    elif data.startswith("adm:manualdate:"):
+        _, _, raw_video_id, raw_batch_id, raw_index = data.split(":", 4)
+        start_admin_manual_date(tg, actor, int(raw_video_id), int(raw_batch_id), int(raw_index))
     elif data.startswith("p:"):
         _, short_role, raw_person_id = data.split(":", 2)
         handle_person_pick(tg, actor, short_role, int(raw_person_id))
@@ -315,8 +329,8 @@ def handle_session_message(
 ) -> None:
     if state == "new:instagram":
         handle_new_instagram(tg, actor, data, text)
-    elif state == "new:date":
-        handle_new_date(tg, actor, text)
+    elif state == "admin:date":
+        handle_admin_date_message(tg, actor, data, text)
     elif state == "new:author_manual":
         handle_manual_person_value(tg, actor, "a", text)
     elif state == "new:voice_manual":
@@ -365,32 +379,6 @@ def handle_new_instagram(
         return
 
     data.update({"instagram_url": link.url, "instagram_id": link.external_id})
-    db.set_session(
-        tg_id=actor.tg_id,
-        chat_id=actor.chat_id,
-        username=actor.username,
-        state="new:date",
-        data=data,
-    )
-    tg.send_message(
-        actor.chat_id,
-        "Укажите дату публикации: YYYY-MM-DD или DD.MM.",
-        inline_keyboard([[("Сегодня", "date:today")]]),
-    )
-
-
-def handle_new_date(tg: TelegramClient, actor: Actor, text: str) -> None:
-    session = db.get_session(actor.tg_id)
-    if not session:
-        tg.send_message(actor.chat_id, "Начните заявку заново: /new_video.")
-        return
-    data = session.get("data") or {}
-    try:
-        publish_date = parse_publish_date(text)
-    except ValueError as exc:
-        tg.send_message(actor.chat_id, str(exc), inline_keyboard([[("Сегодня", "date:today")]]))
-        return
-    data["publish_date"] = publish_date.isoformat()
     db.set_session(
         tg_id=actor.tg_id,
         chat_id=actor.chat_id,
@@ -646,10 +634,11 @@ def handle_preview_edit(tg: TelegramClient, actor: Actor) -> None:
         tg_id=actor.tg_id,
         chat_id=actor.chat_id,
         username=actor.username,
-        state="new:date",
+        state="new:author",
         data=keep,
     )
-    tg.send_message(actor.chat_id, "Ок, оставляю Instagram и пройдём поля заново. Укажите дату.", inline_keyboard([[("Сегодня", "date:today")]]))
+    tg.send_message(actor.chat_id, "Ок, оставляю Instagram и пройдём поля заново.")
+    ask_people(tg, actor, "author")
 
 
 def submit_video(tg: TelegramClient, actor: Actor) -> None:
@@ -703,7 +692,7 @@ def update_revision_video(actor: Actor, video_id: int, data: dict[str, Any]) -> 
                 """
                 UPDATE videos
                 SET status = 'pending',
-                    publish_date = %s,
+                    publish_date = COALESCE(%s, publish_date),
                     instagram_url = %s,
                     instagram_id = %s,
                     youtube_url = %s,
@@ -1043,14 +1032,11 @@ def start_revision(tg: TelegramClient, actor: Actor, video_id: int) -> None:
         tg_id=actor.tg_id,
         chat_id=actor.chat_id,
         username=actor.username,
-        state="new:date",
+        state="new:author",
         data=data,
     )
-    tg.send_message(
-        actor.chat_id,
-        "Ок, исправим заявку и вернём её в очередь. Укажите дату публикации.",
-        inline_keyboard([[("Сегодня", "date:today")]]),
-    )
+    tg.send_message(actor.chat_id, "Ок, исправим заявку и вернём её в очередь.")
+    ask_people(tg, actor, "author")
 
 
 def show_admin(tg: TelegramClient, actor: Actor) -> None:
@@ -1184,12 +1170,154 @@ def admin_video_keyboard(
         next_index = 0
     return inline_keyboard(
         [
+            [("Указать дату", f"adm:date:{video_id}:{batch_id}:{index}")],
             [("Одобрить", f"adm:a:{video_id}:{batch_id}:{index}"), ("Правка", f"adm:r:{video_id}:{batch_id}:{index}")],
             [("Дубль", f"adm:d:{video_id}:{batch_id}:{index}"), ("Удалить", f"adm:x:{video_id}:{batch_id}:{index}")],
             [("Назад", f"adm:open:{batch_id}:{prev_index}"), ("Дальше", f"adm:open:{batch_id}:{next_index}")],
             [("К пачке", f"adm:sum:{batch_id}")],
         ]
     )
+
+
+def show_admin_date_options(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    batch_id: int,
+    index: int,
+    edit_message_id: int | None = None,
+) -> None:
+    if not require_admin(tg, actor):
+        return
+    text = "Выберите дату публикации или введите вручную."
+    keyboard = inline_keyboard(
+        [
+            [("Сегодня", f"adm:setdate:{video_id}:{batch_id}:{index}:today")],
+            [("Вчера", f"adm:setdate:{video_id}:{batch_id}:{index}:yesterday")],
+            [("Позавчера", f"adm:setdate:{video_id}:{batch_id}:{index}:before_yesterday")],
+            [("Ввести вручную", f"adm:manualdate:{video_id}:{batch_id}:{index}")],
+            [("Назад", f"adm:open:{batch_id}:{index}")],
+        ]
+    )
+    if edit_message_id:
+        try:
+            tg.edit_message_text(actor.chat_id, edit_message_id, text, keyboard)
+            return
+        except Exception:
+            pass
+    tg.send_message(actor.chat_id, text, keyboard)
+
+
+def set_admin_date_preset(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    batch_id: int,
+    index: int,
+    preset: str,
+    edit_message_id: int | None = None,
+) -> None:
+    today = datetime.now(get_settings().tz).date()
+    offsets = {
+        "today": 0,
+        "yesterday": 1,
+        "before_yesterday": 2,
+    }
+    if preset not in offsets:
+        tg.send_message(actor.chat_id, "Неизвестный вариант даты.")
+        return
+    publish_date = today - timedelta(days=offsets[preset])
+    set_video_publish_date(tg, actor, video_id, batch_id, index, publish_date.isoformat(), edit_message_id)
+
+
+def start_admin_manual_date(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    batch_id: int,
+    index: int,
+) -> None:
+    if not require_admin(tg, actor):
+        return
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state="admin:date",
+        data={"video_id": video_id, "batch_id": batch_id, "index": index},
+    )
+    tg.send_message(actor.chat_id, "Введите дату публикации: YYYY-MM-DD, DD.MM или D.M.")
+
+
+def handle_admin_date_message(
+    tg: TelegramClient,
+    actor: Actor,
+    data: dict[str, Any],
+    text: str,
+) -> None:
+    if not require_admin(tg, actor):
+        return
+    try:
+        publish_date = parse_publish_date(text)
+    except ValueError as exc:
+        tg.send_message(actor.chat_id, str(exc))
+        return
+    db.clear_session(actor.tg_id)
+    set_video_publish_date(
+        tg,
+        actor,
+        int(data["video_id"]),
+        int(data["batch_id"]),
+        int(data["index"]),
+        publish_date.isoformat(),
+    )
+
+
+def set_video_publish_date(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    batch_id: int,
+    index: int,
+    publish_date: str,
+    edit_message_id: int | None = None,
+) -> None:
+    if not require_admin(tg, actor):
+        return
+    with db.transaction() as conn:
+        before = get_video_by_id(conn, video_id)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE videos
+                SET publish_date = %s,
+                    publish_date_set_by_tg_id = %s,
+                    publish_date_set_by_username = %s,
+                    publish_date_set_at = now(),
+                    updated_at = now()
+                WHERE id = %s AND status = 'pending'
+                RETURNING id
+                """,
+                (publish_date, actor.tg_id, actor.username, video_id),
+            )
+            updated = cur.fetchone()
+            if not updated:
+                tg.send_message(actor.chat_id, "Заявка уже обработана или недоступна.")
+                return
+        recalculate_batch(conn, batch_id)
+        db.log_event(
+            conn,
+            entity_type="video",
+            entity_id=video_id,
+            action="publish_date_set",
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+            before_data={"publish_date": before.get("publish_date") if before else None},
+            after_data={"publish_date": publish_date},
+        )
+    formatted = parse_publish_date(publish_date).strftime("%d.%m.%Y")
+    tg.send_message(actor.chat_id, f"Дата публикации установлена: {formatted}")
+    show_queue_item(tg, actor, batch_id, index, edit_message_id)
 
 
 def acquire_admin_lock(video_id: int, actor: Actor) -> None:
@@ -1224,6 +1352,15 @@ def approve_one(
 ) -> None:
     if not require_admin(tg, actor):
         return
+    current = get_video_by_id_outside(video_id)
+    if not current or current.get("status") != "pending":
+        tg.send_message(actor.chat_id, "Заявка уже обработана другим админом.")
+        show_queue_item(tg, actor, batch_id, index, edit_message_id)
+        return
+    if not current.get("publish_date"):
+        tg.send_message(actor.chat_id, "Сначала укажи дату публикации.")
+        show_queue_item(tg, actor, batch_id, index, edit_message_id)
+        return
     video = approve_video_in_db(video_id, actor)
     if not video:
         tg.send_message(actor.chat_id, "Заявка уже обработана другим админом.")
@@ -1247,7 +1384,7 @@ def approve_video_in_db(video_id: int, actor: Actor) -> dict[str, Any] | None:
                     checked_by_username = %s,
                     checked_at = now(),
                     updated_at = now()
-                WHERE id = %s AND status = 'pending'
+                WHERE id = %s AND status = 'pending' AND publish_date IS NOT NULL
                 RETURNING id
                 """,
                 (actor.tg_id, actor.username, video_id),
