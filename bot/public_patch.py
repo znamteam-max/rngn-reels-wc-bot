@@ -32,6 +32,7 @@ _ORIGINAL_HANDLE_MESSAGE = h.handle_message
 _ORIGINAL_HANDLE_CALLBACK = h.handle_callback
 _ORIGINAL_IS_ADMIN = h.is_admin
 _ORIGINAL_SEND_MAIN_MENU = h._send_main_menu
+_ORIGINAL_INSERT_PENDING_VIDEO = h.insert_pending_video
 
 
 def _ensure_fun_flags_table() -> None:
@@ -155,6 +156,113 @@ def _test_admin_chat(tg: TelegramClient, actor: h.Actor) -> None:
         )
 
 
+def insert_pending_video(actor: h.Actor, data: dict[str, Any]) -> dict[str, Any]:
+    instagram_id = data.get("instagram_id")
+    if not instagram_id:
+        return _ORIGINAL_INSERT_PENDING_VIDEO(actor, data)
+
+    with db.transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, batch_id
+                FROM videos
+                WHERE instagram_id = %s
+                  AND status = 'deleted'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (instagram_id,),
+            )
+            deleted = cur.fetchone()
+            if not deleted:
+                return _ORIGINAL_INSERT_PENDING_VIDEO(actor, data)
+
+            old_batch_id = deleted.get("batch_id")
+            batch_id = h.ensure_open_batch(conn, actor)
+            cur.execute(
+                """
+                UPDATE videos
+                SET status = 'pending',
+                    publish_date = %s,
+                    instagram_url = %s,
+                    instagram_id = %s,
+                    youtube_url = %s,
+                    youtube_id = %s,
+                    tiktok_url = %s,
+                    tiktok_id = %s,
+                    vk_url = %s,
+                    vk_id = %s,
+                    author_id = %s,
+                    author_name = %s,
+                    author_username = %s,
+                    montage_id = %s,
+                    montage_name = %s,
+                    montage_username = %s,
+                    montage_same_as_author = %s,
+                    voice_id = %s,
+                    voice_name = %s,
+                    voice_username = %s,
+                    added_by_tg_id = %s,
+                    added_by_username = %s,
+                    checked_by_tg_id = NULL,
+                    checked_by_username = NULL,
+                    checked_at = NULL,
+                    publish_date_set_by_tg_id = NULL,
+                    publish_date_set_by_username = NULL,
+                    publish_date_set_at = NULL,
+                    admin_message_chat_id = NULL,
+                    admin_message_id = NULL,
+                    admin_notified_at = NULL,
+                    batch_id = %s,
+                    comment = NULL,
+                    updated_at = now()
+                WHERE id = %s
+                RETURNING id
+                """,
+                (
+                    data.get("publish_date"),
+                    data.get("instagram_url"),
+                    data.get("instagram_id"),
+                    data.get("youtube_url"),
+                    data.get("youtube_id"),
+                    data.get("tiktok_url"),
+                    data.get("tiktok_id"),
+                    data.get("vk_url"),
+                    data.get("vk_id"),
+                    data.get("author_id"),
+                    data.get("author_name"),
+                    data.get("author_username"),
+                    data.get("montage_id"),
+                    data.get("montage_name"),
+                    data.get("montage_username"),
+                    bool(data.get("montage_same_as_author")),
+                    data.get("voice_id"),
+                    data.get("voice_name"),
+                    data.get("voice_username"),
+                    actor.tg_id,
+                    actor.username,
+                    batch_id,
+                    deleted["id"],
+                ),
+            )
+
+        if old_batch_id and int(old_batch_id) != int(batch_id):
+            h.recalculate_batch(conn, int(old_batch_id))
+        h.recalculate_batch(conn, int(batch_id))
+        db.log_event(
+            conn,
+            entity_type="video",
+            entity_id=int(deleted["id"]),
+            action="deleted_resubmitted",
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+            before_data={"status": "deleted", "batch_id": old_batch_id},
+            after_data={"status": "pending", "batch_id": batch_id},
+        )
+        return h.get_video_by_id(conn, int(deleted["id"]))
+
+
 def handle_message(message: dict[str, Any]) -> None:
     actor = h._actor_from_message(message)
     if not actor:
@@ -220,6 +328,7 @@ def handle_callback(callback: dict[str, Any]) -> None:
 
 h.is_admin = is_admin
 h._send_main_menu = _send_main_menu
+h.insert_pending_video = insert_pending_video
 h.handle_message = handle_message
 h.handle_callback = handle_callback
 
