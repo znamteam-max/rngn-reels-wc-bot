@@ -8,7 +8,7 @@ from bot import handlers as h
 from bot.config import get_settings
 from bot.telegram import TelegramClient, inline_keyboard
 
-TARGET_USER_ID = 52203584
+TARGET_USER_ID = 338354945
 HEARING_MODE_KEY = f"hearing_mode:{TARGET_USER_ID}"
 HEARING_REPLIES = (
     "А?",
