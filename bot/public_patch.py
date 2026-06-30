@@ -92,7 +92,7 @@ def _send_main_menu(tg: TelegramClient, actor: h.Actor, text: str) -> None:
     ]
     if h.is_admin(actor.tg_id):
         rows.insert(1, [("Админка", "cmd:admin"), ("Сводка", "cmd:summary")])
-        rows.insert(2, [("Переотправить pending", "cmd:resend_pending")])
+        rows.insert(2, [("Переотправить pending", "cmd:resend_pending"), ("Тест админ-чата", "cmd:test_admin_chat")])
     if h.is_superadmin(actor.tg_id):
         status = "вкл" if _hearing_mode_enabled() else "выкл"
         rows.append([(f"👂 Режим «А?» сейчас: {status}", "fun:hearing:status")])
@@ -127,6 +127,34 @@ def _toggle_hearing_mode(tg: TelegramClient, actor: h.Actor, enabled: bool | Non
     )
 
 
+def _test_admin_chat(tg: TelegramClient, actor: h.Actor) -> None:
+    if not h.require_admin(tg, actor):
+        return
+    settings = get_settings()
+    try:
+        response = tg.send_message(
+            settings.admin_chat_id,
+            f"Тест админского чата от @{actor.username}" if actor.username else f"Тест админского чата от {actor.tg_id}",
+        )
+        message_id = h._message_id(response)
+        tg.send_message(
+            actor.chat_id,
+            "ADMIN_CHAT_ID работает.\n"
+            f"chat_id: {settings.admin_chat_id}\n"
+            f"message_id: {message_id if message_id is not None else 'unknown'}",
+        )
+    except Exception as exc:
+        payload = h.telegram_failure_payload(exc, int(settings.admin_chat_id), "test_admin_chat")
+        h.record_system_log("admin_chat_test_failed", "telegram_chat", None, payload, actor)
+        tg.send_message(
+            actor.chat_id,
+            "ADMIN_CHAT_ID не работает.\n"
+            f"chat_id: {settings.admin_chat_id}\n"
+            f"Telegram error: {payload.get('telegram_status_code', '?')} "
+            f"{payload.get('telegram_description') or payload.get('error')}",
+        )
+
+
 def handle_message(message: dict[str, Any]) -> None:
     actor = h._actor_from_message(message)
     if not actor:
@@ -138,7 +166,6 @@ def handle_message(message: dict[str, Any]) -> None:
         actor.tg_id == TARGET_USER_ID
         and actor.chat_type in {"group", "supergroup"}
         and text
-        and not text.startswith("/")
         and _hearing_mode_enabled()
     ):
         _reply_like_bad_hearing(tg, message, actor)
@@ -149,6 +176,9 @@ def handle_message(message: dict[str, Any]) -> None:
         if command == "/start" and rest.lower() in {"submit", "new_video", "new"}:
             h.db.clear_session(actor.tg_id)
             h.start_new_video(tg, actor)
+            return
+        if command == "/test_admin_chat":
+            _test_admin_chat(tg, actor)
             return
         if command == "/hearing_on":
             _toggle_hearing_mode(tg, actor, True)
@@ -168,6 +198,14 @@ def handle_callback(callback: dict[str, Any]) -> None:
     if not actor:
         return
     data = callback.get("data") or ""
+    if data == "cmd:test_admin_chat":
+        tg = TelegramClient()
+        try:
+            tg.answer_callback_query(callback["id"])
+        except Exception:
+            pass
+        _test_admin_chat(tg, actor)
+        return
     if data.startswith("fun:hearing:"):
         tg = TelegramClient()
         try:
