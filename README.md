@@ -34,11 +34,13 @@ DATABASE_URL=Neon Postgres connection string
 ADMIN_CHAT_ID=-5520370963
 GOOGLE_SERVICE_ACCOUNT_JSON_B64=base64 encoded service account JSON
 GOOGLE_SHEETS_SPREADSHEET_ID=Google Spreadsheet ID
+YOUTUBE_API_KEY=optional YouTube Data API v3 key for metrics
+CRON_SECRET=optional secret for /api/cron/youtube-metrics
 TZ=Europe/Helsinki
 BOOTSTRAP_SUPERADMIN_IDS=comma-separated Telegram IDs for first setup
 ```
 
-`BOT_TOKEN`, `DATABASE_URL`, `WEBHOOK_SECRET`, and `GOOGLE_SERVICE_ACCOUNT_JSON_B64` must never be printed or committed.
+`BOT_TOKEN`, `DATABASE_URL`, `WEBHOOK_SECRET`, `GOOGLE_SERVICE_ACCOUNT_JSON_B64`, `YOUTUBE_API_KEY`, and `CRON_SECRET` must never be printed or committed.
 
 The bot also accepts legacy aliases `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_SECRET`, `TIMEZONE`, and `DEFAULT_TIMEZONE`.
 
@@ -106,9 +108,15 @@ Encode the service account JSON for Vercel:
 
 Put that value into `GOOGLE_SERVICE_ACCOUNT_JSON_B64`.
 
+YouTube metrics sync uses a separate tab named `MetricsRaw`. The bot creates it when possible and appends successful daily YouTube snapshots with these columns:
+
+```text
+captured_at,video_id,platform,platform_video_id,views,likes,comments,shares,source_status,error_message,instagram_url,youtube_url,author,montage,voice
+```
+
 ## Vercel Deploy
 
-The project uses `api/webhook.py` and `api/health.py` as Python functions. `vercel.json` excludes the old Cloudflare/Node assets from the Python bundle.
+The project uses `api/webhook.py`, `api/health.py`, and `api/cron/youtube-metrics.py` as Python functions. `vercel.json` excludes the old Cloudflare/Node assets from the Python bundle and schedules YouTube metrics sync daily at `0 3 * * *`.
 
 Deploy:
 
@@ -123,7 +131,16 @@ curl https://YOUR-VERCEL-DOMAIN.vercel.app/api/health
 curl https://YOUR-VERCEL-DOMAIN.vercel.app/api/webhook
 ```
 
-Both return JSON and include only missing environment variable names, never secret values.
+Both return JSON and include only missing environment variable names, never secret values. `YOUTUBE_API_KEY` and `CRON_SECRET` are reported as optional missing env names and do not block the main bot.
+
+Cron metrics endpoint:
+
+```text
+GET /api/cron/youtube-metrics
+Authorization: Bearer <CRON_SECRET>
+```
+
+If `CRON_SECRET` is missing, the endpoint returns `500` with `CRON_SECRET not configured`. If the authorization header is wrong, it returns `401`.
 
 ## Telegram Webhook
 
@@ -160,6 +177,10 @@ Admin commands:
 /search
 /sync_sheets
 /resend_pending
+/sync_youtube_metrics
+/metrics_youtube_today
+/metrics_youtube_all
+/metrics_video id
 /edit_video id field value
 ```
 
@@ -191,6 +212,27 @@ After approval:
 If Google Sheets is temporarily unavailable, the video remains `approved`; the failure is recorded in `logs` as `sync_sheets_failed`. Run `/sync_sheets` later to upsert approved videos again.
 
 Use `/chatid` in the target admin group or supergroup to get the real `chat_id`, then update `ADMIN_CHAT_ID` in Vercel and run `/resend_pending`.
+
+## YouTube Metrics
+
+Only YouTube metrics are supported in the first metrics module. Instagram, TikTok, and VK metrics are intentionally untouched.
+
+`/sync_youtube_metrics` is admin-only. It selects approved videos with `youtube_url`, extracts or fills `youtube_id`, requests YouTube Data API v3 statistics in batches of 50 IDs, stores one daily snapshot per video in `video_metrics_snapshots`, updates latest values on `videos`, and appends successful rows to `MetricsRaw`.
+
+If `YOUTUBE_API_KEY` is missing, `/sync_youtube_metrics` replies:
+
+```text
+YOUTUBE_API_KEY не настроен. Добавь ключ в Vercel env.
+```
+
+Admin metrics commands:
+
+```text
+/sync_youtube_metrics
+/metrics_youtube_today
+/metrics_youtube_all
+/metrics_video <video_id>
+```
 
 ## Supported Link Normalization
 

@@ -89,6 +89,23 @@ CREATE TABLE IF NOT EXISTS logs (
     created_at timestamptz DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS video_metrics_snapshots (
+    id bigserial PRIMARY KEY,
+    video_id bigint NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    platform text NOT NULL,
+    platform_video_id text,
+    platform_url text,
+    captured_at timestamptz NOT NULL DEFAULT now(),
+    views bigint,
+    likes bigint,
+    comments bigint,
+    shares bigint,
+    source_status text NOT NULL DEFAULT 'ok',
+    error_message text,
+    raw_data jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS user_sessions (
     tg_id bigint PRIMARY KEY,
     chat_id bigint NOT NULL,
@@ -105,6 +122,10 @@ CREATE INDEX IF NOT EXISTS idx_videos_publish_date ON videos(publish_date);
 CREATE INDEX IF NOT EXISTS idx_videos_batch_id ON videos(batch_id);
 CREATE INDEX IF NOT EXISTS idx_people_role_active ON people(role, is_active);
 CREATE INDEX IF NOT EXISTS idx_logs_entity ON logs(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_metrics_video_platform_time
+ON video_metrics_snapshots(video_id, platform, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_metrics_platform_time
+ON video_metrics_snapshots(platform, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_updated_at ON user_sessions(updated_at);
 
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS publish_date_set_by_tg_id bigint NULL;
@@ -117,6 +138,10 @@ ALTER TABLE videos ADD COLUMN IF NOT EXISTS admin_notified_at timestamptz NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS author_username text NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS montage_username text NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS voice_username text NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_views bigint NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_likes bigint NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_comments bigint NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_last_sync_at timestamptz NULL;
 
 UPDATE videos v
 SET author_username = p.username

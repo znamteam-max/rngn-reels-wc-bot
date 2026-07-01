@@ -8,5 +8,11 @@
       "maxDuration": 300,
       "excludeFiles": "{node_modules/**,.wrangler/**,public/**,releases/**,reference/**,src/**,test/**,tests/**,*.md,package-lock.json,wrangler.toml,wrangler.toml.example}"
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/youtube-metrics",
+      "schedule": "0 3 * * *"
+    }
+  ]
 }

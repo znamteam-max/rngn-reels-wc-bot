@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 
-from bot.config import missing_env_names
+from bot.config import missing_env_names, optional_missing_env_names
 
 
 class handler(BaseHTTPRequestHandler):
@@ -17,6 +17,7 @@ class handler(BaseHTTPRequestHandler):
             "service": "rngn-reels-wc-bot",
             "time": datetime.now(timezone.utc).isoformat(),
             "missing_env": missing_env_names(),
+            "optional_missing_env": optional_missing_env_names(),
         }
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_response(200)
@@ -25,4 +26,3 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
-

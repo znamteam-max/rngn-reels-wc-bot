@@ -50,6 +50,8 @@ class Settings:
     webhook_secret: str | None
     google_service_account_json_b64: str | None
     google_sheets_spreadsheet_id: str | None
+    youtube_api_key: str | None
+    cron_secret: str | None
     admin_chat_id: int
     timezone: str
     bootstrap_superadmin_ids: set[int]
@@ -69,6 +71,8 @@ def get_settings() -> Settings:
         webhook_secret=_env("WEBHOOK_SECRET", "TELEGRAM_WEBHOOK_SECRET"),
         google_service_account_json_b64=_env("GOOGLE_SERVICE_ACCOUNT_JSON_B64"),
         google_sheets_spreadsheet_id=_env("GOOGLE_SHEETS_SPREADSHEET_ID"),
+        youtube_api_key=_env("YOUTUBE_API_KEY"),
+        cron_secret=_env("CRON_SECRET"),
         admin_chat_id=_int_env("ADMIN_CHAT_ID", DEFAULT_ADMIN_CHAT_ID),
         timezone=_env("TIMEZONE", "TZ", "DEFAULT_TIMEZONE", default=DEFAULT_TIMEZONE) or DEFAULT_TIMEZONE,
         bootstrap_superadmin_ids=_int_list_env("BOOTSTRAP_SUPERADMIN_IDS", "ALLOWED_TELEGRAM_USER_IDS"),
@@ -88,4 +92,14 @@ def missing_env_names() -> list[str]:
         missing.append("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
     if not settings.google_sheets_spreadsheet_id:
         missing.append("GOOGLE_SHEETS_SPREADSHEET_ID")
+    return missing
+
+
+def optional_missing_env_names() -> list[str]:
+    settings = get_settings()
+    missing: list[str] = []
+    if not settings.youtube_api_key:
+        missing.append("YOUTUBE_API_KEY")
+    if not settings.cron_secret:
+        missing.append("CRON_SECRET")
     return missing

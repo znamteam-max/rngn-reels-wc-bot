@@ -14,6 +14,11 @@ REQUIRED_GROUPS = {
     "TZ": ("TZ", "TIMEZONE", "DEFAULT_TIMEZONE"),
 }
 
+OPTIONAL_GROUPS = {
+    "YOUTUBE_API_KEY": ("YOUTUBE_API_KEY",),
+    "CRON_SECRET": ("CRON_SECRET",),
+}
+
 
 def has_any(names: tuple[str, ...]) -> bool:
     return any(bool(os.environ.get(name)) for name in names)
@@ -27,6 +32,11 @@ def main() -> int:
             print(f"- {name}")
         return 1
     print("All required env groups are present.")
+    optional_missing = [label for label, names in OPTIONAL_GROUPS.items() if not has_any(names)]
+    if optional_missing:
+        print("Optional env groups missing:")
+        for name in optional_missing:
+            print(f"- {name}")
     return 0
 
 

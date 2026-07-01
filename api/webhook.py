@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from bot.config import get_settings, missing_env_names
+from bot.config import get_settings, missing_env_names, optional_missing_env_names
 from bot.public_patch import handle_update, record_system_log
 
 
@@ -34,6 +34,7 @@ class handler(BaseHTTPRequestHandler):
                 "service": "rngn-reels-wc-bot",
                 "time": datetime.now(timezone.utc).isoformat(),
                 "missing_env": missing_env_names(),
+                "optional_missing_env": optional_missing_env_names(),
             },
         )
 

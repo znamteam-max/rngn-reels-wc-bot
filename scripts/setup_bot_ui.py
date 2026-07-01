@@ -17,6 +17,10 @@ COMMANDS = [
     ("chatid", "Показать ID текущего чата"),
     ("resend_pending", "Переотправить pending в админский чат"),
     ("test_admin_chat", "Проверить админский чат"),
+    ("sync_youtube_metrics", "Обновить YouTube-метрики"),
+    ("metrics_youtube_today", "YouTube сегодня"),
+    ("metrics_youtube_all", "YouTube всего"),
+    ("metrics_video", "Метрики одного видео"),
 ]
 
 

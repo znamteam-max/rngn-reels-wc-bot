@@ -6,7 +6,7 @@ from typing import Any
 
 import psycopg
 
-from bot import db, sheets
+from bot import db, metrics, sheets
 from bot.config import get_settings
 from bot.links import (
     is_skip_text,
@@ -247,6 +247,14 @@ def handle_message(message: dict[str, Any]) -> None:
             start_or_run_search(tg, actor, rest)
         elif command == "/sync_sheets":
             sync_sheets_command(tg, actor)
+        elif command == "/sync_youtube_metrics":
+            sync_youtube_metrics_command(tg, actor)
+        elif command == "/metrics_youtube_today":
+            metrics_youtube_today_command(tg, actor)
+        elif command == "/metrics_youtube_all":
+            metrics_youtube_all_command(tg, actor)
+        elif command == "/metrics_video":
+            metrics_video_command(tg, actor, rest)
         elif command == "/resend_pending":
             resend_pending_command(tg, actor)
         elif command == "/add_person":
@@ -411,6 +419,10 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
             "/search — поиск",
             "/sync_sheets — повторная синхронизация Google Sheets",
             "/resend_pending — переотправить pending в админский чат",
+            "/sync_youtube_metrics — обновить YouTube-метрики",
+            "/metrics_youtube_today — YouTube сегодня",
+            "/metrics_youtube_all — YouTube всего",
+            "/metrics_video id — метрики одного видео",
             "",
             "Для суперадминов:",
             "/add_person role name [tg_id] [@username]",
@@ -1968,6 +1980,38 @@ def sync_sheets_command(tg: TelegramClient, actor: Actor) -> None:
                 actor,
             )
     tg.send_message(actor.chat_id, f"Синхронизация завершена. Успешно: {ok}, ошибок: {failed}.")
+
+
+def sync_youtube_metrics_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_admin(tg, actor):
+        return
+    result = metrics.sync_youtube_metrics(
+        actor_tg_id=actor.tg_id,
+        actor_username=actor.username,
+    )
+    tg.send_message(actor.chat_id, metrics.format_sync_result(result))
+
+
+def metrics_youtube_today_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_admin(tg, actor):
+        return
+    tg.send_message(actor.chat_id, metrics.format_youtube_today())
+
+
+def metrics_youtube_all_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_admin(tg, actor):
+        return
+    tg.send_message(actor.chat_id, metrics.format_youtube_all())
+
+
+def metrics_video_command(tg: TelegramClient, actor: Actor, rest: str) -> None:
+    if not require_admin(tg, actor):
+        return
+    value = rest.strip()
+    if not value.isdigit():
+        tg.send_message(actor.chat_id, "Формат: /metrics_video <video_id>")
+        return
+    tg.send_message(actor.chat_id, metrics.format_video_metrics(int(value)))
 
 
 def start_add_links(tg: TelegramClient, actor: Actor, video_id: int) -> None:

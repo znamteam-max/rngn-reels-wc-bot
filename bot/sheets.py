@@ -13,6 +13,7 @@ from bot.messages import person_value
 
 
 SHEET_NAME = "Videos"
+METRICS_SHEET_NAME = "MetricsRaw"
 SHEET_COLUMNS = [
     "id",
     "status",
@@ -34,6 +35,23 @@ SHEET_COLUMNS = [
     "checked_at",
     "batch_id",
     "comment",
+]
+METRICS_COLUMNS = [
+    "captured_at",
+    "video_id",
+    "platform",
+    "platform_video_id",
+    "views",
+    "likes",
+    "comments",
+    "shares",
+    "source_status",
+    "error_message",
+    "instagram_url",
+    "youtube_url",
+    "author",
+    "montage",
+    "voice",
 ]
 
 
@@ -145,3 +163,124 @@ def upsert_video(video: dict[str, Any]) -> int:
         return int(match.group(1))
     found = _find_row_by_id(service, spreadsheet_id, int(video["id"]))
     return int(found or 0)
+
+
+def _sheet_titles(service, spreadsheet_id: str) -> set[str]:
+    spreadsheet = (
+        service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="sheets.properties.title")
+        .execute()
+    )
+    return {
+        sheet.get("properties", {}).get("title", "")
+        for sheet in spreadsheet.get("sheets", [])
+    }
+
+
+def _ensure_metrics_sheet(service, spreadsheet_id: str) -> None:
+    if METRICS_SHEET_NAME not in _sheet_titles(service, spreadsheet_id):
+        (
+            service.spreadsheets()
+            .batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": [{"addSheet": {"properties": {"title": METRICS_SHEET_NAME}}}]},
+            )
+            .execute()
+        )
+    (
+        service.spreadsheets()
+        .values()
+        .update(
+            spreadsheetId=spreadsheet_id,
+            range=f"{METRICS_SHEET_NAME}!A1:O1",
+            valueInputOption="USER_ENTERED",
+            body={"values": [METRICS_COLUMNS]},
+        )
+        .execute()
+    )
+
+
+def _metric_date_key(value: Any) -> str:
+    if hasattr(value, "date"):
+        return value.date().isoformat()
+    text = str(value or "")
+    return text[:10]
+
+
+def _existing_metric_keys(service, spreadsheet_id: str) -> set[tuple[str, str, str]]:
+    result = (
+        service.spreadsheets()
+        .values()
+        .get(spreadsheetId=spreadsheet_id, range=f"{METRICS_SHEET_NAME}!A2:C")
+        .execute()
+    )
+    keys: set[tuple[str, str, str]] = set()
+    for row in result.get("values", []):
+        if len(row) >= 3:
+            keys.add((str(row[1]), str(row[2]), _metric_date_key(row[0])))
+    return keys
+
+
+def metric_snapshot_to_row(snapshot: dict[str, Any]) -> list[str]:
+    values = {
+        "captured_at": snapshot.get("captured_at"),
+        "video_id": snapshot.get("video_id"),
+        "platform": snapshot.get("platform"),
+        "platform_video_id": snapshot.get("platform_video_id"),
+        "views": snapshot.get("views"),
+        "likes": snapshot.get("likes"),
+        "comments": snapshot.get("comments"),
+        "shares": snapshot.get("shares"),
+        "source_status": snapshot.get("source_status"),
+        "error_message": snapshot.get("error_message"),
+        "instagram_url": snapshot.get("instagram_url"),
+        "youtube_url": snapshot.get("youtube_url"),
+        "author": person_value(snapshot, "author"),
+        "montage": person_value(snapshot, "montage"),
+        "voice": person_value(snapshot, "voice") if snapshot.get("voice_name") else "",
+    }
+    return [_as_cell(values[column]) for column in METRICS_COLUMNS]
+
+
+def append_metric_snapshots(snapshots: list[dict[str, Any]]) -> int:
+    settings = get_settings()
+    if not settings.google_sheets_spreadsheet_id:
+        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured")
+
+    ok_snapshots = [snapshot for snapshot in snapshots if snapshot.get("source_status") == "ok"]
+    if not ok_snapshots:
+        return 0
+
+    service = _service()
+    spreadsheet_id = settings.google_sheets_spreadsheet_id
+    _ensure_metrics_sheet(service, spreadsheet_id)
+    existing = _existing_metric_keys(service, spreadsheet_id)
+
+    rows: list[list[str]] = []
+    for snapshot in ok_snapshots:
+        key = (
+            str(snapshot.get("video_id")),
+            str(snapshot.get("platform")),
+            _metric_date_key(snapshot.get("captured_at")),
+        )
+        if key in existing:
+            continue
+        existing.add(key)
+        rows.append(metric_snapshot_to_row(snapshot))
+
+    if not rows:
+        return 0
+
+    (
+        service.spreadsheets()
+        .values()
+        .append(
+            spreadsheetId=spreadsheet_id,
+            range=f"{METRICS_SHEET_NAME}!A:O",
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body={"values": rows},
+        )
+        .execute()
+    )
+    return len(rows)
