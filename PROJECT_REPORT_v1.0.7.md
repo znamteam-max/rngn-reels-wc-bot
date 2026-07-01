@@ -1,10 +1,11 @@
-# RNGN Reels WC Bot - Admin-Only Chat ID + Resend Report
+# RNGN Reels WC Bot - YouTube Metrics Module Report
 
 Version: `1.0.7`
-Date: `2026-06-30`
+Date: `2026-07-01`
 Local Project: `C:/Users/znambo/Documents/RNGN`
 GitHub Repo: `https://github.com/znamteam-max/rngn-reels-wc-bot`
 Production URL: `https://project-dcd2y.vercel.app`
+Webhook URL: `https://project-dcd2y.vercel.app/api/webhook`
 Bot: `@rngn_reels_wc_bot`
 
 ## Code And Deploy
@@ -12,152 +13,285 @@ Bot: `@rngn_reels_wc_bot`
 Main product commit:
 
 ```text
-f52a7f3 Release v1.0.7 admin-only Telegram flow
+c317d54 Add YouTube metrics sync
 ```
 
 Final clean Vercel deployment:
 
 ```text
-Deployment ID: dpl_DS1XwthqT3Hmu9APxYaFZcwczMRr
+Deployment ID: dpl_7vUwMLkSDYDBmiTQCM8MrXir7TPB
 Status: READY
-Deployment URL: https://project-dcd2y-m672wy1le-rngn2.vercel.app
+Deployment URL: https://project-dcd2y-cel444enb-rngn2.vercel.app
 Alias: https://project-dcd2y.vercel.app
 Functions:
 - api/health
 - api/webhook
+- api/cron/youtube-metrics
 ```
 
-Temporary protected runtime endpoints were used only to migrate/check production DB and were removed from final production code. Final check confirms `/api/runtime_admin` returns `404`.
+Temporary protected runtime endpoints were used only for DB migration and verification, then removed. Final production check confirms:
 
-## Product Changes
+```text
+GET /api/runtime_admin -> 404
+```
 
-- Removed `WORK_CHAT_ID` from the product flow and required env checks.
-- Review and approved cards now go only to `ADMIN_CHAT_ID`.
-- Added `/chatid`, usable in private, group, and supergroup chats, including `/chatid@rngn_reels_wc_bot`.
-- Added `/resend_pending` admin command and admin menu button.
-- Pending review cards store `admin_message_chat_id`, `admin_message_id`, and `admin_notified_at`.
-- Approval edits the stored admin review card to the approved card when possible, otherwise sends a new approved card to `ADMIN_CHAT_ID`.
-- Telegram admin delivery failures log `admin_notify_failed` with chat id, status code, and Telegram description.
-- If submit succeeds but admin notification fails, the user gets a private warning with recovery instructions.
-- `/new_video` is private-chat only; group calls instruct the user to open the bot in private.
-- Montage step now has `Смонтировал сам автор`; the DB stores `montage_same_as_author`.
-- Person names are displayed as `Name (@username)` or `Name (ник не указан)` in buttons, cards, and Google Sheets rows.
-- Cards no longer show empty `Проверил`, `Создано`, or empty `Комментарий` lines.
-- Added `scripts/setup_bot_ui.py` to configure Telegram commands and menu button.
-- Project version updated to `1.0.7` in `pyproject.toml` and `uv.lock`.
+## Implemented
+
+- Added `YOUTUBE_API_KEY` support as optional metrics env.
+- Added `CRON_SECRET` support for protected cron sync.
+- Health/webhook GET now include `optional_missing_env` without making metrics env fatal.
+- Added `video_metrics_snapshots` table for daily metrics snapshots.
+- Added latest YouTube columns on `videos`:
+  - `youtube_views`
+  - `youtube_likes`
+  - `youtube_comments`
+  - `youtube_last_sync_at`
+- Added YouTube API client using Data API v3 `videos?part=statistics`.
+- Reused/covered existing YouTube URL normalization for `youtu.be`, `watch?v=`, and `shorts/`.
+- Added admin commands:
+  - `/sync_youtube_metrics`
+  - `/metrics_youtube_today`
+  - `/metrics_youtube_all`
+  - `/metrics_video <video_id>`
+- Added `MetricsRaw` Google Sheets append sync.
+- Added protected cron endpoint:
+  - `GET /api/cron/youtube-metrics`
+  - requires `Authorization: Bearer <CRON_SECRET>`
+- Added Vercel Cron schedule:
+  - `0 3 * * *`
+- Updated Telegram command menu to 12 commands.
+
+## Env Status
+
+Vercel production env:
+
+```text
+YOUTUBE_API_KEY: present
+CRON_SECRET: present
+```
+
+No secret values were printed or committed.
+
+Final health check:
+
+```text
+GET /api/health
+ok: true
+missing_env: []
+optional_missing_env: []
+```
 
 ## Database Migration
 
 Production DB migration completed successfully.
 
-Added/verified columns on `videos`:
+Verified:
 
 ```text
-author_username
-montage_username
-montage_same_as_author
-voice_username
-admin_message_chat_id
-admin_message_id
-admin_notified_at
+video_metrics_snapshots table: exists
+videos latest columns:
+- youtube_comments
+- youtube_last_sync_at
+- youtube_likes
+- youtube_views
 ```
 
-Backfilled username snapshot columns from `people` where possible.
-
-Production status counts during migration:
+Approved videos with YouTube URLs:
 
 ```text
-approved: 1
-pending: 4
+1
 ```
 
-After fixing `ADMIN_CHAT_ID` and running `/resend_pending`, all pending cards have stored admin messages:
+## Sync Result
+
+Manual `/sync_youtube_metrics` was invoked through the production webhook:
 
 ```text
-pending: 4
-pending_with_admin_message: 4
+webhook response: {"ok": true}
 ```
 
-## Vercel / Telegram Live Fix
-
-Found production `ADMIN_CHAT_ID` was set to an unreachable migrated id:
-
-```text
--1005520370963 -> Telegram 400 Bad Request: chat not found
-```
-
-Updated Vercel production `ADMIN_CHAT_ID` to the reachable group id:
-
-```text
--5520370963
-```
-
-Telegram `getChat` confirms the current admin chat is reachable:
+Authorized cron endpoint was also invoked successfully after `CRON_SECRET` setup:
 
 ```text
 ok: true
-type: group
+missing_key: false
+no_videos: false
+total_videos: 1
+success_count: 1
+error_count: 0
+total_views: 188736
+total_likes: 908
+total_comments: 9
+top_video_id: 9
+top_views: 188736
+sheet_status: ok
+sheet_appended: 0
+sheet_error: null
 ```
 
-Telegram commands/menu configured by `scripts/setup_bot_ui.py`.
+`sheet_appended: 0` on the authorized cron run is expected because the earlier manual sync already appended today's row to `MetricsRaw`; duplicate daily writes are skipped.
 
-Configured command count:
+Current DB metrics state:
 
 ```text
-7
+youtube_snapshot_count: 1
+snapshot_statuses: {"ok": 1}
+latest_metric_videos: 1
+latest_views: 188736
+latest_likes: 908
+latest_comments: 9
 ```
 
-Commands:
+## MetricsRaw Status
+
+First manual sync:
 
 ```text
-/start
-/new_video
-/my_requests
-/help
-/admin
-/chatid
-/resend_pending
+sheet_status: ok
+sheet_appended: 1
 ```
 
-## Verification
-
-Local checks:
+Repeat cron sync same day:
 
 ```text
-python -m py_compile bot\handlers.py bot\config.py bot\messages.py bot\telegram.py bot\sheets.py scripts\init_db.py scripts\check_env.py scripts\setup_bot_ui.py api\webhook.py api\health.py
-python -m unittest tests.test_links
+sheet_status: ok
+sheet_appended: 0
+```
+
+This confirms `MetricsRaw` is updated and same-day duplicates are skipped.
+
+## `/metrics_youtube_all` Result
+
+The formatter used by the bot returns:
+
+```text
+YouTube всего
+
+Видео с метриками: 1
+Просмотры: 188 736
+Лайки: 908
+Комментарии: 9
+
+Топ-5 по просмотрам:
+1. ID 9 — 188 736
+```
+
+`/metrics_youtube_all` and `/metrics_video 9` were invoked through the production webhook and returned `{"ok": true}` from the webhook handler.
+
+## Cron Endpoint Status
+
+Unauthenticated request:
+
+```text
+GET /api/cron/youtube-metrics -> 401
+```
+
+Authorized request with `Authorization: Bearer <CRON_SECRET>`:
+
+```text
+GET /api/cron/youtube-metrics -> 200
+ok: true
+```
+
+Vercel Cron is configured in `vercel.json`:
+
+```json
+{
+  "path": "/api/cron/youtube-metrics",
+  "schedule": "0 3 * * *"
+}
+```
+
+## Telegram / Runtime Checks
+
+Telegram webhook:
+
+```text
+getWebhookInfo.ok: true
+url: https://project-dcd2y.vercel.app/api/webhook
+pending_update_count: 0
+```
+
+Telegram commands:
+
+```text
+getMyCommands count: 12
+```
+
+Runtime checks:
+
+```text
+GET /api/health -> ok=true
+GET /api/webhook -> ok=true
+GET /api/runtime_admin -> 404
+GET /api/cron/youtube-metrics without auth -> 401
+```
+
+## Tests
+
+Local verification:
+
+```text
+py -B -m unittest discover -s tests
+py -B -m compileall -q api bot scripts tests
 git diff --check
 ```
 
 Result:
 
 ```text
-15 tests passed
-py_compile passed
+22 tests passed
+compileall passed
 git diff --check passed
 ```
 
-Live checks:
+Test coverage added for:
+
+- YouTube ID extraction:
+  - `youtu.be`
+  - `watch?v=`
+  - `shorts/`
+  - extra query params
+  - invalid URL
+- YouTube API response parsing:
+  - `viewCount`
+  - `likeCount`
+  - `commentCount`
+  - missing `likeCount`
+  - missing `commentCount`
+  - API item not found
+- Summary calculations:
+  - sum views/likes/comments
+  - top video by views
+  - latest snapshot per video
+- Command permission:
+  - non-admin denied for `/sync_youtube_metrics`
+  - admin can run `/sync_youtube_metrics`
+
+## Runtime Logs Summary
+
+The latest `youtube_metrics_sync` DB log contains:
 
 ```text
-GET https://project-dcd2y.vercel.app/api/health  -> ok=true, missing_env=[]
-GET https://project-dcd2y.vercel.app/api/webhook -> ok=true, missing_env=[]
-GET https://project-dcd2y.vercel.app/api/runtime_admin -> 404
-Telegram getWebhookInfo -> https://project-dcd2y.vercel.app/api/webhook
-Telegram pending_update_count -> 0
-Telegram getMyCommands -> 7 commands
-Telegram getChat(-5520370963) -> ok=true, type=group
+ok: true
+missing_key: false
+total_videos: 1
+success_count: 1
+error_count: 0
+sheet_status: ok
+sheet_error: null
 ```
 
-`/resend_pending` was invoked through the production webhook after the env fix:
+No YouTube metric sync errors were recorded in the final sync result.
+
+## Remaining Blockers
+
+No blocker for the YouTube MVP.
+
+Intentional scope exclusions remain:
 
 ```text
-webhook response: {"ok": true}
-pending_with_admin_message: 4
+Instagram metrics: not started until Meta access/SMS verification is complete
+TikTok metrics: not started
+VK metrics: not started
 ```
-
-## Notes For Next Handoff
-
-- `WORK_CHAT_ID` can remain in old Vercel/env history, but the app no longer reads or requires it.
-- If the admin group changes again, run `/chatid@rngn_reels_wc_bot` in that group, update `ADMIN_CHAT_ID` in Vercel, redeploy, then run `/resend_pending`.
-- Historical `admin_notify_failed` logs from the broken `-1005520370963` value are expected and useful as proof of diagnostics.
