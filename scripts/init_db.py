@@ -119,7 +119,6 @@ CREATE TABLE IF NOT EXISTS user_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_videos_instagram_id ON videos(instagram_id);
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
-CREATE INDEX IF NOT EXISTS idx_videos_video_type ON videos(video_type);
 CREATE INDEX IF NOT EXISTS idx_videos_publish_date ON videos(publish_date);
 CREATE INDEX IF NOT EXISTS idx_videos_batch_id ON videos(batch_id);
 CREATE INDEX IF NOT EXISTS idx_people_role_active ON people(role, is_active);
@@ -152,6 +151,8 @@ WHERE video_type IS NULL OR video_type NOT IN ('regular', 'bigrecap');
 
 ALTER TABLE videos ALTER COLUMN video_type SET DEFAULT 'regular';
 ALTER TABLE videos ALTER COLUMN video_type SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_videos_video_type ON videos(video_type);
 
 UPDATE videos v
 SET author_username = p.username
