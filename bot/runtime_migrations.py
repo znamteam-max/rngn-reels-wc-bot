@@ -36,12 +36,43 @@ def ensure_runtime_migrations() -> dict[str, Any]:
                 "is_active": "true",
             },
         )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT is_nullable, column_default
+                FROM information_schema.columns
+                WHERE table_name = 'videos' AND column_name = 'video_type'
+                """
+            )
+            column = cur.fetchone()
+            cur.execute("SELECT to_regclass('idx_videos_video_type') IS NOT NULL")
+            index_exists = bool(cur.fetchone()[0])
+            cur.execute(
+                """
+                SELECT count(*)
+                FROM people
+                WHERE role = 'author'
+                  AND lower(name) = lower('Прокудин')
+                  AND username = 'ny_pochemu'
+                  AND is_active = true
+                """
+            )
+            prokudin_active_rows = int(cur.fetchone()[0])
         conn.commit()
 
     _LAST_RESULT = {
         "applied": True,
-        "prokudin_action": seed_action,
-        "prokudin_id": person_id,
+        "schema": {
+            "video_type_column": column is not None,
+            "video_type_nullable": column[0] if column else None,
+            "video_type_default": column[1] if column else None,
+            "idx_videos_video_type": index_exists,
+        },
+        "seed": {
+            "prokudin_action": seed_action,
+            "prokudin_id": person_id,
+            "prokudin_active_rows": prokudin_active_rows,
+        },
     }
     _DONE = True
     return _LAST_RESULT
