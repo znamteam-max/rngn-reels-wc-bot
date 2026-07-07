@@ -7,9 +7,13 @@ from unittest.mock import patch
 
 from bot.config import get_settings, missing_env_names
 from bot.handlers import (
+    Actor,
     PENDING_VIDEOS_SQL,
     apply_montage_same_as_author,
+    ask_people,
     build_chatid_text,
+    normalize_video_type,
+    start_new_bigrecap,
     telegram_failure_payload,
 )
 from bot.links import (
@@ -20,8 +24,31 @@ from bot.links import (
     parse_publish_date,
 )
 from bot.messages import format_video_card, person_display
+from bot.sheets import SHEET_COLUMNS, video_to_row
 from bot.telegram import TelegramAPIError
 from scripts.seed_people import iter_rows
+
+
+class FakeTelegram:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, object]] = []
+
+    def send_message(
+        self,
+        chat_id: int | str,
+        text: str,
+        reply_markup: dict[str, object] | None = None,
+        disable_web_page_preview: bool = True,
+    ) -> dict[str, object]:
+        self.messages.append(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "reply_markup": reply_markup,
+                "disable_web_page_preview": disable_web_page_preview,
+            }
+        )
+        return {"ok": True, "result": {"message_id": len(self.messages)}}
 
 
 class LinkNormalizationTests(unittest.TestCase):
@@ -63,9 +90,11 @@ class LinkNormalizationTests(unittest.TestCase):
     def test_live_seed_role_counts(self) -> None:
         rows = iter_rows(Path("people.live-seed.csv"))
         counts = Counter(row["role"] for row in rows)
-        self.assertEqual(counts["author"], 10)
+        self.assertEqual(counts["author"], 11)
         self.assertEqual(counts["montage"], 13)
         self.assertEqual(counts["voice"], 5)
+        authors = {(row["name"], row["username"]) for row in rows if row["role"] == "author"}
+        self.assertIn(("Прокудин", "ny_pochemu"), authors)
 
 
 class BotV107Tests(unittest.TestCase):
@@ -147,6 +176,61 @@ class BotV107Tests(unittest.TestCase):
         self.assertEqual(payload["telegram_status_code"], 400)
         self.assertEqual(payload["telegram_description"], "Bad Request: chat not found")
         self.assertEqual(payload["stage"], "send_review_card")
+
+
+class BotV108Tests(unittest.TestCase):
+    def test_video_type_normalization_defaults_to_regular(self) -> None:
+        self.assertEqual(normalize_video_type("bigrecap"), "bigrecap")
+        self.assertEqual(normalize_video_type(None), "regular")
+        self.assertEqual(normalize_video_type("other"), "regular")
+
+    def test_bigrecap_card_shows_type_regular_card_hides_it(self) -> None:
+        base = {
+            "id": 10,
+            "instagram_url": "https://www.instagram.com/reel/ABC/",
+            "author_name": "Прокудин",
+            "author_username": "ny_pochemu",
+            "montage_name": "Max",
+            "montage_username": "max",
+            "added_by_username": "lead",
+            "added_by_tg_id": 1,
+        }
+        bigrecap = format_video_card({**base, "video_type": "bigrecap"})
+        regular = format_video_card({**base, "video_type": "regular"})
+        self.assertIn("Тип: большой рекап", bigrecap)
+        self.assertNotIn("Тип:", regular)
+
+    def test_video_sheet_row_includes_video_type_after_status(self) -> None:
+        row = video_to_row(
+            {
+                "id": 10,
+                "status": "pending",
+                "video_type": "bigrecap",
+                "author_name": "Прокудин",
+                "author_username": "ny_pochemu",
+            }
+        )
+        self.assertEqual(SHEET_COLUMNS[:3], ["id", "status", "video_type"])
+        self.assertEqual(row[:3], ["10", "pending", "bigrecap"])
+
+    def test_start_new_bigrecap_stores_type_in_session(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="user")
+        with patch("bot.handlers.db.set_session") as set_session:
+            start_new_bigrecap(tg, actor)
+        self.assertEqual(set_session.call_args.kwargs["state"], "new:instagram")
+        self.assertEqual(set_session.call_args.kwargs["data"], {"video_type": "bigrecap"})
+        self.assertIn("Instagram/Reels", tg.messages[0]["text"])
+
+    def test_voice_prompt_uses_new_wording_and_no_button(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="user")
+        with patch("bot.handlers.get_people", return_value=[]):
+            ask_people(tg, actor, "voice")
+        message = tg.messages[0]
+        self.assertEqual(message["text"], "Была ли в ролике озвучка другого автора?")
+        keyboard = message["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+        self.assertEqual(keyboard[0][0]["text"], "Нет, не было")
 
 
 if __name__ == "__main__":

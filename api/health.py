@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 
 from bot.config import missing_env_names, optional_missing_env_names
+from bot.runtime_migrations import ensure_runtime_migrations
+from bot.version import VERSION
 
 
 class handler(BaseHTTPRequestHandler):
@@ -15,9 +17,11 @@ class handler(BaseHTTPRequestHandler):
         payload = {
             "ok": True,
             "service": "rngn-reels-wc-bot",
+            "version": VERSION,
             "time": datetime.now(timezone.utc).isoformat(),
             "missing_env": missing_env_names(),
             "optional_missing_env": optional_missing_env_names(),
+            "runtime_migration": ensure_runtime_migrations(),
         }
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_response(200)

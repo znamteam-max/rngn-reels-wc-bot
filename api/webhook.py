@@ -7,6 +7,7 @@ from typing import Any
 
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
 from bot.public_patch import handle_update, record_system_log
+from bot.runtime_migrations import ensure_runtime_migrations
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
@@ -47,6 +48,12 @@ class handler(BaseHTTPRequestHandler):
         actual_secret = self.headers.get("X-Telegram-Bot-Api-Secret-Token")
         if actual_secret != settings.webhook_secret:
             self._send_json(401, {"ok": False, "error": "unauthorized"})
+            return
+
+        try:
+            ensure_runtime_migrations()
+        except Exception:
+            self._send_json(500, {"ok": False, "error": "runtime migration failed"})
             return
 
         try:

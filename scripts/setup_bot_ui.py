@@ -11,6 +11,7 @@ import requests
 COMMANDS = [
     ("start", "Главное меню"),
     ("new_video", "Добавить Reels"),
+    ("new_bigrecap", "Добавить большой рекап"),
     ("my_requests", "Мои заявки"),
     ("help", "Помощь"),
     ("admin", "Админская очередь"),

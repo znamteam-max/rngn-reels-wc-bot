@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS batches (
 CREATE TABLE IF NOT EXISTS videos (
     id bigserial PRIMARY KEY,
     status text NOT NULL DEFAULT 'draft',
+    video_type text NOT NULL DEFAULT 'regular',
     publish_date date,
     instagram_url text,
     instagram_id text UNIQUE,
@@ -118,6 +119,7 @@ CREATE TABLE IF NOT EXISTS user_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_videos_instagram_id ON videos(instagram_id);
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
+CREATE INDEX IF NOT EXISTS idx_videos_video_type ON videos(video_type);
 CREATE INDEX IF NOT EXISTS idx_videos_publish_date ON videos(publish_date);
 CREATE INDEX IF NOT EXISTS idx_videos_batch_id ON videos(batch_id);
 CREATE INDEX IF NOT EXISTS idx_people_role_active ON people(role, is_active);
@@ -129,6 +131,7 @@ ON video_metrics_snapshots(platform, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_updated_at ON user_sessions(updated_at);
 
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS publish_date_set_by_tg_id bigint NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS video_type text NOT NULL DEFAULT 'regular';
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS publish_date_set_by_username text NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS publish_date_set_at timestamptz NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS montage_same_as_author boolean DEFAULT false;
@@ -142,6 +145,13 @@ ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_views bigint NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_likes bigint NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_comments bigint NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_last_sync_at timestamptz NULL;
+
+UPDATE videos
+SET video_type = 'regular'
+WHERE video_type IS NULL OR video_type NOT IN ('regular', 'bigrecap');
+
+ALTER TABLE videos ALTER COLUMN video_type SET DEFAULT 'regular';
+ALTER TABLE videos ALTER COLUMN video_type SET NOT NULL;
 
 UPDATE videos v
 SET author_username = p.username

@@ -88,12 +88,13 @@ def is_admin(tg_id: int) -> bool:
 
 def _send_main_menu(tg: TelegramClient, actor: h.Actor, text: str) -> None:
     rows = [
-        [("Новое видео", "cmd:new"), ("Мои заявки", "cmd:my")],
-        [("Помощь", "cmd:help")],
+        [("➕ Добавить ролик", "cmd:new")],
+        [("🧵 Добавить большой рекап", "cmd:new_bigrecap")],
+        [("📋 Мои заявки", "cmd:my"), ("ℹ️ Помощь", "cmd:help")],
     ]
     if h.is_admin(actor.tg_id):
-        rows.insert(1, [("Админка", "cmd:admin"), ("Сводка", "cmd:summary")])
-        rows.insert(2, [("Переотправить pending", "cmd:resend_pending"), ("Тест админ-чата", "cmd:test_admin_chat")])
+        rows.insert(3, [("Админка", "cmd:admin"), ("Сводка", "cmd:summary")])
+        rows.insert(4, [("Переотправить pending", "cmd:resend_pending"), ("Тест админ-чата", "cmd:test_admin_chat")])
     if h.is_superadmin(actor.tg_id):
         status = "вкл" if _hearing_mode_enabled() else "выкл"
         rows.append([(f"👂 Режим «А?» сейчас: {status}", "fun:hearing:status")])
@@ -184,6 +185,7 @@ def insert_pending_video(actor: h.Actor, data: dict[str, Any]) -> dict[str, Any]
                 """
                 UPDATE videos
                 SET status = 'pending',
+                    video_type = %s,
                     publish_date = %s,
                     instagram_url = %s,
                     instagram_id = %s,
@@ -221,6 +223,7 @@ def insert_pending_video(actor: h.Actor, data: dict[str, Any]) -> dict[str, Any]
                 RETURNING id
                 """,
                 (
+                    h.normalize_video_type(data.get("video_type")),
                     data.get("publish_date"),
                     data.get("instagram_url"),
                     data.get("instagram_id"),
@@ -258,7 +261,11 @@ def insert_pending_video(actor: h.Actor, data: dict[str, Any]) -> dict[str, Any]
             actor_tg_id=actor.tg_id,
             actor_username=actor.username,
             before_data={"status": "deleted", "batch_id": old_batch_id},
-            after_data={"status": "pending", "batch_id": batch_id},
+            after_data={
+                "status": "pending",
+                "batch_id": batch_id,
+                "video_type": h.normalize_video_type(data.get("video_type")),
+            },
         )
         return h.get_video_by_id(conn, int(deleted["id"]))
 
@@ -279,6 +286,10 @@ def handle_message(message: dict[str, Any]) -> None:
         if command == "/start" and rest.lower() in {"submit", "new_video", "new"}:
             h.db.clear_session(actor.tg_id)
             h.start_new_video(tg, actor)
+            return
+        if command == "/start" and rest.lower() in {"new_bigrecap", "bigrecap"}:
+            h.db.clear_session(actor.tg_id)
+            h.start_new_bigrecap(tg, actor)
             return
         if command == "/test_admin_chat":
             _test_admin_chat(tg, actor)

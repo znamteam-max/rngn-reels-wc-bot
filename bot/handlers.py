@@ -25,6 +25,9 @@ PERSON_USAGE_COLUMN = {
     "montage": "montage_id",
     "voice": "voice_id",
 }
+VIDEO_TYPE_REGULAR = "regular"
+VIDEO_TYPE_BIGRECAP = "bigrecap"
+VIDEO_TYPES = {VIDEO_TYPE_REGULAR, VIDEO_TYPE_BIGRECAP}
 
 VIDEO_SELECT = """
 SELECT
@@ -175,6 +178,11 @@ def build_chatid_text(chat: dict[str, Any], user: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def normalize_video_type(value: Any) -> str:
+    text = str(value or VIDEO_TYPE_REGULAR).strip().lower()
+    return text if text in VIDEO_TYPES else VIDEO_TYPE_REGULAR
+
+
 def send_chatid(
     tg: TelegramClient,
     actor: Actor,
@@ -200,12 +208,13 @@ def send_chatid(
 
 def _send_main_menu(tg: TelegramClient, actor: Actor, text: str) -> None:
     rows = [
-        [("Новое видео", "cmd:new"), ("Мои заявки", "cmd:my")],
-        [("Помощь", "cmd:help")],
+        [("➕ Добавить ролик", "cmd:new")],
+        [("🧵 Добавить большой рекап", "cmd:new_bigrecap")],
+        [("📋 Мои заявки", "cmd:my"), ("ℹ️ Помощь", "cmd:help")],
     ]
     if is_admin(actor.tg_id):
-        rows.insert(1, [("Админка", "cmd:admin"), ("Сводка", "cmd:summary")])
-        rows.insert(2, [("Переотправить pending", "cmd:resend_pending")])
+        rows.insert(3, [("Админка", "cmd:admin"), ("Сводка", "cmd:summary")])
+        rows.insert(4, [("Переотправить pending", "cmd:resend_pending")])
     tg.send_message(actor.chat_id, text, inline_keyboard(rows))
 
 
@@ -231,6 +240,8 @@ def handle_message(message: dict[str, Any]) -> None:
             send_help(tg, actor)
         elif command == "/new_video":
             start_new_video(tg, actor)
+        elif command == "/new_bigrecap":
+            start_new_bigrecap(tg, actor)
         elif command == "/chatid":
             send_chatid(tg, actor, message.get("chat") or {}, message.get("from") or {})
         elif command == "/my_requests":
@@ -292,6 +303,8 @@ def handle_callback(callback: dict[str, Any]) -> None:
 
     if data == "cmd:new":
         start_new_video(tg, actor)
+    elif data == "cmd:new_bigrecap":
+        start_new_bigrecap(tg, actor)
     elif data == "cmd:my":
         show_my_requests(tg, actor)
     elif data == "cmd:admin":
@@ -410,6 +423,7 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
         [
             "Команды:",
             "/new_video — добавить Reels",
+            "/new_bigrecap — добавить большой рекап",
             "/my_requests — мои заявки и дополнение ссылок",
             "/chatid — показать ID текущего Telegram-чата",
             "/admin — очередь проверки",
@@ -436,11 +450,19 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
 
 
 def start_new_video(tg: TelegramClient, actor: Actor) -> None:
+    start_new_submission(tg, actor, VIDEO_TYPE_REGULAR)
+
+
+def start_new_bigrecap(tg: TelegramClient, actor: Actor) -> None:
+    start_new_submission(tg, actor, VIDEO_TYPE_BIGRECAP)
+
+
+def start_new_submission(tg: TelegramClient, actor: Actor, video_type: str) -> None:
     if actor.chat_type != "private":
         username = get_settings().bot_username or "rngn_reels_wc_bot"
         tg.send_message(
             actor.chat_id,
-            f"Видео нужно добавлять в личке с ботом.\nОткрой @{username} и нажми «Новое видео».",
+            f"Видео нужно добавлять в личке с ботом.\nОткрой @{username} и нажми «Добавить ролик» или «Добавить большой рекап».",
         )
         return
     db.set_session(
@@ -448,7 +470,7 @@ def start_new_video(tg: TelegramClient, actor: Actor) -> None:
         chat_id=actor.chat_id,
         username=actor.username,
         state="new:instagram",
-        data={},
+        data={"video_type": normalize_video_type(video_type)},
     )
     tg.send_message(actor.chat_id, "Пришлите Instagram/Reels ссылку.")
 
@@ -527,7 +549,7 @@ def ask_people(tg: TelegramClient, actor: Actor, role: str) -> None:
     short_role = SHORT_BY_ROLE[role]
     rows: list[list[tuple[str, str]]] = []
     if role == "voice":
-        rows.append([("Нет", "vn")])
+        rows.append([("Нет, не было", "vn")])
     if role == "montage":
         session = db.get_session(actor.tg_id)
         data = session.get("data") if session else {}
@@ -541,7 +563,7 @@ def ask_people(tg: TelegramClient, actor: Actor, role: str) -> None:
     rows.append([("Нет в списке", f"pm:{short_role}")])
     label = {
         "author": "Выберите автора.",
-        "voice": "Нужна дополнительная озвучка?",
+        "voice": "Была ли в ролике озвучка другого автора?",
         "montage": "Выберите монтажёра.",
     }[role]
     tg.send_message(actor.chat_id, label, inline_keyboard(rows))
@@ -759,6 +781,7 @@ def handle_optional_link(
 
 
 def show_new_preview(tg: TelegramClient, actor: Actor, data: dict[str, Any]) -> None:
+    data["video_type"] = normalize_video_type(data.get("video_type"))
     preview = {
         "id": data.get("edit_video_id") or "новая",
         "status": "draft",
@@ -793,6 +816,7 @@ def handle_preview_edit(tg: TelegramClient, actor: Actor) -> None:
     data = session.get("data") or {}
     keep = {
         "edit_video_id": data.get("edit_video_id"),
+        "video_type": normalize_video_type(data.get("video_type")),
         "instagram_url": data.get("instagram_url"),
         "instagram_id": data.get("instagram_id"),
     }
@@ -813,6 +837,7 @@ def submit_video(tg: TelegramClient, actor: Actor) -> None:
         tg.send_message(actor.chat_id, "Начните заявку заново: /new_video.")
         return
     data = session.get("data") or {}
+    data["video_type"] = normalize_video_type(data.get("video_type"))
     if not data.get("instagram_id"):
         tg.send_message(actor.chat_id, "В заявке нет Instagram ID. Начните заново: /new_video.")
         return
@@ -863,6 +888,7 @@ def update_revision_video(actor: Actor, video_id: int, data: dict[str, Any]) -> 
                 """
                 UPDATE videos
                 SET status = 'pending',
+                    video_type = %s,
                     publish_date = COALESCE(%s, publish_date),
                     instagram_url = %s,
                     instagram_id = %s,
@@ -891,6 +917,7 @@ def update_revision_video(actor: Actor, video_id: int, data: dict[str, Any]) -> 
                 RETURNING id
                 """,
                 (
+                    normalize_video_type(data.get("video_type")),
                     data.get("publish_date"),
                     data.get("instagram_url"),
                     data.get("instagram_id"),
@@ -926,7 +953,11 @@ def update_revision_video(actor: Actor, video_id: int, data: dict[str, Any]) -> 
             actor_tg_id=actor.tg_id,
             actor_username=actor.username,
             before_data={"status": before.get("status")},
-            after_data={"status": "pending", "batch_id": batch_id},
+            after_data={
+                "status": "pending",
+                "batch_id": batch_id,
+                "video_type": normalize_video_type(data.get("video_type")),
+            },
         )
         return get_video_by_id(conn, video_id)
 
@@ -938,7 +969,7 @@ def insert_pending_video(actor: Actor, data: dict[str, Any]) -> dict[str, Any]:
             cur.execute(
                 """
                 INSERT INTO videos (
-                    status, publish_date, instagram_url, instagram_id,
+                    status, video_type, publish_date, instagram_url, instagram_id,
                     youtube_url, youtube_id, tiktok_url, tiktok_id, vk_url, vk_id,
                     author_id, author_name, author_username,
                     montage_id, montage_name, montage_username, montage_same_as_author,
@@ -946,7 +977,7 @@ def insert_pending_video(actor: Actor, data: dict[str, Any]) -> dict[str, Any]:
                     added_by_tg_id, added_by_username, batch_id
                 )
                 VALUES (
-                    'pending', %s, %s, %s,
+                    'pending', %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s, %s,
@@ -956,6 +987,7 @@ def insert_pending_video(actor: Actor, data: dict[str, Any]) -> dict[str, Any]:
                 RETURNING id
                 """,
                 (
+                    normalize_video_type(data.get("video_type")),
                     data.get("publish_date"),
                     data.get("instagram_url"),
                     data.get("instagram_id"),
@@ -989,7 +1021,10 @@ def insert_pending_video(actor: Actor, data: dict[str, Any]) -> dict[str, Any]:
             action="submitted",
             actor_tg_id=actor.tg_id,
             actor_username=actor.username,
-            after_data={"batch_id": batch_id},
+            after_data={
+                "batch_id": batch_id,
+                "video_type": normalize_video_type(data.get("video_type")),
+            },
         )
         return get_video_by_id(conn, video_id)
 
@@ -1246,6 +1281,7 @@ def start_revision(tg: TelegramClient, actor: Actor, video_id: int) -> None:
         return
     data = {
         "edit_video_id": video_id,
+        "video_type": normalize_video_type(video.get("video_type")),
         "instagram_url": video.get("instagram_url"),
         "instagram_id": video.get("instagram_id"),
     }
@@ -1838,9 +1874,23 @@ def show_summary(tg: TelegramClient, actor: Actor) -> None:
         "SELECT count(*) AS count FROM videos WHERE publish_date = %s AND status = 'approved'",
         (today,),
     )
+    type_rows = db.fetch_all(
+        """
+        SELECT COALESCE(video_type, 'regular') AS video_type, count(*) AS count
+        FROM videos
+        GROUP BY COALESCE(video_type, 'regular')
+        ORDER BY video_type
+        """
+    )
     lines = ["Сводка:"]
     for row in rows:
         lines.append(f"{row['status']}: {row['count']}")
+    if type_rows:
+        lines.append("")
+        lines.append("Типы:")
+        for row in type_rows:
+            label = "большие рекапы" if row["video_type"] == "bigrecap" else "ролики"
+            lines.append(f"{label}: {row['count']}")
     lines.append(f"approved сегодня ({today}): {(today_row or {}).get('count', 0)}")
     tg.send_message(actor.chat_id, "\n".join(lines))
 
@@ -2217,6 +2267,7 @@ def edit_video_command(tg: TelegramClient, actor: Actor, rest: str) -> None:
         "youtube_url",
         "tiktok_url",
         "vk_url",
+        "video_type",
         "author_name",
         "montage_name",
         "voice_name",
@@ -2247,6 +2298,11 @@ def edit_video_command(tg: TelegramClient, actor: Actor, rest: str) -> None:
             update_value = link.url if link else None
             extra_field = "vk_id"
             extra_value = link.external_id if link else None
+        elif field == "video_type":
+            update_value = value.strip().lower()
+            if update_value not in VIDEO_TYPES:
+                tg.send_message(actor.chat_id, "video_type должен быть regular или bigrecap.")
+                return
     except Exception as exc:
         tg.send_message(actor.chat_id, _safe_error(exc))
         return

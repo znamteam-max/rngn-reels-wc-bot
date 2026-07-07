@@ -61,6 +61,15 @@ def _append_if(lines: list[str], label: str, value: Any) -> None:
         lines.append(f"{label}: {text}")
 
 
+def video_type_label(value: Any) -> str:
+    return "большой рекап" if value == "bigrecap" else "ролик"
+
+
+def _insert_video_type(lines: list[str], row: dict[str, Any]) -> None:
+    if row.get("video_type") == "bigrecap":
+        lines.insert(2, f"Тип: {video_type_label(row.get('video_type'))}")
+
+
 def format_video_card(
     row: dict[str, Any],
     title: str = "Заявка",
@@ -84,6 +93,7 @@ def format_video_card(
         "",
         f"Добавил: {user_label(row.get('added_by_username'), row.get('added_by_tg_id'))}",
     ]
+    _insert_video_type(lines, row)
     if row.get("checked_by_username") or row.get("checked_by_tg_id"):
         lines.append(f"Проверил: {user_label(row.get('checked_by_username'), row.get('checked_by_tg_id'))}")
     _append_if(lines, "Комментарий", row.get("comment"))
@@ -109,6 +119,7 @@ def format_final_card(row: dict[str, Any]) -> str:
         f"Добавил: {user_label(row.get('added_by_username'), row.get('added_by_tg_id'))}",
         f"Проверил: {user_label(row.get('checked_by_username'), row.get('checked_by_tg_id'))}",
     ]
+    _insert_video_type(lines, row)
     _append_if(lines, "Комментарий", row.get("comment"))
     return "\n".join(lines)
 

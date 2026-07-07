@@ -17,6 +17,7 @@ METRICS_SHEET_NAME = "MetricsRaw"
 SHEET_COLUMNS = [
     "id",
     "status",
+    "video_type",
     "publish_date",
     "instagram_url",
     "instagram_id",
@@ -82,10 +83,23 @@ def _user_cell(username: str | None, tg_id: int | None) -> str:
     return str(tg_id or "")
 
 
-def video_to_row(video: dict[str, Any]) -> list[str]:
+def _video_type_cell(value: Any) -> str:
+    return "bigrecap" if value == "bigrecap" else "regular"
+
+
+def _column_letter(column_count: int) -> str:
+    letters = ""
+    while column_count:
+        column_count, remainder = divmod(column_count - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def video_to_row(video: dict[str, Any], columns: list[str] | None = None) -> list[str]:
     values = {
         "id": video.get("id"),
         "status": video.get("status"),
+        "video_type": _video_type_cell(video.get("video_type")),
         "publish_date": video.get("publish_date"),
         "instagram_url": video.get("instagram_url"),
         "instagram_id": video.get("instagram_id"),
@@ -105,7 +119,106 @@ def video_to_row(video: dict[str, Any]) -> list[str]:
         "batch_id": video.get("batch_id"),
         "comment": video.get("comment"),
     }
-    return [_as_cell(values[column]) for column in SHEET_COLUMNS]
+    return [_as_cell(values.get(column)) for column in (columns or SHEET_COLUMNS)]
+
+
+def _sheet_properties(service, spreadsheet_id: str) -> dict[str, dict[str, Any]]:
+    spreadsheet = (
+        service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="sheets.properties")
+        .execute()
+    )
+    return {
+        sheet.get("properties", {}).get("title", ""): sheet.get("properties", {})
+        for sheet in spreadsheet.get("sheets", [])
+    }
+
+
+def _video_sheet_header(service, spreadsheet_id: str) -> list[str]:
+    result = (
+        service.spreadsheets()
+        .values()
+        .get(spreadsheetId=spreadsheet_id, range=f"{SHEET_NAME}!1:1")
+        .execute()
+    )
+    values = result.get("values", [])
+    if not values:
+        return []
+    return [str(value).strip() for value in values[0]]
+
+
+def _write_video_header(service, spreadsheet_id: str, columns: list[str]) -> None:
+    end_column = _column_letter(len(columns))
+    (
+        service.spreadsheets()
+        .values()
+        .update(
+            spreadsheetId=spreadsheet_id,
+            range=f"{SHEET_NAME}!A1:{end_column}1",
+            valueInputOption="USER_ENTERED",
+            body={"values": [columns]},
+        )
+        .execute()
+    )
+
+
+def _ensure_video_sheet_columns(service, spreadsheet_id: str) -> list[str]:
+    properties = _sheet_properties(service, spreadsheet_id)
+    if SHEET_NAME not in properties:
+        (
+            service.spreadsheets()
+            .batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": [{"addSheet": {"properties": {"title": SHEET_NAME}}}]},
+            )
+            .execute()
+        )
+        _write_video_header(service, spreadsheet_id, SHEET_COLUMNS)
+        return SHEET_COLUMNS
+
+    header = _video_sheet_header(service, spreadsheet_id)
+    if not header:
+        _write_video_header(service, spreadsheet_id, SHEET_COLUMNS)
+        return SHEET_COLUMNS
+
+    if "video_type" not in header:
+        status_index = header.index("status") if "status" in header else 1
+        insert_index = status_index + 1
+        sheet_id = properties[SHEET_NAME]["sheetId"]
+        (
+            service.spreadsheets()
+            .batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={
+                    "requests": [
+                        {
+                            "insertDimension": {
+                                "range": {
+                                    "sheetId": sheet_id,
+                                    "dimension": "COLUMNS",
+                                    "startIndex": insert_index,
+                                    "endIndex": insert_index + 1,
+                                },
+                                "inheritFromBefore": True,
+                            }
+                        }
+                    ]
+                },
+            )
+            .execute()
+        )
+        _write_video_header(service, spreadsheet_id, SHEET_COLUMNS)
+        return SHEET_COLUMNS
+
+    columns = [column for column in header if column]
+    changed = False
+    for column in SHEET_COLUMNS:
+        if column not in columns:
+            columns.append(column)
+            changed = True
+    if changed:
+        _write_video_header(service, spreadsheet_id, columns)
+    return columns
 
 
 def _find_row_by_id(service, spreadsheet_id: str, video_id: int) -> int | None:
@@ -128,7 +241,9 @@ def upsert_video(video: dict[str, Any]) -> int:
 
     service = _service()
     spreadsheet_id = settings.google_sheets_spreadsheet_id
-    row_values = [video_to_row(video)]
+    columns = _ensure_video_sheet_columns(service, spreadsheet_id)
+    end_column = _column_letter(len(columns))
+    row_values = [video_to_row(video, columns)]
     row_number = video.get("sheet_row") or _find_row_by_id(service, spreadsheet_id, int(video["id"]))
 
     if row_number:
@@ -137,7 +252,7 @@ def upsert_video(video: dict[str, Any]) -> int:
             .values()
             .update(
                 spreadsheetId=spreadsheet_id,
-                range=f"{SHEET_NAME}!A{row_number}:T{row_number}",
+                range=f"{SHEET_NAME}!A{row_number}:{end_column}{row_number}",
                 valueInputOption="USER_ENTERED",
                 body={"values": row_values},
             )
@@ -150,7 +265,7 @@ def upsert_video(video: dict[str, Any]) -> int:
         .values()
         .append(
             spreadsheetId=spreadsheet_id,
-            range=f"{SHEET_NAME}!A:T",
+            range=f"{SHEET_NAME}!A:{end_column}",
             valueInputOption="USER_ENTERED",
             insertDataOption="INSERT_ROWS",
             body={"values": row_values},
@@ -166,15 +281,7 @@ def upsert_video(video: dict[str, Any]) -> int:
 
 
 def _sheet_titles(service, spreadsheet_id: str) -> set[str]:
-    spreadsheet = (
-        service.spreadsheets()
-        .get(spreadsheetId=spreadsheet_id, fields="sheets.properties.title")
-        .execute()
-    )
-    return {
-        sheet.get("properties", {}).get("title", "")
-        for sheet in spreadsheet.get("sheets", [])
-    }
+    return set(_sheet_properties(service, spreadsheet_id))
 
 
 def _ensure_metrics_sheet(service, spreadsheet_id: str) -> None:
