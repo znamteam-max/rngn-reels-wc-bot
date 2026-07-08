@@ -111,6 +111,10 @@ def normalize_youtube(raw: str) -> LinkInfo:
     return LinkInfo(url=clean_url(raw))
 
 
+def extract_youtube_id(url: str) -> str | None:
+    return normalize_youtube(url).external_id
+
+
 def normalize_tiktok(raw: str) -> LinkInfo:
     cleaned = clean_url(raw)
     match = re.search(r"/video/(\d+)", urlparse(cleaned).path)

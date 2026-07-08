@@ -9,6 +9,7 @@ import psycopg
 from bot import db, metrics, sheets
 from bot.config import get_settings
 from bot.links import (
+    extract_youtube_id,
     is_skip_text,
     normalize_instagram,
     normalize_optional,
@@ -28,6 +29,13 @@ PERSON_USAGE_COLUMN = {
 VIDEO_TYPE_REGULAR = "regular"
 VIDEO_TYPE_BIGRECAP = "bigrecap"
 VIDEO_TYPES = {VIDEO_TYPE_REGULAR, VIDEO_TYPE_BIGRECAP}
+PLATFORM_FLOW_REGULAR = "instagram_first"
+PLATFORM_FLOW_BIGRECAP = "youtube_vk"
+BIGRECAP_YOUTUBE_PROMPT = "Пришли ссылку на YouTube-ролик большого рекапа"
+BIGRECAP_YOUTUBE_INVALID_MESSAGE = (
+    "Это не похоже на ссылку YouTube. Пришли ссылку вида "
+    "youtube.com/watch?v=..., youtu.be/... или youtube.com/shorts/..."
+)
 
 VIDEO_SELECT = """
 SELECT
@@ -344,8 +352,12 @@ def handle_callback(callback: dict[str, Any]) -> None:
         ask_manual_person(tg, actor, short_role)
     elif data == "ms":
         handle_montage_same_as_author(tg, actor)
+    elif data == "vy":
+        ask_people(tg, actor, "voice", show_voice_decision=False)
     elif data == "vn":
         handle_voice_none(tg, actor)
+    elif data == "bigrecap:add_vk":
+        start_bigrecap_vk_input(tg, actor)
     elif data.startswith("skip:"):
         _, platform = data.split(":", 1)
         session = db.get_session(actor.tg_id)
@@ -458,6 +470,7 @@ def start_new_bigrecap(tg: TelegramClient, actor: Actor) -> None:
 
 
 def start_new_submission(tg: TelegramClient, actor: Actor, video_type: str) -> None:
+    normalized_type = normalize_video_type(video_type)
     if actor.chat_type != "private":
         username = get_settings().bot_username or "rngn_reels_wc_bot"
         tg.send_message(
@@ -465,12 +478,31 @@ def start_new_submission(tg: TelegramClient, actor: Actor, video_type: str) -> N
             f"Видео нужно добавлять в личке с ботом.\nОткрой @{username} и нажми «Добавить ролик» или «Добавить большой рекап».",
         )
         return
+
+    if normalized_type == VIDEO_TYPE_BIGRECAP:
+        db.set_session(
+            tg_id=actor.tg_id,
+            chat_id=actor.chat_id,
+            username=actor.username,
+            state="new:bigrecap_youtube",
+            data={
+                "video_type": VIDEO_TYPE_BIGRECAP,
+                "platform_flow": PLATFORM_FLOW_BIGRECAP,
+                "step": "awaiting_bigrecap_youtube",
+            },
+        )
+        tg.send_message(actor.chat_id, BIGRECAP_YOUTUBE_PROMPT)
+        return
+
     db.set_session(
         tg_id=actor.tg_id,
         chat_id=actor.chat_id,
         username=actor.username,
         state="new:instagram",
-        data={"video_type": normalize_video_type(video_type)},
+        data={
+            "video_type": VIDEO_TYPE_REGULAR,
+            "platform_flow": PLATFORM_FLOW_REGULAR,
+        },
     )
     tg.send_message(actor.chat_id, "Пришлите Instagram/Reels ссылку.")
 
@@ -484,6 +516,8 @@ def handle_session_message(
 ) -> None:
     if state == "new:instagram":
         handle_new_instagram(tg, actor, data, text)
+    elif state == "new:bigrecap_youtube":
+        handle_new_bigrecap_youtube(tg, actor, data, text)
     elif state == "admin:date":
         handle_admin_date_message(tg, actor, data, text)
     elif state == "new:author_manual":
@@ -497,6 +531,10 @@ def handle_session_message(
     elif state == "new:tiktok":
         handle_optional_link(tg, actor, "tiktok", text)
     elif state == "new:vk":
+        handle_optional_link(tg, actor, "vk", text)
+    elif state == "new:bigrecap_vk_choice":
+        tg.send_message(actor.chat_id, "Выберите действие кнопкой: добавить VK или пропустить.")
+    elif state == "new:bigrecap_vk":
         handle_optional_link(tg, actor, "vk", text)
     elif state == "search:query":
         db.clear_session(actor.tg_id)
@@ -544,11 +582,67 @@ def handle_new_instagram(
     ask_people(tg, actor, "author")
 
 
-def ask_people(tg: TelegramClient, actor: Actor, role: str) -> None:
+def handle_new_bigrecap_youtube(
+    tg: TelegramClient,
+    actor: Actor,
+    data: dict[str, Any],
+    text: str,
+) -> None:
+    try:
+        link = normalize_optional("youtube", text)
+    except ValueError:
+        link = None
+    if not link or not link.external_id or not extract_youtube_id(link.url):
+        tg.send_message(actor.chat_id, BIGRECAP_YOUTUBE_INVALID_MESSAGE)
+        return
+
+    duplicate = find_video_by_youtube_id(link.external_id)
+    if duplicate:
+        db.clear_session(actor.tg_id)
+        tg.send_message(actor.chat_id, "Похоже, этот YouTube-ролик уже был добавлен.")
+        tg.send_message(actor.chat_id, format_video_card(duplicate, title="Такое видео уже есть"))
+        return
+
+    data.update(
+        {
+            "video_type": VIDEO_TYPE_BIGRECAP,
+            "platform_flow": PLATFORM_FLOW_BIGRECAP,
+            "step": "bigrecap_youtube_ready",
+            "instagram_url": None,
+            "instagram_id": None,
+            "youtube_url": link.url,
+            "youtube_id": link.external_id,
+            "tiktok_url": None,
+            "tiktok_id": None,
+        }
+    )
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state="new:author",
+        data=data,
+    )
+    ask_people(tg, actor, "author")
+
+
+def ask_people(
+    tg: TelegramClient,
+    actor: Actor,
+    role: str,
+    show_voice_decision: bool = True,
+) -> None:
     people = get_people(role)
     short_role = SHORT_BY_ROLE[role]
     rows: list[list[tuple[str, str]]] = []
     if role == "voice":
+        if show_voice_decision:
+            tg.send_message(
+                actor.chat_id,
+                "Была ли в ролике озвучка другого автора?",
+                inline_keyboard([[("Да, была", "vy"), ("Нет, не было", "vn")]]),
+            )
+            return
         rows.append([("Нет, не было", "vn")])
     if role == "montage":
         session = db.get_session(actor.tg_id)
@@ -563,7 +657,7 @@ def ask_people(tg: TelegramClient, actor: Actor, role: str) -> None:
     rows.append([("Нет в списке", f"pm:{short_role}")])
     label = {
         "author": "Выберите автора.",
-        "voice": "Была ли в ролике озвучка другого автора?",
+        "voice": "Выберите автора озвучки.",
         "montage": "Выберите монтажёра.",
     }[role]
     tg.send_message(actor.chat_id, label, inline_keyboard(rows))
@@ -724,6 +818,9 @@ def next_after_person(
         )
         ask_people(tg, actor, "montage")
     else:
+        if normalize_video_type(data.get("video_type")) == VIDEO_TYPE_BIGRECAP:
+            ask_bigrecap_vk_choice(tg, actor, data)
+            return
         db.set_session(
             tg_id=actor.tg_id,
             chat_id=actor.chat_id,
@@ -736,6 +833,52 @@ def next_after_person(
             "Пришлите YouTube ссылку или пропустите.",
             inline_keyboard([[("Пропустить", "skip:youtube")]]),
         )
+
+
+def ask_bigrecap_vk_choice(tg: TelegramClient, actor: Actor, data: dict[str, Any]) -> None:
+    data["video_type"] = VIDEO_TYPE_BIGRECAP
+    data["platform_flow"] = PLATFORM_FLOW_BIGRECAP
+    data["step"] = "bigrecap_vk_choice"
+    data["instagram_url"] = None
+    data["instagram_id"] = None
+    data["tiktok_url"] = None
+    data["tiktok_id"] = None
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state="new:bigrecap_vk_choice",
+        data=data,
+    )
+    tg.send_message(
+        actor.chat_id,
+        "Добавить ссылку VK?",
+        inline_keyboard(
+            [
+                [("Добавить VK", "bigrecap:add_vk")],
+                [("Пропустить VK", "skip:vk")],
+            ]
+        ),
+    )
+
+
+def start_bigrecap_vk_input(tg: TelegramClient, actor: Actor) -> None:
+    session = db.get_session(actor.tg_id)
+    if not session:
+        tg.send_message(actor.chat_id, "Начните заявку заново: /new_bigrecap.")
+        return
+    data = session.get("data") or {}
+    data["video_type"] = VIDEO_TYPE_BIGRECAP
+    data["platform_flow"] = PLATFORM_FLOW_BIGRECAP
+    data["step"] = "awaiting_bigrecap_vk"
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state="new:bigrecap_vk",
+        data=data,
+    )
+    tg.send_message(actor.chat_id, "Пришли ссылку на VK")
 
 
 def handle_optional_link(
@@ -814,12 +957,30 @@ def handle_preview_edit(tg: TelegramClient, actor: Actor) -> None:
         tg.send_message(actor.chat_id, "Начните заявку заново: /new_video.")
         return
     data = session.get("data") or {}
+    video_type = normalize_video_type(data.get("video_type"))
     keep = {
         "edit_video_id": data.get("edit_video_id"),
-        "video_type": normalize_video_type(data.get("video_type")),
-        "instagram_url": data.get("instagram_url"),
-        "instagram_id": data.get("instagram_id"),
+        "video_type": video_type,
+        "platform_flow": PLATFORM_FLOW_BIGRECAP if video_type == VIDEO_TYPE_BIGRECAP else PLATFORM_FLOW_REGULAR,
     }
+    if video_type == VIDEO_TYPE_BIGRECAP:
+        keep.update(
+            {
+                "instagram_url": None,
+                "instagram_id": None,
+                "youtube_url": data.get("youtube_url"),
+                "youtube_id": data.get("youtube_id"),
+                "tiktok_url": None,
+                "tiktok_id": None,
+            }
+        )
+    else:
+        keep.update(
+            {
+                "instagram_url": data.get("instagram_url"),
+                "instagram_id": data.get("instagram_id"),
+            }
+        )
     db.set_session(
         tg_id=actor.tg_id,
         chat_id=actor.chat_id,
@@ -827,7 +988,10 @@ def handle_preview_edit(tg: TelegramClient, actor: Actor) -> None:
         state="new:author",
         data=keep,
     )
-    tg.send_message(actor.chat_id, "Ок, оставляю Instagram и пройдём поля заново.")
+    if video_type == VIDEO_TYPE_BIGRECAP:
+        tg.send_message(actor.chat_id, "Ок, оставляю YouTube и пройдём поля заново.")
+    else:
+        tg.send_message(actor.chat_id, "Ок, оставляю Instagram и пройдём поля заново.")
     ask_people(tg, actor, "author")
 
 
@@ -838,14 +1002,23 @@ def submit_video(tg: TelegramClient, actor: Actor) -> None:
         return
     data = session.get("data") or {}
     data["video_type"] = normalize_video_type(data.get("video_type"))
-    if not data.get("instagram_id"):
+    if data["video_type"] == VIDEO_TYPE_REGULAR and not data.get("instagram_id"):
         tg.send_message(actor.chat_id, "В заявке нет Instagram ID. Начните заново: /new_video.")
+        return
+    if data["video_type"] == VIDEO_TYPE_BIGRECAP and not data.get("youtube_id"):
+        tg.send_message(actor.chat_id, "В заявке нет YouTube ID. Начните заново: /new_bigrecap.")
         return
 
     edit_video_id = int(data["edit_video_id"]) if data.get("edit_video_id") else None
-    duplicate = find_video_by_instagram_id(data["instagram_id"])
+    duplicate = (
+        find_video_by_youtube_id(data["youtube_id"])
+        if data["video_type"] == VIDEO_TYPE_BIGRECAP
+        else find_video_by_instagram_id(data["instagram_id"])
+    )
     if duplicate and duplicate.get("id") != edit_video_id:
         db.clear_session(actor.tg_id)
+        if data["video_type"] == VIDEO_TYPE_BIGRECAP:
+            tg.send_message(actor.chat_id, "Похоже, этот YouTube-ролик уже был добавлен.")
         tg.send_message(actor.chat_id, format_video_card(duplicate, title="Такое видео уже есть"))
         return
 
@@ -855,12 +1028,20 @@ def submit_video(tg: TelegramClient, actor: Actor) -> None:
         else:
             video = insert_pending_video(actor, data)
     except psycopg.errors.UniqueViolation:
-        duplicate = find_video_by_instagram_id(data["instagram_id"])
+        duplicate = (
+            find_video_by_youtube_id(data["youtube_id"])
+            if data["video_type"] == VIDEO_TYPE_BIGRECAP
+            else find_video_by_instagram_id(data["instagram_id"])
+        )
         db.clear_session(actor.tg_id)
         if duplicate:
             tg.send_message(actor.chat_id, format_video_card(duplicate, title="Такое видео уже есть"))
         else:
             tg.send_message(actor.chat_id, "Похоже, заявка уже была добавлена. Проверьте /my_requests.")
+        return
+    except ValueError as exc:
+        db.clear_session(actor.tg_id)
+        tg.send_message(actor.chat_id, _safe_error(exc))
         return
     except RuntimeError as exc:
         db.clear_session(actor.tg_id)
@@ -877,7 +1058,27 @@ def submit_video(tg: TelegramClient, actor: Actor) -> None:
         )
 
 
+def normalized_submission_data(data: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(data)
+    video_type = normalize_video_type(normalized.get("video_type"))
+    normalized["video_type"] = video_type
+    if video_type == VIDEO_TYPE_BIGRECAP:
+        if not normalized.get("youtube_url") or not normalized.get("youtube_id"):
+            raise ValueError("bigrecap requires youtube_url")
+        normalized["platform_flow"] = PLATFORM_FLOW_BIGRECAP
+        normalized["instagram_url"] = None
+        normalized["instagram_id"] = None
+        normalized["tiktok_url"] = None
+        normalized["tiktok_id"] = None
+    else:
+        if not normalized.get("instagram_url") or not normalized.get("instagram_id"):
+            raise ValueError("regular video requires instagram_url")
+        normalized["platform_flow"] = PLATFORM_FLOW_REGULAR
+    return normalized
+
+
 def update_revision_video(actor: Actor, video_id: int, data: dict[str, Any]) -> dict[str, Any]:
+    data = normalized_submission_data(data)
     with db.transaction() as conn:
         before = get_video_by_id(conn, video_id)
         if before.get("added_by_tg_id") != actor.tg_id and not is_admin(actor.tg_id):
@@ -963,6 +1164,7 @@ def update_revision_video(actor: Actor, video_id: int, data: dict[str, Any]) -> 
 
 
 def insert_pending_video(actor: Actor, data: dict[str, Any]) -> dict[str, Any]:
+    data = normalized_submission_data(data)
     with db.transaction() as conn:
         batch_id = ensure_open_batch(conn, actor)
         with conn.cursor() as cur:
@@ -1068,7 +1270,10 @@ def recalculate_batch(conn, batch_id: int) -> dict[str, Any]:
                 count(*) FILTER (
                     WHERE status = 'pending'
                       AND publish_date IS NOT NULL
-                      AND instagram_id IS NOT NULL
+                      AND (
+                        (COALESCE(video_type, 'regular') = 'regular' AND instagram_id IS NOT NULL)
+                        OR (COALESCE(video_type, 'regular') = 'bigrecap' AND youtube_id IS NOT NULL)
+                      )
                       AND COALESCE(author_name, '') <> ''
                       AND COALESCE(montage_name, '') <> ''
                 ) AS clean_count,
@@ -1077,7 +1282,14 @@ def recalculate_batch(conn, batch_id: int) -> dict[str, Any]:
                     WHERE status = 'pending'
                       AND (
                         publish_date IS NULL
-                        OR instagram_id IS NULL
+                        OR (
+                          COALESCE(video_type, 'regular') = 'regular'
+                          AND instagram_id IS NULL
+                        )
+                        OR (
+                          COALESCE(video_type, 'regular') = 'bigrecap'
+                          AND youtube_id IS NULL
+                        )
                         OR COALESCE(author_name, '') = ''
                         OR COALESCE(montage_name, '') = ''
                       )
@@ -1184,6 +1396,23 @@ def find_video_by_instagram_id(instagram_id: str) -> dict[str, Any] | None:
             return cur.fetchone()
 
 
+def find_video_by_youtube_id(youtube_id: str) -> dict[str, Any] | None:
+    if not youtube_id:
+        return None
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                VIDEO_SELECT
+                + """
+                WHERE v.youtube_id = %s
+                  AND v.status <> 'deleted'
+                LIMIT 1
+                """,
+                (youtube_id,),
+            )
+            return cur.fetchone()
+
+
 def get_video_by_id(conn, video_id: int) -> dict[str, Any]:
     with conn.cursor() as cur:
         cur.execute(VIDEO_SELECT + " WHERE v.id = %s", (video_id,))
@@ -1279,11 +1508,17 @@ def start_revision(tg: TelegramClient, actor: Actor, video_id: int) -> None:
     if video.get("status") != "needs_revision":
         tg.send_message(actor.chat_id, "Эта заявка сейчас не ожидает правку.")
         return
+    video_type = normalize_video_type(video.get("video_type"))
     data = {
         "edit_video_id": video_id,
-        "video_type": normalize_video_type(video.get("video_type")),
-        "instagram_url": video.get("instagram_url"),
-        "instagram_id": video.get("instagram_id"),
+        "video_type": video_type,
+        "platform_flow": PLATFORM_FLOW_BIGRECAP if video_type == VIDEO_TYPE_BIGRECAP else PLATFORM_FLOW_REGULAR,
+        "instagram_url": None if video_type == VIDEO_TYPE_BIGRECAP else video.get("instagram_url"),
+        "instagram_id": None if video_type == VIDEO_TYPE_BIGRECAP else video.get("instagram_id"),
+        "youtube_url": video.get("youtube_url") if video_type == VIDEO_TYPE_BIGRECAP else None,
+        "youtube_id": video.get("youtube_id") if video_type == VIDEO_TYPE_BIGRECAP else None,
+        "tiktok_url": None if video_type == VIDEO_TYPE_BIGRECAP else video.get("tiktok_url"),
+        "tiktok_id": None if video_type == VIDEO_TYPE_BIGRECAP else video.get("tiktok_id"),
     }
     db.set_session(
         tg_id=actor.tg_id,
@@ -1837,7 +2072,10 @@ def approve_clean_batch(
         WHERE batch_id = %s
           AND status = 'pending'
           AND publish_date IS NOT NULL
-          AND instagram_id IS NOT NULL
+          AND (
+            (COALESCE(video_type, 'regular') = 'regular' AND instagram_id IS NOT NULL)
+            OR (COALESCE(video_type, 'regular') = 'bigrecap' AND youtube_id IS NOT NULL)
+          )
           AND COALESCE(author_name, '') <> ''
           AND COALESCE(montage_name, '') <> ''
         ORDER BY id ASC

@@ -70,6 +70,20 @@ def _insert_video_type(lines: list[str], row: dict[str, Any]) -> None:
         lines.insert(2, f"Тип: {video_type_label(row.get('video_type'))}")
 
 
+def _platform_lines(row: dict[str, Any]) -> list[str]:
+    if row.get("video_type") == "bigrecap":
+        return [
+            f"YouTube: {_link_value(row.get('youtube_url'))}",
+            f"VK: {_link_value(row.get('vk_url'))}",
+        ]
+    return [
+        f"Instagram: {_link_value(row.get('instagram_url'))}",
+        f"YouTube: {_link_value(row.get('youtube_url'))}",
+        f"TikTok: {_link_value(row.get('tiktok_url'))}",
+        f"VK: {_link_value(row.get('vk_url'))}",
+    ]
+
+
 def format_video_card(
     row: dict[str, Any],
     title: str = "Заявка",
@@ -80,10 +94,7 @@ def format_video_card(
         header,
         f"ID: {row.get('id', 'новая')}",
         "",
-        f"Instagram: {_link_value(row.get('instagram_url'))}",
-        f"YouTube: {_link_value(row.get('youtube_url'))}",
-        f"TikTok: {_link_value(row.get('tiktok_url'))}",
-        f"VK: {_link_value(row.get('vk_url'))}",
+        *_platform_lines(row),
         "",
         f"Дата публикации: {_format_publish_date(row.get('publish_date'))}",
         "",
@@ -107,10 +118,7 @@ def format_final_card(row: dict[str, Any]) -> str:
         "",
         f"Дата публикации: {_format_publish_date(row.get('publish_date'))}",
         "",
-        f"Instagram: {_link_value(row.get('instagram_url'))}",
-        f"YouTube: {_link_value(row.get('youtube_url'))}",
-        f"TikTok: {_link_value(row.get('tiktok_url'))}",
-        f"VK: {_link_value(row.get('vk_url'))}",
+        *_platform_lines(row),
         "",
         f"Автор: {person_value(row, 'author')}",
         f"Монтажёр: {person_value(row, 'montage')}",

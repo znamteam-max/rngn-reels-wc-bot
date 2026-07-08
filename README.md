@@ -95,7 +95,7 @@ python scripts/seed_people.py authors.txt --role author
 The spreadsheet must contain a tab named `Videos` with these columns:
 
 ```text
-id,status,video_type,publish_date,instagram_url,instagram_id,youtube_url,tiktok_url,vk_url,author,author_tg_id,montage,montage_tg_id,voice,voice_tg_id,added_by,checked_by,created_at,checked_at,batch_id,comment
+id,status,video_type,publish_date,instagram_url,instagram_id,youtube_url,youtube_id,tiktok_url,vk_url,author,author_tg_id,montage,montage_tg_id,voice,voice_tg_id,added_by,checked_by,created_at,checked_at,batch_id,comment
 ```
 
 Create a Google Cloud service account, enable Google Sheets API, and share the spreadsheet with the service account email as Editor.
@@ -199,7 +199,11 @@ Roles: `author`, `montage`, `voice`, `admin`, `superadmin`.
 
 ## Main Flow
 
-`/new_video` creates a regular Reels request, and `/new_bigrecap` creates a request with `video_type = bigrecap`. Both commands work only in a private chat with the bot. In groups, the bot asks the user to open a private chat. The form asks for Instagram/Reels URL, author, whether the video had another author's voice, one editor, and optional YouTube/TikTok/VK links. The montage step includes `Смонтировал сам автор`. Participants do not set the publication date. Instagram duplicates are detected by shortcode from `/reel/{id}`, `/p/{id}`, or `/tv/{id}`.
+`/new_video` creates a regular Reels request and keeps the Instagram-first flow: Instagram/Reels URL, author, whether the video had another author's voice, one editor, and optional YouTube/TikTok/VK links.
+
+`/new_bigrecap` creates a request with `video_type = bigrecap` and starts from a required YouTube link. It does not ask for Instagram or TikTok. After author, voice, and montage selection, it asks whether to add VK. Big recap duplicates are detected by `youtube_id`; regular Reels duplicates are still detected by Instagram shortcode from `/reel/{id}`, `/p/{id}`, or `/tv/{id}`.
+
+Both commands work only in a private chat with the bot. In groups, the bot asks the user to open a private chat. The montage step includes `Смонтировал сам автор`. Participants do not set the publication date.
 
 After preview, the user sends the request to review. The video becomes `pending`, gets a `batch_id`, and the bot sends a review card only to `ADMIN_CHAT_ID`. The stored admin Telegram message is saved in `admin_message_chat_id`, `admin_message_id`, and `admin_notified_at`. Admins can run `/resend_pending` to send every pending card to the current admin chat again. The admin card shows whether `publish_date` is set. Admins must set the publication date during review before approval; approval is blocked until the date is present. Admin approval is atomic: the database update only succeeds while status is still `pending` and `publish_date` is not null, so two admins cannot approve the same video with a conflict.
 

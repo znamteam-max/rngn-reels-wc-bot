@@ -8,15 +8,22 @@ from unittest.mock import patch
 from bot.config import get_settings, missing_env_names
 from bot.handlers import (
     Actor,
+    BIGRECAP_YOUTUBE_INVALID_MESSAGE,
+    BIGRECAP_YOUTUBE_PROMPT,
     PENDING_VIDEOS_SQL,
     apply_montage_same_as_author,
     ask_people,
     build_chatid_text,
+    handle_new_bigrecap_youtube,
     normalize_video_type,
+    normalized_submission_data,
+    next_after_person,
+    start_new_video,
     start_new_bigrecap,
     telegram_failure_payload,
 )
 from bot.links import (
+    extract_youtube_id,
     normalize_instagram,
     normalize_tiktok,
     normalize_vk,
@@ -66,6 +73,9 @@ class LinkNormalizationTests(unittest.TestCase):
         link = normalize_youtube("https://youtube.com/shorts/xyz987?utm_campaign=x")
         self.assertEqual(link.external_id, "xyz987")
         self.assertEqual(link.url, "https://youtu.be/xyz987")
+
+    def test_extract_youtube_id_mobile_watch(self) -> None:
+        self.assertEqual(extract_youtube_id("https://m.youtube.com/watch?v=mob123"), "mob123")
 
     def test_tiktok_video_id(self) -> None:
         link = normalize_tiktok("https://www.tiktok.com/@name/video/1234567890?utm_source=x")
@@ -187,7 +197,8 @@ class BotV108Tests(unittest.TestCase):
     def test_bigrecap_card_shows_type_regular_card_hides_it(self) -> None:
         base = {
             "id": 10,
-            "instagram_url": "https://www.instagram.com/reel/ABC/",
+            "youtube_url": "https://youtu.be/big123",
+            "vk_url": "https://vk.com/video-1_2",
             "author_name": "Прокудин",
             "author_username": "ny_pochemu",
             "montage_name": "Max",
@@ -196,8 +207,12 @@ class BotV108Tests(unittest.TestCase):
             "added_by_tg_id": 1,
         }
         bigrecap = format_video_card({**base, "video_type": "bigrecap"})
-        regular = format_video_card({**base, "video_type": "regular"})
+        regular = format_video_card({**base, "video_type": "regular", "instagram_url": "https://www.instagram.com/reel/ABC/"})
         self.assertIn("Тип: большой рекап", bigrecap)
+        self.assertIn("YouTube: https://youtu.be/big123", bigrecap)
+        self.assertIn("VK: https://vk.com/video-1_2", bigrecap)
+        self.assertNotIn("Instagram:", bigrecap)
+        self.assertNotIn("TikTok:", bigrecap)
         self.assertNotIn("Тип:", regular)
 
     def test_video_sheet_row_includes_video_type_after_status(self) -> None:
@@ -206,21 +221,104 @@ class BotV108Tests(unittest.TestCase):
                 "id": 10,
                 "status": "pending",
                 "video_type": "bigrecap",
+                "youtube_id": "big123",
                 "author_name": "Прокудин",
                 "author_username": "ny_pochemu",
             }
         )
         self.assertEqual(SHEET_COLUMNS[:3], ["id", "status", "video_type"])
         self.assertEqual(row[:3], ["10", "pending", "bigrecap"])
+        self.assertEqual(row[SHEET_COLUMNS.index("youtube_id")], "big123")
+
+    def test_start_new_video_stores_regular_instagram_first_flow(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="user")
+        with patch("bot.handlers.db.set_session") as set_session:
+            start_new_video(tg, actor)
+        self.assertEqual(set_session.call_args.kwargs["state"], "new:instagram")
+        self.assertEqual(
+            set_session.call_args.kwargs["data"],
+            {"video_type": "regular", "platform_flow": "instagram_first"},
+        )
+        self.assertIn("Instagram/Reels", tg.messages[0]["text"])
 
     def test_start_new_bigrecap_stores_type_in_session(self) -> None:
         tg = FakeTelegram()
         actor = Actor(tg_id=1, chat_id=1, username="user")
         with patch("bot.handlers.db.set_session") as set_session:
             start_new_bigrecap(tg, actor)
-        self.assertEqual(set_session.call_args.kwargs["state"], "new:instagram")
-        self.assertEqual(set_session.call_args.kwargs["data"], {"video_type": "bigrecap"})
-        self.assertIn("Instagram/Reels", tg.messages[0]["text"])
+        self.assertEqual(set_session.call_args.kwargs["state"], "new:bigrecap_youtube")
+        self.assertEqual(
+            set_session.call_args.kwargs["data"],
+            {
+                "video_type": "bigrecap",
+                "platform_flow": "youtube_vk",
+                "step": "awaiting_bigrecap_youtube",
+            },
+        )
+        self.assertEqual(tg.messages[0]["text"], BIGRECAP_YOUTUBE_PROMPT)
+
+    def test_bigrecap_invalid_youtube_keeps_user_on_youtube_step(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="user")
+        with patch("bot.handlers.db.set_session") as set_session:
+            handle_new_bigrecap_youtube(tg, actor, {"video_type": "bigrecap"}, "https://instagram.com/reel/ABC/")
+        set_session.assert_not_called()
+        self.assertEqual(tg.messages[0]["text"], BIGRECAP_YOUTUBE_INVALID_MESSAGE)
+
+    def test_bigrecap_youtube_step_sets_people_flow_without_instagram(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="user")
+        with (
+            patch("bot.handlers.find_video_by_youtube_id", return_value=None),
+            patch("bot.handlers.db.set_session") as set_session,
+            patch("bot.handlers.ask_people") as ask_people_mock,
+        ):
+            handle_new_bigrecap_youtube(tg, actor, {"video_type": "bigrecap"}, "https://youtu.be/big123")
+        data = set_session.call_args.kwargs["data"]
+        self.assertEqual(set_session.call_args.kwargs["state"], "new:author")
+        self.assertEqual(data["youtube_id"], "big123")
+        self.assertIsNone(data["instagram_url"])
+        self.assertIsNone(data["instagram_id"])
+        self.assertIsNone(data["tiktok_url"])
+        self.assertIsNone(data["tiktok_id"])
+        ask_people_mock.assert_called_once_with(tg, actor, "author")
+
+    def test_bigrecap_submission_data_clears_instagram_and_tiktok(self) -> None:
+        data = normalized_submission_data(
+            {
+                "video_type": "bigrecap",
+                "instagram_url": "https://www.instagram.com/reel/OLD/",
+                "instagram_id": "OLD",
+                "youtube_url": "https://youtu.be/big123",
+                "youtube_id": "big123",
+                "tiktok_url": "https://www.tiktok.com/@x/video/1",
+                "tiktok_id": "1",
+            }
+        )
+        self.assertEqual(data["video_type"], "bigrecap")
+        self.assertEqual(data["youtube_id"], "big123")
+        self.assertIsNone(data["instagram_url"])
+        self.assertIsNone(data["instagram_id"])
+        self.assertIsNone(data["tiktok_url"])
+        self.assertIsNone(data["tiktok_id"])
+
+    def test_bigrecap_after_montage_asks_vk_not_tiktok(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="user")
+        data = {
+            "video_type": "bigrecap",
+            "youtube_url": "https://youtu.be/big123",
+            "youtube_id": "big123",
+        }
+        with patch("bot.handlers.db.set_session") as set_session:
+            next_after_person(tg, actor, "montage", data)
+        self.assertEqual(set_session.call_args.kwargs["state"], "new:bigrecap_vk_choice")
+        self.assertEqual(tg.messages[0]["text"], "Добавить ссылку VK?")
+        keyboard = tg.messages[0]["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+        self.assertEqual(keyboard[0][0]["text"], "Добавить VK")
+        self.assertEqual(keyboard[1][0]["text"], "Пропустить VK")
+        self.assertNotIn("TikTok", tg.messages[0]["text"])
 
     def test_voice_prompt_uses_new_wording_and_no_button(self) -> None:
         tg = FakeTelegram()
@@ -230,7 +328,8 @@ class BotV108Tests(unittest.TestCase):
         message = tg.messages[0]
         self.assertEqual(message["text"], "Была ли в ролике озвучка другого автора?")
         keyboard = message["reply_markup"]["inline_keyboard"]  # type: ignore[index]
-        self.assertEqual(keyboard[0][0]["text"], "Нет, не было")
+        self.assertEqual(keyboard[0][0]["text"], "Да, была")
+        self.assertEqual(keyboard[0][1]["text"], "Нет, не было")
 
 
 if __name__ == "__main__":

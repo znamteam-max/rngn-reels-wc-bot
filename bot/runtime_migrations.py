@@ -44,9 +44,19 @@ def ensure_runtime_migrations() -> dict[str, Any]:
                 WHERE table_name = 'videos' AND column_name = 'video_type'
                 """
             )
-            column = cur.fetchone()
+            video_type_column = cur.fetchone()
+            cur.execute(
+                """
+                SELECT is_nullable
+                FROM information_schema.columns
+                WHERE table_name = 'videos' AND column_name = 'youtube_id'
+                """
+            )
+            youtube_id_column = cur.fetchone()
             cur.execute("SELECT to_regclass('idx_videos_video_type') IS NOT NULL")
-            index_exists = bool(cur.fetchone()[0])
+            video_type_index_exists = bool(cur.fetchone()[0])
+            cur.execute("SELECT to_regclass('idx_videos_youtube_id') IS NOT NULL")
+            youtube_index_exists = bool(cur.fetchone()[0])
             cur.execute(
                 """
                 SELECT count(*)
@@ -63,10 +73,13 @@ def ensure_runtime_migrations() -> dict[str, Any]:
     _LAST_RESULT = {
         "applied": True,
         "schema": {
-            "video_type_column": column is not None,
-            "video_type_nullable": column[0] if column else None,
-            "video_type_default": column[1] if column else None,
-            "idx_videos_video_type": index_exists,
+            "video_type_column": video_type_column is not None,
+            "video_type_nullable": video_type_column[0] if video_type_column else None,
+            "video_type_default": video_type_column[1] if video_type_column else None,
+            "youtube_id_column": youtube_id_column is not None,
+            "youtube_id_nullable": youtube_id_column[0] if youtube_id_column else None,
+            "idx_videos_video_type": video_type_index_exists,
+            "idx_videos_youtube_id": youtube_index_exists,
         },
         "seed": {
             "prokudin_action": seed_action,

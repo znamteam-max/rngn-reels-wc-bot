@@ -158,22 +158,31 @@ def _test_admin_chat(tg: TelegramClient, actor: h.Actor) -> None:
 
 
 def insert_pending_video(actor: h.Actor, data: dict[str, Any]) -> dict[str, Any]:
+    data = h.normalized_submission_data(data)
+    video_type = h.normalize_video_type(data.get("video_type"))
     instagram_id = data.get("instagram_id")
-    if not instagram_id:
+    youtube_id = data.get("youtube_id")
+    if video_type == h.VIDEO_TYPE_BIGRECAP:
+        duplicate_column = "youtube_id"
+        duplicate_value = youtube_id
+    else:
+        duplicate_column = "instagram_id"
+        duplicate_value = instagram_id
+    if not duplicate_value:
         return _ORIGINAL_INSERT_PENDING_VIDEO(actor, data)
 
     with db.transaction() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT id, batch_id
                 FROM videos
-                WHERE instagram_id = %s
+                WHERE {duplicate_column} = %s
                   AND status = 'deleted'
                 ORDER BY updated_at DESC, id DESC
                 LIMIT 1
                 """,
-                (instagram_id,),
+                (duplicate_value,),
             )
             deleted = cur.fetchone()
             if not deleted:

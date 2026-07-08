@@ -22,6 +22,7 @@ SHEET_COLUMNS = [
     "instagram_url",
     "instagram_id",
     "youtube_url",
+    "youtube_id",
     "tiktok_url",
     "vk_url",
     "author",
@@ -104,6 +105,7 @@ def video_to_row(video: dict[str, Any], columns: list[str] | None = None) -> lis
         "instagram_url": video.get("instagram_url"),
         "instagram_id": video.get("instagram_id"),
         "youtube_url": video.get("youtube_url"),
+        "youtube_id": video.get("youtube_id"),
         "tiktok_url": video.get("tiktok_url"),
         "vk_url": video.get("vk_url"),
         "author": person_value(video, "author"),
@@ -207,8 +209,8 @@ def _ensure_video_sheet_columns(service, spreadsheet_id: str) -> list[str]:
             )
             .execute()
         )
-        _write_video_header(service, spreadsheet_id, SHEET_COLUMNS)
-        return SHEET_COLUMNS
+        header = header[:insert_index] + ["video_type"] + header[insert_index:]
+        _write_video_header(service, spreadsheet_id, header)
 
     columns = [column for column in header if column]
     changed = False

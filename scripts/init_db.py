@@ -140,6 +140,7 @@ ALTER TABLE videos ADD COLUMN IF NOT EXISTS admin_notified_at timestamptz NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS author_username text NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS montage_username text NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS voice_username text NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_id text NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_views bigint NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_likes bigint NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_comments bigint NULL;
@@ -153,6 +154,7 @@ ALTER TABLE videos ALTER COLUMN video_type SET DEFAULT 'regular';
 ALTER TABLE videos ALTER COLUMN video_type SET NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_videos_video_type ON videos(video_type);
+CREATE INDEX IF NOT EXISTS idx_videos_youtube_id ON videos(youtube_id);
 
 UPDATE videos v
 SET author_username = p.username
