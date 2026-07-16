@@ -14,6 +14,14 @@ def _json_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
+def _safe_exception_detail(exc: Exception) -> str:
+    detail = f"{type(exc).__name__}: {exc}"
+    token = get_settings().bot_token
+    if token:
+        detail = detail.replace(token, "[token]")
+    return detail[:500]
+
+
 class handler(BaseHTTPRequestHandler):
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = _json_bytes(payload)
@@ -74,13 +82,14 @@ class handler(BaseHTTPRequestHandler):
         try:
             handle_update(update)
         except Exception as exc:
+            detail = _safe_exception_detail(exc)
             record_system_log(
                 "webhook_update_failed",
                 "telegram_update",
                 None,
-                {"error": str(exc)[:500]},
+                {"error": detail},
             )
-            self._send_json(200, {"ok": False, "error": "handler failed"})
+            self._send_json(200, {"ok": False, "error": "handler failed", "detail": detail})
             return
 
         self._send_json(200, {"ok": True})
