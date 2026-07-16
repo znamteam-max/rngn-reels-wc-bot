@@ -62,6 +62,7 @@ ADD_ZNAMBO_DATE_PRESETS = {
 }
 ADMIN_QUEUE_NAME = "main"
 ADMIN_DATE_CLAIM_SECONDS = 300
+ADMIN_RESET_ARCHIVE_LIMIT = 8
 ADMIN_DATE_PROMPT = "Сегодня, Вчера, Позавчера, YYYY-MM-DD, DD.MM или D.M."
 ADMIN_QUEUE_STALE_MESSAGE = "Эта карточка устарела. Открой актуальную очередь: /admin"
 
@@ -2658,14 +2659,6 @@ def reset_admin_queue_command(tg: TelegramClient, actor: Actor) -> None:
         ORDER BY created_at ASC, id ASC
         """
     )
-    for row in old_cards:
-        _archive_queue_message(
-            tg,
-            int(row["admin_message_chat_id"]),
-            int(row["admin_message_id"]),
-            f"Архивная карточка заявки #{row['id']}. Используйте текущую очередь: /admin",
-            actor,
-        )
     with db.transaction() as conn:
         _queue_state_for_update(conn)
         _clear_queue_state(conn)
@@ -2688,9 +2681,20 @@ def reset_admin_queue_command(tg: TelegramClient, actor: Actor) -> None:
             action="reset",
             actor_tg_id=actor.tg_id,
             actor_username=actor.username,
-            after_data={"archived_card_count": len(old_cards)},
+            after_data={
+                "old_card_count": len(old_cards),
+                "archive_attempt_limit": ADMIN_RESET_ARCHIVE_LIMIT,
+            },
         )
     result = pump_admin_queue(tg, actor)
+    for row in old_cards[:ADMIN_RESET_ARCHIVE_LIMIT]:
+        _archive_queue_message(
+            tg,
+            int(row["admin_message_chat_id"]),
+            int(row["admin_message_id"]),
+            f"Архивная карточка заявки #{row['id']}. Используйте текущую очередь: /admin",
+            actor,
+        )
     if result["pending_count"] == 0:
         tg.send_message(actor.chat_id, "Очередь пуста. Pending-заявок: 0.")
 
