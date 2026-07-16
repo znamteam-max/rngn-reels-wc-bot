@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from collections import Counter
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ from bot.handlers import (
     ADD_ZNAMBO_INVALID_DATE_MESSAGE,
     ADD_ZNAMBO_INVALID_LINK_MESSAGE,
     ADD_ZNAMBO_LINK_PROMPT,
+    ADD_ZNAMBO_MANUAL_DATE_PROMPT,
     ADD_ZNAMBO_SESSION_DATE,
     ADD_ZNAMBO_SESSION_INSTAGRAM,
     ADD_ZNAMBO_UNAUTHORIZED_MESSAGE,
@@ -23,13 +25,16 @@ from bot.handlers import (
     ask_people,
     build_chatid_text,
     format_add_znambo_success,
+    handle_add_znambo_date,
     handle_new_bigrecap_youtube,
     handle_add_znambo_instagram,
+    handle_callback,
     normalize_video_type,
     normalized_submission_data,
     next_after_person,
     parse_add_znambo_date,
     start_add_znambo,
+    start_add_znambo_manual_date,
     start_new_video,
     start_new_bigrecap,
     telegram_failure_payload,
@@ -397,9 +402,87 @@ class BotV1010Tests(unittest.TestCase):
         self.assertEqual(data["instagram_id"], "ABC123")
         self.assertEqual(tg.messages[0]["text"], ADD_ZNAMBO_DATE_PROMPT)
         keyboard = tg.messages[0]["reply_markup"]["inline_keyboard"]  # type: ignore[index]
-        self.assertEqual(keyboard[0][0]["text"], "Сегодня")
-        self.assertEqual(keyboard[0][1]["text"], "Вчера")
-        self.assertEqual(keyboard[1][0]["text"], "Позавчера")
+        self.assertEqual(
+            [[button["text"] for button in row] for row in keyboard],
+            [["Сегодня", "Вчера"], ["Ввести вручную"]],
+        )
+        self.assertEqual(keyboard[1][0]["callback_data"], "znambo:date:manual")
+
+    def test_add_znambo_manual_callback_bypasses_preset_parser(self) -> None:
+        callback = {
+            "id": "callback-1",
+            "data": "znambo:date:manual",
+            "from": {"id": 1, "username": "znambo"},
+            "message": {"message_id": 10, "chat": {"id": 1, "type": "private"}},
+        }
+        with (
+            patch("bot.handlers.TelegramClient"),
+            patch("bot.handlers.start_add_znambo_manual_date") as start_manual,
+            patch("bot.handlers.handle_add_znambo_date") as handle_date,
+        ):
+            handle_callback(callback)
+        start_manual.assert_called_once()
+        handle_date.assert_not_called()
+
+    def test_add_znambo_manual_prompt_keeps_date_session(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="znambo")
+        session = {"state": ADD_ZNAMBO_SESSION_DATE, "data": {"flow": "add_znambo"}}
+        with (
+            patch("bot.handlers.is_superadmin", return_value=True),
+            patch("bot.handlers.db.get_session", return_value=session),
+            patch("bot.handlers.db.clear_session") as clear_session,
+        ):
+            start_add_znambo_manual_date(tg, actor)
+        clear_session.assert_not_called()
+        self.assertEqual(tg.messages[0]["text"], ADD_ZNAMBO_MANUAL_DATE_PROMPT)
+
+    def test_add_znambo_invalid_manual_date_keeps_session_active(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="znambo")
+        session = {"state": ADD_ZNAMBO_SESSION_DATE, "data": {"flow": "add_znambo"}}
+        with (
+            patch("bot.handlers.is_superadmin", return_value=True),
+            patch("bot.handlers.db.get_session", return_value=session),
+            patch("bot.handlers.db.clear_session") as clear_session,
+            patch("bot.handlers.upsert_znambo_quick_video") as upsert,
+        ):
+            handle_add_znambo_date(tg, actor, "32.07")
+        clear_session.assert_not_called()
+        upsert.assert_not_called()
+        self.assertEqual(tg.messages[0]["text"], ADD_ZNAMBO_INVALID_DATE_MESSAGE)
+
+    def test_add_znambo_dates_approve_and_sync_sheets(self) -> None:
+        actor = Actor(tg_id=1, chat_id=1, username="znambo")
+        today = datetime.now(get_settings().tz).date()
+        cases = {
+            "Сегодня": today,
+            "Вчера": today - timedelta(days=1),
+            "12.07": date(today.year, 7, 12),
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                tg = FakeTelegram()
+                data = {"flow": "add_znambo", "instagram_id": "ABC123"}
+                session = {"state": ADD_ZNAMBO_SESSION_DATE, "data": data}
+                video = {
+                    "id": 77,
+                    "publish_date": expected,
+                    "instagram_url": "https://www.instagram.com/reel/ABC123/",
+                    "status": "approved",
+                }
+                with (
+                    patch("bot.handlers.is_superadmin", return_value=True),
+                    patch("bot.handlers.db.get_session", return_value=session),
+                    patch("bot.handlers.db.clear_session") as clear_session,
+                    patch("bot.handlers.upsert_znambo_quick_video", return_value={"video": video}) as upsert,
+                    patch("bot.handlers.sync_znambo_quick_to_sheets", return_value=(True, None)) as sync,
+                ):
+                    handle_add_znambo_date(tg, actor, raw)
+                self.assertEqual(upsert.call_args.args[2], expected)
+                clear_session.assert_called_once_with(actor.tg_id)
+                sync.assert_called_once_with(video, actor)
+                self.assertIn("✅ Ролик Знамбо добавлен", tg.messages[0]["text"])
 
     def test_add_znambo_active_duplicate_clears_session_and_shows_details(self) -> None:
         tg = FakeTelegram()

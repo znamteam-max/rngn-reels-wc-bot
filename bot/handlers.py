@@ -49,16 +49,17 @@ ADD_ZNAMBO_UNAUTHORIZED_MESSAGE = "Команда доступна только 
 ADD_ZNAMBO_LINK_PROMPT = "Пришли ссылку на Instagram/Reels"
 ADD_ZNAMBO_INVALID_LINK_MESSAGE = "Это не похоже на ссылку Instagram/Reels. Пришли корректную ссылку."
 ADD_ZNAMBO_DATE_PROMPT = "Укажи дату публикации"
-ADD_ZNAMBO_INVALID_DATE_MESSAGE = (
-    "Не понял дату. Используй Сегодня, Вчера, Позавчера, ДД.ММ или ГГГГ-ММ-ДД."
+ADD_ZNAMBO_MANUAL_DATE_PROMPT = (
+    "Введи дату публикации: YYYY-MM-DD, DD.MM или D.M.\n"
+    "Например: 2026-07-16 или 16.07"
 )
+ADD_ZNAMBO_INVALID_DATE_MESSAGE = "Не понял дату. Используй ДД.ММ или ГГГГ-ММ-ДД."
 ADD_ZNAMBO_NAME = "Знамбо"
 ADD_ZNAMBO_USERNAME = "znambo"
 ADD_ZNAMBO_SORT_WEIGHTS = {"author": 100, "montage": 100, "voice": 20}
 ADD_ZNAMBO_DATE_PRESETS = {
     "today": "Сегодня",
     "yesterday": "Вчера",
-    "before_yesterday": "Позавчера",
 }
 ADMIN_QUEUE_NAME = "main"
 ADMIN_DATE_CLAIM_SECONDS = 300
@@ -393,6 +394,8 @@ def handle_callback(callback: dict[str, Any]) -> None:
     elif data.startswith("adm:manualdate:"):
         _, _, raw_video_id, raw_batch_id, raw_index = data.split(":", 4)
         start_admin_manual_date(tg, actor, int(raw_video_id), int(raw_batch_id), int(raw_index))
+    elif data == "znambo:date:manual":
+        start_add_znambo_manual_date(tg, actor)
     elif data.startswith("znambo:date:"):
         _, _, preset = data.split(":", 2)
         handle_add_znambo_date(tg, actor, ADD_ZNAMBO_DATE_PRESETS.get(preset, ""))
@@ -597,10 +600,22 @@ def ask_add_znambo_date(tg: TelegramClient, actor: Actor, data: dict[str, Any]) 
         inline_keyboard(
             [
                 [("Сегодня", "znambo:date:today"), ("Вчера", "znambo:date:yesterday")],
-                [("Позавчера", "znambo:date:before_yesterday")],
+                [("Ввести вручную", "znambo:date:manual")],
             ]
         ),
     )
+
+
+def start_add_znambo_manual_date(tg: TelegramClient, actor: Actor) -> None:
+    if not is_superadmin(actor.tg_id):
+        db.clear_session(actor.tg_id)
+        tg.send_message(actor.chat_id, ADD_ZNAMBO_UNAUTHORIZED_MESSAGE)
+        return
+    session = db.get_session(actor.tg_id)
+    if not session or session.get("state") != ADD_ZNAMBO_SESSION_DATE:
+        tg.send_message(actor.chat_id, "Начни заново: /add_znambo.")
+        return
+    tg.send_message(actor.chat_id, ADD_ZNAMBO_MANUAL_DATE_PROMPT)
 
 
 def parse_add_znambo_date(raw: str) -> date:
