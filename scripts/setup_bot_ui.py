@@ -16,7 +16,7 @@ COMMANDS = [
     ("help", "Помощь"),
     ("admin", "Админская очередь"),
     ("chatid", "Показать ID текущего чата"),
-    ("resend_pending", "Переотправить pending в админский чат"),
+    ("resend_pending", "Восстановить текущую FIFO-карточку"),
     ("test_admin_chat", "Проверить админский чат"),
     ("sync_youtube_metrics", "Обновить YouTube-метрики"),
     ("metrics_youtube_today", "YouTube сегодня"),
@@ -26,6 +26,7 @@ COMMANDS = [
 SUPERADMIN_COMMANDS = [
     *COMMANDS,
     ("add_znambo", "Быстро добавить мой ролик"),
+    ("reset_admin_queue", "Сбросить и восстановить FIFO-очередь"),
 ]
 
 

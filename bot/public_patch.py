@@ -96,8 +96,9 @@ def _send_main_menu(tg: TelegramClient, actor: h.Actor, text: str) -> None:
         rows.append([("⚡ Добавить мой ролик", "cmd:add_znambo")])
     if h.is_admin(actor.tg_id):
         rows.insert(3, [("Админка", "cmd:admin"), ("Сводка", "cmd:summary")])
-        rows.insert(4, [("Переотправить pending", "cmd:resend_pending"), ("Тест админ-чата", "cmd:test_admin_chat")])
+        rows.insert(4, [("Восстановить очередь", "cmd:resend_pending"), ("Тест админ-чата", "cmd:test_admin_chat")])
     if h.is_superadmin(actor.tg_id):
+        rows.append([("Сбросить FIFO-очередь", "cmd:reset_admin_queue")])
         status = "вкл" if _hearing_mode_enabled() else "выкл"
         rows.append([(f"👂 Режим «А?» сейчас: {status}", "fun:hearing:status")])
         rows.append([("Включить режим «А?»", "fun:hearing:on"), ("Выключить режим «А?»", "fun:hearing:off")])

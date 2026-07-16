@@ -15,7 +15,14 @@ from bot.links import (
     normalize_optional,
     parse_publish_date,
 )
-from bot.messages import format_batch_summary, format_final_card, format_video_card, person_display
+from bot.messages import (
+    format_batch_summary,
+    format_final_card,
+    format_video_card,
+    person_display,
+    person_value,
+    user_label,
+)
 from bot.telegram import TelegramAPIError, TelegramClient, inline_keyboard
 
 
@@ -53,6 +60,10 @@ ADD_ZNAMBO_DATE_PRESETS = {
     "yesterday": "Вчера",
     "before_yesterday": "Позавчера",
 }
+ADMIN_QUEUE_NAME = "main"
+ADMIN_DATE_CLAIM_SECONDS = 300
+ADMIN_DATE_PROMPT = "Сегодня, Вчера, Позавчера, YYYY-MM-DD, DD.MM или D.M."
+ADMIN_QUEUE_STALE_MESSAGE = "Эта карточка устарела. Открой актуальную очередь: /admin"
 
 VIDEO_SELECT = """
 SELECT
@@ -241,7 +252,9 @@ def _send_main_menu(tg: TelegramClient, actor: Actor, text: str) -> None:
         rows.append([("⚡ Добавить мой ролик", "cmd:add_znambo")])
     if is_admin(actor.tg_id):
         rows.insert(3, [("Админка", "cmd:admin"), ("Сводка", "cmd:summary")])
-        rows.insert(4, [("Переотправить pending", "cmd:resend_pending")])
+        rows.insert(4, [("Восстановить очередь", "cmd:resend_pending")])
+    if is_superadmin(actor.tg_id):
+        rows.append([("Сбросить FIFO-очередь", "cmd:reset_admin_queue")])
     tg.send_message(actor.chat_id, text, inline_keyboard(rows))
 
 
@@ -297,6 +310,8 @@ def handle_message(message: dict[str, Any]) -> None:
             metrics_video_command(tg, actor, rest)
         elif command == "/resend_pending":
             resend_pending_command(tg, actor)
+        elif command == "/reset_admin_queue":
+            reset_admin_queue_command(tg, actor)
         elif command == "/add_person":
             add_person_command(tg, actor, rest)
         elif command == "/activate_person":
@@ -325,8 +340,16 @@ def handle_callback(callback: dict[str, Any]) -> None:
     message_id = message.get("message_id")
     tg = TelegramClient()
 
+    callback_id = str(callback.get("id") or "")
+    if data.startswith("admq:"):
+        handle_admin_queue_callback(tg, actor, data, message_id, callback_id)
+        return
+    if data.startswith("adm:"):
+        handle_stale_admin_callback(tg, actor, callback_id)
+        return
+
     try:
-        tg.answer_callback_query(callback["id"])
+        tg.answer_callback_query(callback_id)
     except Exception:
         pass
 
@@ -344,6 +367,8 @@ def handle_callback(callback: dict[str, Any]) -> None:
         show_summary(tg, actor)
     elif data == "cmd:resend_pending":
         resend_pending_command(tg, actor)
+    elif data == "cmd:reset_admin_queue":
+        reset_admin_queue_command(tg, actor)
     elif data == "cmd:calendar":
         show_calendar(tg, actor)
     elif data == "cmd:people":
@@ -469,7 +494,7 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
         "/people — участники",
         "/search — поиск",
         "/sync_sheets — повторная синхронизация Google Sheets",
-        "/resend_pending — переотправить pending в админский чат",
+        "/resend_pending — восстановить текущую FIFO-карточку",
         "/sync_youtube_metrics — обновить YouTube-метрики",
         "/metrics_youtube_today — YouTube сегодня",
         "/metrics_youtube_all — YouTube всего",
@@ -481,6 +506,7 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
                 "",
                 "Для суперадминов:",
                 "/add_znambo — быстро добавить мой ролик",
+                "/reset_admin_queue — сбросить и восстановить FIFO-очередь",
                 "/add_person role name [tg_id] [@username]",
                 "/activate_person id",
                 "/deactivate_person id",
@@ -577,18 +603,6 @@ def ask_add_znambo_date(tg: TelegramClient, actor: Actor, data: dict[str, Any]) 
 
 
 def parse_add_znambo_date(raw: str) -> date:
-    value = (raw or "").strip().lower()
-    today = datetime.now(get_settings().tz).date()
-    offsets = {
-        "сегодня": 0,
-        "today": 0,
-        "вчера": 1,
-        "yesterday": 1,
-        "позавчера": 2,
-        "before_yesterday": 2,
-    }
-    if value in offsets:
-        return today - timedelta(days=offsets[value])
     try:
         return parse_publish_date(raw)
     except ValueError as exc:
@@ -1834,7 +1848,18 @@ def notify_admin_queue(
     video: dict[str, Any],
     actor: Actor | None = None,
 ) -> bool:
-    return send_admin_review_card(tg, video, "Новая заявка", actor)
+    try:
+        pump_admin_queue(tg, actor)
+        return True
+    except Exception as exc:
+        record_system_log(
+            "admin_queue_pump_failed",
+            "video",
+            int(video["id"]),
+            telegram_failure_payload(exc, get_settings().admin_chat_id, "pump_after_submission"),
+            actor,
+        )
+        return False
 
 
 def send_admin_review_card(
@@ -1843,21 +1868,15 @@ def send_admin_review_card(
     title: str = "Заявка",
     actor: Actor | None = None,
 ) -> bool:
-    settings = get_settings()
     try:
-        response = tg.send_message(
-            settings.admin_chat_id,
-            format_video_card(video, title=title),
-            admin_video_keyboard(int(video["id"]), int(video["batch_id"] or 0), 0),
-        )
-        store_admin_message(int(video["id"]), int(settings.admin_chat_id), response)
+        pump_admin_queue(tg, actor)
         return True
     except Exception as exc:
         record_system_log(
             "admin_notify_failed",
             "video",
             int(video["id"]),
-            telegram_failure_payload(exc, int(settings.admin_chat_id), "send_review_card"),
+            telegram_failure_payload(exc, int(get_settings().admin_chat_id), "send_review_card"),
             actor,
         )
         return False
@@ -1866,24 +1885,9 @@ def send_admin_review_card(
 def resend_pending_command(tg: TelegramClient, actor: Actor) -> None:
     if not require_admin(tg, actor):
         return
-    with db.transaction() as conn:
-        assign_orphan_pending(conn, actor)
-    rows = db.fetch_all(PENDING_VIDEOS_SQL)
-    if not rows:
-        tg.send_message(actor.chat_id, "Pending-заявок нет.")
-        return
-
-    sent = 0
-    failed = 0
-    for row in rows:
-        if send_admin_review_card(tg, row, "Pending-заявка", actor):
-            sent += 1
-        else:
-            failed += 1
-    tg.send_message(
-        actor.chat_id,
-        f"Переотправка pending завершена. Отправлено: {sent}, ошибок: {failed}.",
-    )
+    result = pump_admin_queue(tg, actor, force_repost=True)
+    if result["pending_count"] == 0:
+        tg.send_message(actor.chat_id, "Очередь пуста. Pending-заявок: 0.")
 
 
 def find_video_by_instagram_id(instagram_id: str) -> dict[str, Any] | None:
@@ -1979,6 +1983,718 @@ def require_superadmin(tg: TelegramClient, actor: Actor) -> bool:
     return True
 
 
+def _queue_state_for_update(conn) -> dict[str, Any]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO admin_queue_state (queue_name) VALUES (%s) ON CONFLICT (queue_name) DO NOTHING",
+            (ADMIN_QUEUE_NAME,),
+        )
+        cur.execute(
+            "SELECT * FROM admin_queue_state WHERE queue_name = %s FOR UPDATE",
+            (ADMIN_QUEUE_NAME,),
+        )
+        state = cur.fetchone()
+    if not state:
+        raise RuntimeError("Admin queue state is unavailable")
+    return state
+
+
+def _clear_queue_state(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE admin_queue_state
+            SET active_video_id = NULL,
+                active_chat_id = NULL,
+                active_message_id = NULL,
+                claimed_by_tg_id = NULL,
+                claimed_by_username = NULL,
+                claimed_at = NULL,
+                updated_at = now()
+            WHERE queue_name = %s
+            """,
+            (ADMIN_QUEUE_NAME,),
+        )
+
+
+def _pending_video_count(conn) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) AS count FROM videos WHERE status = 'pending'")
+        return int(cur.fetchone()["count"])
+
+
+def _oldest_pending_video(conn) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            VIDEO_SELECT
+            + """
+            WHERE v.status = 'pending'
+            ORDER BY v.created_at ASC, v.id ASC
+            LIMIT 1
+            """
+        )
+        return cur.fetchone()
+
+
+def _queue_position(conn, video: dict[str, Any]) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*) + 1 AS position
+            FROM videos
+            WHERE status = 'pending'
+              AND (created_at, id) < (%s, %s)
+            """,
+            (video["created_at"], video["id"]),
+        )
+        return int(cur.fetchone()["position"])
+
+
+def _format_admin_created_at(value: Any) -> str:
+    if not value:
+        return "не указано"
+    if isinstance(value, datetime):
+        return value.astimezone(get_settings().tz).strftime("%d.%m.%Y %H:%M")
+    return str(value)
+
+
+def format_admin_queue_card(video: dict[str, Any], total: int, position: int = 1) -> str:
+    platforms = (
+        (("YouTube", "youtube_url"), ("VK", "vk_url"))
+        if normalize_video_type(video.get("video_type")) == VIDEO_TYPE_BIGRECAP
+        else (
+            ("Instagram", "instagram_url"),
+            ("YouTube", "youtube_url"),
+            ("TikTok", "tiktok_url"),
+            ("VK", "vk_url"),
+        )
+    )
+    link_lines = [f"{label}: {video[key]}" for label, key in platforms if video.get(key)]
+    voice = person_value(video, "voice") if video.get("voice_name") else "нет"
+    video_type = "большой рекап" if normalize_video_type(video.get("video_type")) == VIDEO_TYPE_BIGRECAP else "ролик"
+    lines = [
+        f"Заявка #{video['id']}",
+        f"Очередь: {position} из {total}",
+        f"Тип: {video_type}",
+        "Статус: ожидает проверки",
+        "",
+        *link_lines,
+        "",
+        f"Дата публикации: {_format_ddmmyyyy(video.get('publish_date')) if video.get('publish_date') else 'не указана'}",
+        "",
+        f"Автор: {person_value(video, 'author')}",
+        f"Монтажёр: {person_value(video, 'montage')}",
+        f"Озвучка: {voice}",
+        f"Добавил: {user_label(video.get('added_by_username'), video.get('added_by_tg_id'))}",
+        f"Создано: {_format_admin_created_at(video.get('created_at'))}",
+    ]
+    if video.get("comment"):
+        lines.append(f"Комментарий: {video['comment']}")
+    return "\n".join(lines)
+
+
+def admin_queue_keyboard(video_id: int) -> dict[str, Any]:
+    return inline_keyboard(
+        [
+            [("Указать дату", f"admq:date:{video_id}")],
+            [("Одобрить", f"admq:approve:{video_id}"), ("Правка", f"admq:revision:{video_id}")],
+            [("Дубль", f"admq:duplicate:{video_id}"), ("Удалить", f"admq:delete:{video_id}")],
+            [("Обновить", f"admq:refresh:{video_id}")],
+        ]
+    )
+
+
+def _archive_queue_message(
+    tg: TelegramClient,
+    chat_id: int | None,
+    message_id: int | None,
+    text: str,
+    actor: Actor | None = None,
+) -> None:
+    if not chat_id or not message_id:
+        return
+    try:
+        tg.edit_message_text(chat_id, message_id, text, {"inline_keyboard": []})
+    except Exception as exc:
+        record_system_log(
+            "admin_queue_archive_failed",
+            "telegram_message",
+            message_id,
+            telegram_failure_payload(exc, chat_id, "archive_queue_card"),
+            actor,
+        )
+
+
+def _send_queue_card(
+    tg: TelegramClient,
+    conn,
+    video: dict[str, Any],
+    total: int,
+    position: int,
+) -> int:
+    chat_id = int(get_settings().admin_chat_id)
+    response = tg.send_message(
+        chat_id,
+        format_admin_queue_card(video, total, position),
+        admin_queue_keyboard(int(video["id"])),
+    )
+    message_id = _message_id(response)
+    if not message_id:
+        raise RuntimeError("Telegram did not return a message_id for the admin queue card")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE admin_queue_state
+            SET active_video_id = %s,
+                active_chat_id = %s,
+                active_message_id = %s,
+                claimed_by_tg_id = NULL,
+                claimed_by_username = NULL,
+                claimed_at = NULL,
+                updated_at = now()
+            WHERE queue_name = %s
+            """,
+            (video["id"], chat_id, message_id, ADMIN_QUEUE_NAME),
+        )
+        cur.execute(
+            """
+            UPDATE videos
+            SET admin_message_chat_id = %s,
+                admin_message_id = %s,
+                admin_notified_at = now(),
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (chat_id, message_id, video["id"]),
+        )
+    return message_id
+
+
+def pump_admin_queue(
+    tg: TelegramClient,
+    actor: Actor | None = None,
+    *,
+    force_repost: bool = False,
+) -> dict[str, Any]:
+    with db.transaction() as conn:
+        state = _queue_state_for_update(conn)
+        total = _pending_video_count(conn)
+        active_id = int(state["active_video_id"]) if state.get("active_video_id") else None
+        active_video = None
+        if active_id:
+            with conn.cursor() as cur:
+                cur.execute("SELECT status FROM videos WHERE id = %s", (active_id,))
+                active_status = cur.fetchone()
+            pointer_is_complete = bool(
+                state.get("active_chat_id")
+                and state.get("active_message_id")
+                and int(state["active_chat_id"]) == int(get_settings().admin_chat_id)
+            )
+            if active_status and active_status["status"] == "pending" and pointer_is_complete:
+                active_video = get_video_by_id(conn, active_id)
+                if not force_repost:
+                    return {
+                        "pending_count": total,
+                        "active_video_id": active_id,
+                        "active_message_id": int(state["active_message_id"]),
+                        "sent": False,
+                    }
+            else:
+                _clear_queue_state(conn)
+                active_id = None
+
+        if total == 0:
+            _clear_queue_state(conn)
+            return {"pending_count": 0, "active_video_id": None, "active_message_id": None, "sent": False}
+
+        video = active_video or _oldest_pending_video(conn)
+        if not video:
+            _clear_queue_state(conn)
+            return {"pending_count": total, "active_video_id": None, "active_message_id": None, "sent": False}
+
+        old_chat_id = int(state["active_chat_id"]) if active_video and state.get("active_chat_id") else None
+        old_message_id = int(state["active_message_id"]) if active_video and state.get("active_message_id") else None
+        position = _queue_position(conn, video)
+        message_id = _send_queue_card(tg, conn, video, total, position)
+        if old_chat_id and old_message_id and old_message_id != message_id:
+            _archive_queue_message(
+                tg,
+                old_chat_id,
+                old_message_id,
+                f"↗️ Заявка #{video['id']} перенесена в актуальную карточку ниже.",
+                actor,
+            )
+        return {
+            "pending_count": total,
+            "active_video_id": int(video["id"]),
+            "active_message_id": message_id,
+            "sent": True,
+        }
+
+
+def _queue_stale_text(current_video_id: int | None) -> str:
+    if current_video_id:
+        return f"Эта карточка устарела. Текущая заявка #{current_video_id}."
+    return ADMIN_QUEUE_STALE_MESSAGE
+
+
+def _answer_queue_callback(
+    tg: TelegramClient,
+    callback_id: str,
+    text: str | None = None,
+    *,
+    show_alert: bool = False,
+) -> None:
+    try:
+        tg.answer_callback_query(callback_id, text, show_alert=show_alert)
+    except Exception:
+        pass
+
+
+def handle_stale_admin_callback(tg: TelegramClient, actor: Actor, callback_id: str) -> None:
+    if not is_admin(actor.tg_id):
+        _answer_queue_callback(tg, callback_id, "Это действие доступно только админам.", show_alert=True)
+        return
+    try:
+        state = db.fetch_one(
+            "SELECT active_video_id FROM admin_queue_state WHERE queue_name = %s",
+            (ADMIN_QUEUE_NAME,),
+        )
+        current_id = int(state["active_video_id"]) if state and state.get("active_video_id") else None
+    except Exception:
+        current_id = None
+    _answer_queue_callback(tg, callback_id, _queue_stale_text(current_id), show_alert=True)
+
+
+def _lock_current_queue_item(
+    conn,
+    video_id: int,
+    chat_id: int,
+    message_id: int | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
+    state = _queue_state_for_update(conn)
+    current_id = int(state["active_video_id"]) if state.get("active_video_id") else None
+    if (
+        current_id != video_id
+        or int(state.get("active_chat_id") or 0) != int(chat_id)
+        or int(state.get("active_message_id") or 0) != int(message_id or 0)
+    ):
+        return state, None, _queue_stale_text(current_id)
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, status, batch_id FROM videos WHERE id = %s FOR UPDATE", (video_id,))
+        locked = cur.fetchone()
+    if not locked or locked["status"] != "pending":
+        return state, None, f"Заявка #{video_id} уже обработана другим админом."
+    return state, locked, None
+
+
+def _active_queue_card(conn, video_id: int) -> tuple[dict[str, Any], int, int]:
+    video = get_video_by_id(conn, video_id)
+    total = _pending_video_count(conn)
+    return video, total, _queue_position(conn, video)
+
+
+def _refresh_active_queue_card(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    message_id: int | None,
+) -> str | None:
+    with db.transaction() as conn:
+        _, _, error = _lock_current_queue_item(conn, video_id, actor.chat_id, message_id)
+        if error:
+            return error
+        video, total, position = _active_queue_card(conn, video_id)
+        tg.edit_message_text(
+            actor.chat_id,
+            int(message_id),
+            format_admin_queue_card(video, total, position),
+            admin_queue_keyboard(video_id),
+        )
+    return None
+
+
+def _show_admin_queue_date_options(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    message_id: int | None,
+) -> str | None:
+    with db.transaction() as conn:
+        _, _, error = _lock_current_queue_item(conn, video_id, actor.chat_id, message_id)
+        if error:
+            return error
+        keyboard = inline_keyboard(
+            [
+                [("Сегодня", f"admq:setdate:{video_id}:today"), ("Вчера", f"admq:setdate:{video_id}:yesterday")],
+                [("Позавчера", f"admq:setdate:{video_id}:before_yesterday")],
+                [("Ввести вручную", f"admq:manualdate:{video_id}")],
+                [("Назад", f"admq:refresh:{video_id}")],
+            ]
+        )
+        tg.edit_message_text(
+            actor.chat_id,
+            int(message_id),
+            f"Заявка #{video_id}\nУкажите дату публикации:\n{ADMIN_DATE_PROMPT}",
+            keyboard,
+        )
+    return None
+
+
+def _start_admin_queue_manual_date(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    message_id: int | None,
+) -> str | None:
+    with db.transaction() as conn:
+        state, _, error = _lock_current_queue_item(conn, video_id, actor.chat_id, message_id)
+        if error:
+            return error
+        claimed_at = state.get("claimed_at")
+        claim_fresh = bool(
+            state.get("claimed_by_tg_id")
+            and claimed_at
+            and claimed_at > datetime.now(timezone.utc) - timedelta(seconds=ADMIN_DATE_CLAIM_SECONDS)
+        )
+        if claim_fresh and int(state["claimed_by_tg_id"]) != actor.tg_id:
+            claimant = (
+                f"@{state['claimed_by_username']}"
+                if state.get("claimed_by_username")
+                else str(state["claimed_by_tg_id"])
+            )
+            return f"Заявку #{video_id} сейчас оформляет {claimant}."
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE admin_queue_state
+                SET claimed_by_tg_id = %s,
+                    claimed_by_username = %s,
+                    claimed_at = now(),
+                    updated_at = now()
+                WHERE queue_name = %s
+                """,
+                (actor.tg_id, actor.username, ADMIN_QUEUE_NAME),
+            )
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state="admin:date",
+        data={
+            "video_id": video_id,
+            "queue_name": ADMIN_QUEUE_NAME,
+            "active_message_chat_id": actor.chat_id,
+            "active_message_id": int(message_id),
+        },
+    )
+    tg.send_message(
+        actor.chat_id,
+        f"Заявка #{video_id} — введите дату публикации:\n{ADMIN_DATE_PROMPT}",
+    )
+    return None
+
+
+def _set_active_queue_publish_date(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    publish_date: date,
+    active_chat_id: int,
+    active_message_id: int,
+) -> str | None:
+    with db.transaction() as conn:
+        state, locked, error = _lock_current_queue_item(conn, video_id, active_chat_id, active_message_id)
+        if error:
+            return error
+        claimed_at = state.get("claimed_at")
+        claim_fresh = bool(
+            state.get("claimed_by_tg_id")
+            and claimed_at
+            and claimed_at > datetime.now(timezone.utc) - timedelta(seconds=ADMIN_DATE_CLAIM_SECONDS)
+        )
+        if claim_fresh and int(state["claimed_by_tg_id"]) != actor.tg_id:
+            claimant = (
+                f"@{state['claimed_by_username']}"
+                if state.get("claimed_by_username")
+                else str(state["claimed_by_tg_id"])
+            )
+            return f"Заявку #{video_id} сейчас оформляет {claimant}."
+        before = get_video_by_id(conn, video_id)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE videos
+                SET publish_date = %s,
+                    publish_date_set_by_tg_id = %s,
+                    publish_date_set_by_username = %s,
+                    publish_date_set_at = now(),
+                    updated_at = now()
+                WHERE id = %s AND status = 'pending'
+                """,
+                (publish_date, actor.tg_id, actor.username, video_id),
+            )
+            cur.execute(
+                """
+                UPDATE admin_queue_state
+                SET claimed_by_tg_id = NULL,
+                    claimed_by_username = NULL,
+                    claimed_at = NULL,
+                    updated_at = now()
+                WHERE queue_name = %s
+                """,
+                (ADMIN_QUEUE_NAME,),
+            )
+        if locked and locked.get("batch_id"):
+            recalculate_batch(conn, int(locked["batch_id"]))
+        db.log_event(
+            conn,
+            entity_type="video",
+            entity_id=video_id,
+            action="publish_date_set",
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+            before_data={"publish_date": before.get("publish_date")},
+            after_data={"publish_date": publish_date.isoformat()},
+        )
+        video, total, position = _active_queue_card(conn, video_id)
+        tg.edit_message_text(
+            active_chat_id,
+            active_message_id,
+            format_admin_queue_card(video, total, position),
+            admin_queue_keyboard(video_id),
+        )
+    return None
+
+
+def _format_processed_queue_card(
+    video: dict[str, Any],
+    status: str,
+    actor: Actor,
+    *,
+    sheet_ok: bool = True,
+) -> str:
+    labels = {
+        "approved": f"✅ Заявка #{video['id']} одобрена",
+        "needs_revision": f"🛠 Заявка #{video['id']} возвращена на правку",
+        "duplicate": f"♻️ Заявка #{video['id']} отмечена как дубль",
+        "deleted": f"🗑 Заявка #{video['id']} удалена",
+    }
+    lines = [labels[status]]
+    if status == "approved":
+        lines.append(f"Дата публикации: {_format_ddmmyyyy(video.get('publish_date'))}")
+        if not sheet_ok:
+            lines.append("Google Sheets: ошибка синхронизации, используйте /sync_sheets")
+    lines.append(f"Проверил: {user_label(actor.username, actor.tg_id)}")
+    return "\n".join(lines)
+
+
+def _notify_submitter_of_queue_result(
+    tg: TelegramClient,
+    video: dict[str, Any],
+    status: str,
+) -> None:
+    chat_id = video.get("added_by_tg_id")
+    if not chat_id:
+        return
+    messages = {
+        "approved": f"✅ Заявка #{video['id']} одобрена.",
+        "needs_revision": f"🛠 Заявка #{video['id']} возвращена на правку.",
+        "duplicate": f"♻️ Заявка #{video['id']} отмечена как дубль.",
+        "deleted": f"🗑 Заявка #{video['id']} удалена.",
+    }
+    try:
+        tg.send_message(int(chat_id), messages[status])
+    except Exception:
+        pass
+
+
+def _process_admin_queue_action(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    message_id: int | None,
+    status: str,
+) -> str | None:
+    with db.transaction() as conn:
+        _, locked, error = _lock_current_queue_item(conn, video_id, actor.chat_id, message_id)
+        if error:
+            return error
+        before = get_video_by_id(conn, video_id)
+        if status == "approved" and not before.get("publish_date"):
+            return "Сначала укажи дату публикации."
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE videos
+                SET status = %s,
+                    checked_by_tg_id = %s,
+                    checked_by_username = %s,
+                    checked_at = now(),
+                    updated_at = now()
+                WHERE id = %s AND status = 'pending'
+                """,
+                (status, actor.tg_id, actor.username, video_id),
+            )
+            cur.execute("DELETE FROM admin_locks WHERE video_id = %s", (video_id,))
+        _clear_queue_state(conn)
+        if locked and locked.get("batch_id"):
+            recalculate_batch(conn, int(locked["batch_id"]))
+        db.log_event(
+            conn,
+            entity_type="video",
+            entity_id=video_id,
+            action=status,
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+            before_data={"status": before.get("status")},
+            after_data={"status": status},
+        )
+        video = get_video_by_id(conn, video_id)
+
+    sheet_ok = sync_video_after_approval(video, actor) if status == "approved" else True
+    try:
+        tg.edit_message_text(
+            actor.chat_id,
+            int(message_id),
+            _format_processed_queue_card(video, status, actor, sheet_ok=sheet_ok),
+            {"inline_keyboard": []},
+        )
+    except Exception as exc:
+        record_system_log(
+            "admin_queue_finalize_failed",
+            "video",
+            video_id,
+            telegram_failure_payload(exc, actor.chat_id, "finalize_queue_card"),
+            actor,
+        )
+    _notify_submitter_of_queue_result(tg, video, status)
+    try:
+        pump_admin_queue(tg, actor)
+    except Exception as exc:
+        record_system_log(
+            "admin_queue_pump_failed",
+            "video",
+            video_id,
+            telegram_failure_payload(exc, get_settings().admin_chat_id, "pump_after_action"),
+            actor,
+        )
+    return None
+
+
+def handle_admin_queue_callback(
+    tg: TelegramClient,
+    actor: Actor,
+    data: str,
+    message_id: int | None,
+    callback_id: str,
+) -> None:
+    if not is_admin(actor.tg_id):
+        _answer_queue_callback(tg, callback_id, "Это действие доступно только админам.", show_alert=True)
+        return
+    try:
+        parts = data.split(":")
+        action = parts[1]
+        video_id = int(parts[2])
+        error: str | None
+        if action == "date":
+            error = _show_admin_queue_date_options(tg, actor, video_id, message_id)
+        elif action == "manualdate":
+            error = _start_admin_queue_manual_date(tg, actor, video_id, message_id)
+        elif action == "setdate" and len(parts) == 4:
+            preset = {
+                "today": "Сегодня",
+                "yesterday": "Вчера",
+                "before_yesterday": "Позавчера",
+            }.get(parts[3])
+            if not preset:
+                error = "Неизвестный вариант даты."
+            else:
+                publish_date = parse_publish_date(preset)
+                error = _set_active_queue_publish_date(
+                    tg,
+                    actor,
+                    video_id,
+                    publish_date,
+                    actor.chat_id,
+                    int(message_id or 0),
+                )
+        elif action == "refresh":
+            error = _refresh_active_queue_card(tg, actor, video_id, message_id)
+        elif action in {"approve", "revision", "duplicate", "delete"}:
+            status = {
+                "approve": "approved",
+                "revision": "needs_revision",
+                "duplicate": "duplicate",
+                "delete": "deleted",
+            }[action]
+            error = _process_admin_queue_action(tg, actor, video_id, message_id, status)
+        else:
+            error = ADMIN_QUEUE_STALE_MESSAGE
+    except (IndexError, TypeError, ValueError):
+        error = ADMIN_QUEUE_STALE_MESSAGE
+    except Exception as exc:
+        record_system_log(
+            "admin_queue_callback_failed",
+            "telegram_callback",
+            None,
+            {"error": _safe_error(exc), "data": data[:100]},
+            actor,
+        )
+        error = "Не удалось обработать очередь. Попробуйте /admin."
+    _answer_queue_callback(tg, callback_id, error, show_alert=bool(error))
+
+
+def reset_admin_queue_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_superadmin(tg, actor):
+        return
+    old_cards = db.fetch_all(
+        """
+        SELECT id, admin_message_chat_id, admin_message_id
+        FROM videos
+        WHERE status = 'pending'
+          AND admin_message_chat_id IS NOT NULL
+          AND admin_message_id IS NOT NULL
+        ORDER BY created_at ASC, id ASC
+        """
+    )
+    for row in old_cards:
+        _archive_queue_message(
+            tg,
+            int(row["admin_message_chat_id"]),
+            int(row["admin_message_id"]),
+            f"Архивная карточка заявки #{row['id']}. Используйте текущую очередь: /admin",
+            actor,
+        )
+    with db.transaction() as conn:
+        _queue_state_for_update(conn)
+        _clear_queue_state(conn)
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM user_sessions WHERE state = 'admin:date'")
+            cur.execute(
+                """
+                UPDATE videos
+                SET admin_message_chat_id = NULL,
+                    admin_message_id = NULL,
+                    admin_notified_at = NULL,
+                    updated_at = now()
+                WHERE status = 'pending'
+                """
+            )
+        db.log_event(
+            conn,
+            entity_type="admin_queue",
+            entity_id=None,
+            action="reset",
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+            after_data={"archived_card_count": len(old_cards)},
+        )
+    result = pump_admin_queue(tg, actor)
+    if result["pending_count"] == 0:
+        tg.send_message(actor.chat_id, "Очередь пуста. Pending-заявок: 0.")
+
+
 def show_my_requests(tg: TelegramClient, actor: Actor) -> None:
     rows = db.fetch_all(
         VIDEO_SELECT
@@ -2041,28 +2757,9 @@ def start_revision(tg: TelegramClient, actor: Actor, video_id: int) -> None:
 def show_admin(tg: TelegramClient, actor: Actor) -> None:
     if not require_admin(tg, actor):
         return
-    with db.transaction() as conn:
-        assign_orphan_pending(conn, actor)
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT b.*
-                FROM batches b
-                WHERE b.status = 'open'
-                  AND EXISTS (
-                    SELECT 1 FROM videos v
-                    WHERE v.batch_id = b.id AND v.status = 'pending'
-                  )
-                ORDER BY b.updated_at DESC
-                LIMIT 10
-                """
-            )
-            batches = list(cur.fetchall())
-    if not batches:
-        tg.send_message(actor.chat_id, "В очереди нет заявок.")
-        return
-    for batch in batches:
-        send_batch_summary(tg, actor.chat_id, int(batch["id"]))
+    result = pump_admin_queue(tg, actor, force_repost=True)
+    if result["pending_count"] == 0:
+        tg.send_message(actor.chat_id, "Очередь пуста. Pending-заявок: 0.")
 
 
 def assign_orphan_pending(conn, actor: Actor) -> None:
@@ -2256,20 +2953,26 @@ def handle_admin_date_message(
 ) -> None:
     if not require_admin(tg, actor):
         return
+    video_id = int(data.get("video_id") or 0)
     try:
         publish_date = parse_publish_date(text)
     except ValueError as exc:
         tg.send_message(actor.chat_id, str(exc))
         return
-    db.clear_session(actor.tg_id)
-    set_video_publish_date(
+    error = _set_active_queue_publish_date(
         tg,
         actor,
-        int(data["video_id"]),
-        int(data["batch_id"]),
-        int(data["index"]),
-        publish_date.isoformat(),
+        video_id,
+        publish_date,
+        int(data.get("active_message_chat_id") or actor.chat_id),
+        int(data.get("active_message_id") or 0),
     )
+    db.clear_session(actor.tg_id)
+    if error:
+        tg.send_message(
+            actor.chat_id,
+            f"Заявка #{video_id} уже не является текущей. Открой актуальную очередь: /admin",
+        )
 
 
 def set_video_publish_date(

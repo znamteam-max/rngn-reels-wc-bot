@@ -74,6 +74,22 @@ class TelegramClient:
             payload["reply_markup"] = reply_markup
         return self._request("editMessageText", payload)
 
+    def edit_message_reply_markup(
+        self,
+        chat_id: int | str,
+        message_id: int,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reply_markup": reply_markup or {"inline_keyboard": []},
+        }
+        return self._request("editMessageReplyMarkup", payload)
+
+    def delete_message(self, chat_id: int | str, message_id: int) -> dict[str, Any]:
+        return self._request("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+
     def answer_callback_query(
         self,
         callback_query_id: str,

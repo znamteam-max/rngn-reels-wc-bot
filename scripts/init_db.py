@@ -78,6 +78,17 @@ CREATE TABLE IF NOT EXISTS admin_locks (
     locked_at timestamptz DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS admin_queue_state (
+    queue_name text PRIMARY KEY,
+    active_video_id bigint REFERENCES videos(id) ON DELETE SET NULL,
+    active_chat_id bigint,
+    active_message_id bigint,
+    claimed_by_tg_id bigint,
+    claimed_by_username text,
+    claimed_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS logs (
     id bigserial PRIMARY KEY,
     entity_type text,
@@ -121,6 +132,7 @@ CREATE INDEX IF NOT EXISTS idx_videos_instagram_id ON videos(instagram_id);
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
 CREATE INDEX IF NOT EXISTS idx_videos_publish_date ON videos(publish_date);
 CREATE INDEX IF NOT EXISTS idx_videos_batch_id ON videos(batch_id);
+CREATE INDEX IF NOT EXISTS idx_videos_pending_fifo ON videos(status, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_people_role_active ON people(role, is_active);
 CREATE INDEX IF NOT EXISTS idx_logs_entity ON logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_metrics_video_platform_time
@@ -155,6 +167,10 @@ ALTER TABLE videos ALTER COLUMN video_type SET NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_videos_video_type ON videos(video_type);
 CREATE INDEX IF NOT EXISTS idx_videos_youtube_id ON videos(youtube_id);
+
+INSERT INTO admin_queue_state (queue_name)
+VALUES ('main')
+ON CONFLICT (queue_name) DO NOTHING;
 
 UPDATE videos v
 SET author_username = p.username

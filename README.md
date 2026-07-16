@@ -193,6 +193,7 @@ Superadmin commands:
 /add_person role name [tg_id] [@username]
 /activate_person id
 /deactivate_person id
+/reset_admin_queue
 ```
 
 Roles: `author`, `montage`, `voice`, `admin`, `superadmin`.
@@ -205,16 +206,17 @@ Roles: `author`, `montage`, `voice`, `admin`, `superadmin`.
 
 Both commands work only in a private chat with the bot. In groups, the bot asks the user to open a private chat. The montage step includes `Смонтировал сам автор`. Participants do not set the publication date.
 
-After preview, the user sends the request to review. The video becomes `pending`, gets a `batch_id`, and the bot sends a review card only to `ADMIN_CHAT_ID`. The stored admin Telegram message is saved in `admin_message_chat_id`, `admin_message_id`, and `admin_notified_at`. Admins can run `/resend_pending` to send every pending card to the current admin chat again. The admin card shows whether `publish_date` is set. Admins must set the publication date during review before approval; approval is blocked until the date is present. Admin approval is atomic: the database update only succeeds while status is still `pending` and `publish_date` is not null, so two admins cannot approve the same video with a conflict.
+After preview, the user sends the request to review. The video becomes `pending` and remains available in the global FIFO queue ordered by `created_at, id`. The bot keeps exactly one actionable card in `ADMIN_CHAT_ID`; later submissions stay pending without flooding the chat. `/admin` moves the current card to the bottom, while `/resend_pending` repairs the pointer and reposts only that one card. Batches remain only for reporting and never hide pending videos from the admin queue.
 
-Admin date controls support quick presets for today, yesterday, and the day before yesterday, plus manual input in `YYYY-MM-DD`, `DD.MM`, or `D.M` format. `DD.MM` and `D.M` use the current year from `TIMEZONE`.
+Admin date controls and `/add_znambo` use the same deterministic parser. It accepts today, yesterday, the day before yesterday, `YYYY-MM-DD`, `DD.MM`, and `D.M`; `DD.MM` always means day-month and uses the current year from `TIMEZONE`. Past, current, and future publication dates are allowed.
 
 After approval:
 
 1. `videos.status` becomes `approved`.
 2. `checked_by_*` and `checked_at` are set.
 3. The `Videos` sheet row is inserted or updated by `id`.
-4. The original admin review card is edited to an approved card when possible; otherwise a new approved card is sent to `ADMIN_CHAT_ID`.
+4. The active card is edited to a compact final result without buttons.
+5. The next oldest pending video is sent as the only new actionable card.
 
 If Google Sheets is temporarily unavailable, the video remains `approved`; the failure is recorded in `logs` as `sync_sheets_failed`. Run `/sync_sheets` later to upsert approved videos again.
 

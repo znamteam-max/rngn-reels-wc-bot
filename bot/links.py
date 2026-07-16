@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from bot.config import get_settings
@@ -143,14 +143,33 @@ def normalize_optional(platform: str, raw: str) -> LinkInfo | None:
     raise ValueError(f"Unknown platform: {platform}")
 
 
-def parse_publish_date(raw: str) -> date:
+PUBLISH_DATE_ERROR = "Не понял дату. Используй Сегодня, Вчера, Позавчера, ДД.ММ или ГГГГ-ММ-ДД."
+
+
+def parse_publish_date(raw: str, *, now: datetime | None = None) -> date:
     value = raw.strip().lower()
-    today = datetime.now(get_settings().tz).date()
-    if value in {"сегодня", "today"}:
-        return today
+    today = (now or datetime.now(get_settings().tz)).date()
+    relative = {
+        "сегодня": 0,
+        "today": 0,
+        "вчера": 1,
+        "yesterday": 1,
+        "позавчера": 2,
+        "before_yesterday": 2,
+    }
+    if value in relative:
+        return today - timedelta(days=relative[value])
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
-        return datetime.strptime(value, "%Y-%m-%d").date()
-    if re.fullmatch(r"\d{1,2}\.\d{1,2}", value):
-        day, month = (int(part) for part in value.split("."))
-        return date(today.year, month, day)
-    raise ValueError("Введите дату в формате YYYY-MM-DD, DD.MM или D.M.")
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise ValueError(PUBLISH_DATE_ERROR) from exc
+    match = re.fullmatch(r"(\d{1,2})\.(\d{1,2})", value)
+    if match:
+        day = int(match.group(1))
+        month = int(match.group(2))
+        try:
+            return date(today.year, month, day)
+        except ValueError as exc:
+            raise ValueError(PUBLISH_DATE_ERROR) from exc
+    raise ValueError(PUBLISH_DATE_ERROR)
