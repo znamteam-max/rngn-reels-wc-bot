@@ -2105,6 +2105,21 @@ def admin_queue_keyboard(video_id: int) -> dict[str, Any]:
     )
 
 
+def _edit_message_text_idempotent(
+    tg: TelegramClient,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup: dict[str, Any],
+) -> None:
+    try:
+        tg.edit_message_text(chat_id, message_id, text, reply_markup)
+    except TelegramAPIError as exc:
+        if "message is not modified" in exc.description.lower():
+            return
+        raise
+
+
 def _archive_queue_message(
     tg: TelegramClient,
     chat_id: int | None,
@@ -2306,7 +2321,8 @@ def _refresh_active_queue_card(
         if error:
             return error
         video, total, position = _active_queue_card(conn, video_id)
-        tg.edit_message_text(
+        _edit_message_text_idempotent(
+            tg,
             actor.chat_id,
             int(message_id),
             format_admin_queue_card(video, total, position),
@@ -2333,7 +2349,8 @@ def _show_admin_queue_date_options(
                 [("Назад", f"admq:refresh:{video_id}")],
             ]
         )
-        tg.edit_message_text(
+        _edit_message_text_idempotent(
+            tg,
             actor.chat_id,
             int(message_id),
             f"Заявка #{video_id}\nУкажите дату публикации:\n{ADMIN_DATE_PROMPT}",
@@ -2459,7 +2476,8 @@ def _set_active_queue_publish_date(
             after_data={"publish_date": publish_date.isoformat()},
         )
         video, total, position = _active_queue_card(conn, video_id)
-        tg.edit_message_text(
+        _edit_message_text_idempotent(
+            tg,
             active_chat_id,
             active_message_id,
             format_admin_queue_card(video, total, position),

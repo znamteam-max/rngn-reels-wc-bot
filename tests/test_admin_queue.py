@@ -6,12 +6,14 @@ from zoneinfo import ZoneInfo
 
 from bot.handlers import (
     PENDING_VIDEOS_SQL,
+    _edit_message_text_idempotent,
     _format_processed_queue_card,
     admin_queue_keyboard,
     format_admin_queue_card,
 )
 from bot.links import PUBLISH_DATE_ERROR, parse_publish_date
 from bot.handlers import Actor
+from bot.telegram import TelegramAPIError
 
 
 class PublishDateParserV1011Tests(unittest.TestCase):
@@ -103,6 +105,19 @@ class AdminQueuePresentationV1011Tests(unittest.TestCase):
         self.assertIn("WHERE v.status = 'pending'", PENDING_VIDEOS_SQL)
         self.assertIn("ORDER BY v.created_at ASC, v.id ASC", PENDING_VIDEOS_SQL)
         self.assertNotIn("batch_id", PENDING_VIDEOS_SQL)
+
+    def test_repeated_identical_telegram_edit_is_successful(self) -> None:
+        class NotModifiedTelegram:
+            def edit_message_text(self, *args: object, **kwargs: object) -> None:
+                raise TelegramAPIError("Bad Request: message is not modified", 400)
+
+        _edit_message_text_idempotent(
+            NotModifiedTelegram(),  # type: ignore[arg-type]
+            -1001,
+            212,
+            "Заявка #52",
+            {"inline_keyboard": []},
+        )
 
 
 if __name__ == "__main__":
