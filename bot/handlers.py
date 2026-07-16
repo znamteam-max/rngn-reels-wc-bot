@@ -2059,6 +2059,15 @@ def _format_admin_created_at(value: Any) -> str:
     return str(value)
 
 
+def _date_iso(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value or "").strip()
+    return text or None
+
+
 def format_admin_queue_card(video: dict[str, Any], total: int, position: int = 1) -> str:
     platforms = (
         (("YouTube", "youtube_url"), ("VK", "vk_url"))
@@ -2472,7 +2481,7 @@ def _set_active_queue_publish_date(
             action="publish_date_set",
             actor_tg_id=actor.tg_id,
             actor_username=actor.username,
-            before_data={"publish_date": before.get("publish_date")},
+            before_data={"publish_date": _date_iso(before.get("publish_date"))},
             after_data={"publish_date": publish_date.isoformat()},
         )
         video, total, position = _active_queue_card(conn, video_id)

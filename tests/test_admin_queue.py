@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from bot.handlers import (
     PENDING_VIDEOS_SQL,
+    _date_iso,
     _edit_message_text_idempotent,
     _format_processed_queue_card,
     admin_queue_keyboard,
@@ -118,6 +119,11 @@ class AdminQueuePresentationV1011Tests(unittest.TestCase):
             "Заявка #52",
             {"inline_keyboard": []},
         )
+
+    def test_audit_dates_are_json_serializable(self) -> None:
+        self.assertEqual(_date_iso(date(2026, 7, 12)), "2026-07-12")
+        self.assertEqual(_date_iso("2026-07-12"), "2026-07-12")
+        self.assertIsNone(_date_iso(None))
 
 
 if __name__ == "__main__":
