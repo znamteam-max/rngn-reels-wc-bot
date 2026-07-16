@@ -7,17 +7,29 @@ from unittest.mock import patch
 
 from bot.config import get_settings, missing_env_names
 from bot.handlers import (
+    ADD_ZNAMBO_DATE_PROMPT,
+    ADD_ZNAMBO_INVALID_DATE_MESSAGE,
+    ADD_ZNAMBO_INVALID_LINK_MESSAGE,
+    ADD_ZNAMBO_LINK_PROMPT,
+    ADD_ZNAMBO_SESSION_DATE,
+    ADD_ZNAMBO_SESSION_INSTAGRAM,
+    ADD_ZNAMBO_UNAUTHORIZED_MESSAGE,
     Actor,
     BIGRECAP_YOUTUBE_INVALID_MESSAGE,
     BIGRECAP_YOUTUBE_PROMPT,
     PENDING_VIDEOS_SQL,
+    _send_main_menu,
     apply_montage_same_as_author,
     ask_people,
     build_chatid_text,
+    format_add_znambo_success,
     handle_new_bigrecap_youtube,
+    handle_add_znambo_instagram,
     normalize_video_type,
     normalized_submission_data,
     next_after_person,
+    parse_add_znambo_date,
+    start_add_znambo,
     start_new_video,
     start_new_bigrecap,
     telegram_failure_payload,
@@ -330,6 +342,130 @@ class BotV108Tests(unittest.TestCase):
         keyboard = message["reply_markup"]["inline_keyboard"]  # type: ignore[index]
         self.assertEqual(keyboard[0][0]["text"], "Да, была")
         self.assertEqual(keyboard[0][1]["text"], "Нет, не было")
+
+
+class BotV1010Tests(unittest.TestCase):
+    def test_add_znambo_rejects_non_superadmin_with_exact_message(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=10, chat_id=10, username="user")
+        with (
+            patch("bot.handlers.is_superadmin", return_value=False),
+            patch("bot.handlers.db.set_session") as set_session,
+        ):
+            start_add_znambo(tg, actor)
+        set_session.assert_not_called()
+        self.assertEqual(tg.messages[0]["text"], ADD_ZNAMBO_UNAUTHORIZED_MESSAGE)
+
+    def test_add_znambo_starts_private_superadmin_session(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="znambo")
+        with (
+            patch("bot.handlers.is_superadmin", return_value=True),
+            patch("bot.handlers.db.set_session") as set_session,
+        ):
+            start_add_znambo(tg, actor)
+        self.assertEqual(set_session.call_args.kwargs["state"], ADD_ZNAMBO_SESSION_INSTAGRAM)
+        self.assertEqual(
+            set_session.call_args.kwargs["data"],
+            {"flow": "add_znambo", "step": "awaiting_znambo_instagram", "video_type": "regular"},
+        )
+        self.assertEqual(tg.messages[0]["text"], ADD_ZNAMBO_LINK_PROMPT)
+
+    def test_add_znambo_invalid_instagram_keeps_session_active(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="znambo")
+        with (
+            patch("bot.handlers.is_superadmin", return_value=True),
+            patch("bot.handlers.db.clear_session") as clear_session,
+        ):
+            handle_add_znambo_instagram(tg, actor, {"flow": "add_znambo"}, "https://youtu.be/not-instagram")
+        clear_session.assert_not_called()
+        self.assertEqual(tg.messages[0]["text"], ADD_ZNAMBO_INVALID_LINK_MESSAGE)
+
+    def test_add_znambo_instagram_asks_publish_date(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="znambo")
+        with (
+            patch("bot.handlers.is_superadmin", return_value=True),
+            patch("bot.handlers.find_video_by_instagram_id", return_value=None),
+            patch("bot.handlers.db.set_session") as set_session,
+        ):
+            handle_add_znambo_instagram(tg, actor, {"flow": "add_znambo"}, "instagram.com/reel/ABC123/?utm_source=x")
+        self.assertEqual(set_session.call_args.kwargs["state"], ADD_ZNAMBO_SESSION_DATE)
+        data = set_session.call_args.kwargs["data"]
+        self.assertEqual(data["step"], "awaiting_znambo_publish_date")
+        self.assertEqual(data["instagram_id"], "ABC123")
+        self.assertEqual(tg.messages[0]["text"], ADD_ZNAMBO_DATE_PROMPT)
+        keyboard = tg.messages[0]["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+        self.assertEqual(keyboard[0][0]["text"], "Сегодня")
+        self.assertEqual(keyboard[0][1]["text"], "Вчера")
+        self.assertEqual(keyboard[1][0]["text"], "Позавчера")
+
+    def test_add_znambo_active_duplicate_clears_session_and_shows_details(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="znambo")
+        duplicate = {"id": 77, "status": "approved", "publish_date": "2026-07-16"}
+        with (
+            patch("bot.handlers.is_superadmin", return_value=True),
+            patch("bot.handlers.find_video_by_instagram_id", return_value=duplicate),
+            patch("bot.handlers.db.clear_session") as clear_session,
+        ):
+            handle_add_znambo_instagram(tg, actor, {"flow": "add_znambo"}, "instagram.com/reel/ABC123/")
+        clear_session.assert_called_once_with(actor.tg_id)
+        text = tg.messages[0]["text"]
+        self.assertIn("Этот ролик уже есть в базе.", text)
+        self.assertIn("ID: 77", text)
+        self.assertIn("Статус: approved", text)
+        self.assertIn("Дата: 16.07.2026", text)
+
+    def test_add_znambo_date_parser_accepts_presets_and_formats(self) -> None:
+        self.assertEqual(parse_add_znambo_date("2026-07-16").isoformat(), "2026-07-16")
+        dd_mm = parse_add_znambo_date("16.07")
+        self.assertEqual((dd_mm.day, dd_mm.month), (16, 7))
+        self.assertEqual((parse_add_znambo_date("Сегодня") - parse_add_znambo_date("Вчера")).days, 1)
+        self.assertEqual((parse_add_znambo_date("Вчера") - parse_add_znambo_date("Позавчера")).days, 1)
+        with self.assertRaisesRegex(ValueError, ADD_ZNAMBO_INVALID_DATE_MESSAGE):
+            parse_add_znambo_date("tomorrow")
+
+    def test_add_znambo_success_card_has_no_empty_extra_platform_lines(self) -> None:
+        text = format_add_znambo_success(
+            {
+                "publish_date": "2026-07-16",
+                "instagram_url": "https://www.instagram.com/reel/ABC123/",
+                "status": "approved",
+            }
+        )
+        self.assertIn("✅ Ролик Знамбо добавлен", text)
+        self.assertIn("Дата: 16.07.2026", text)
+        self.assertIn("Автор: Знамбо (@znambo)", text)
+        self.assertIn("Озвучка: Знамбо (@znambo)", text)
+        self.assertIn("Монтажёр: Знамбо (@znambo)", text)
+        self.assertIn("Статус: approved", text)
+        self.assertNotIn("YouTube:", text)
+        self.assertNotIn("TikTok:", text)
+        self.assertNotIn("VK:", text)
+
+    def test_add_znambo_button_is_superadmin_only(self) -> None:
+        tg = FakeTelegram()
+        actor = Actor(tg_id=1, chat_id=1, username="znambo")
+        with (
+            patch("bot.handlers.is_superadmin", return_value=True),
+            patch("bot.handlers.is_admin", return_value=False),
+        ):
+            _send_main_menu(tg, actor, "menu")
+        keyboard = tg.messages[0]["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+        texts = [button["text"] for row in keyboard for button in row]
+        self.assertIn("⚡ Добавить мой ролик", texts)
+
+        tg = FakeTelegram()
+        with (
+            patch("bot.handlers.is_superadmin", return_value=False),
+            patch("bot.handlers.is_admin", return_value=False),
+        ):
+            _send_main_menu(tg, actor, "menu")
+        keyboard = tg.messages[0]["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+        texts = [button["text"] for row in keyboard for button in row]
+        self.assertNotIn("⚡ Добавить мой ролик", texts)
 
 
 if __name__ == "__main__":

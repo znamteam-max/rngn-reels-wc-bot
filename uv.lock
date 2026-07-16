@@ -427,7 +427,7 @@ wheels = [
 
 [[package]]
 name = "rngn-reels-wc-bot"
-version = "1.0.9"
+version = "1.0.10"
 source = { virtual = "." }
 dependencies = [
     { name = "google-api-python-client" },

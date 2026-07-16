@@ -23,6 +23,23 @@ COMMANDS = [
     ("metrics_youtube_all", "YouTube всего"),
     ("metrics_video", "Метрики одного видео"),
 ]
+SUPERADMIN_COMMANDS = [
+    *COMMANDS,
+    ("add_znambo", "Быстро добавить мой ролик"),
+]
+
+
+def parse_superadmin_ids(value: str | None) -> list[int]:
+    ids: list[int] = []
+    for item in (value or "").replace(";", ",").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            ids.append(int(item))
+        except ValueError:
+            print(f"Skipping invalid BOOTSTRAP_SUPERADMIN_IDS item: {item}", file=sys.stderr)
+    return ids
 
 
 def load_env_file(path: Path) -> None:
@@ -74,6 +91,18 @@ def main() -> int:
             ],
         },
     )
+    for superadmin_id in parse_superadmin_ids(os.environ.get("BOOTSTRAP_SUPERADMIN_IDS")):
+        telegram_post(
+            token,
+            "setMyCommands",
+            {
+                "scope": {"type": "chat", "chat_id": superadmin_id},
+                "commands": [
+                    {"command": command, "description": description}
+                    for command, description in SUPERADMIN_COMMANDS
+                ],
+            },
+        )
     telegram_post(token, "setChatMenuButton", {"menu_button": {"type": "commands"}})
 
     print("Telegram bot commands and menu button are configured.")

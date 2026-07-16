@@ -92,6 +92,8 @@ def _send_main_menu(tg: TelegramClient, actor: h.Actor, text: str) -> None:
         [("🧵 Добавить большой рекап", "cmd:new_bigrecap")],
         [("📋 Мои заявки", "cmd:my"), ("ℹ️ Помощь", "cmd:help")],
     ]
+    if h.is_superadmin(actor.tg_id):
+        rows.append([("⚡ Добавить мой ролик", "cmd:add_znambo")])
     if h.is_admin(actor.tg_id):
         rows.insert(3, [("Админка", "cmd:admin"), ("Сводка", "cmd:summary")])
         rows.insert(4, [("Переотправить pending", "cmd:resend_pending"), ("Тест админ-чата", "cmd:test_admin_chat")])
@@ -299,6 +301,10 @@ def handle_message(message: dict[str, Any]) -> None:
         if command == "/start" and rest.lower() in {"new_bigrecap", "bigrecap"}:
             h.db.clear_session(actor.tg_id)
             h.start_new_bigrecap(tg, actor)
+            return
+        if command == "/start" and rest.lower() in {"add_znambo", "znambo"}:
+            h.db.clear_session(actor.tg_id)
+            h.start_add_znambo(tg, actor)
             return
         if command == "/test_admin_chat":
             _test_admin_chat(tg, actor)

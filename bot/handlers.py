@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import psycopg
@@ -36,6 +36,23 @@ BIGRECAP_YOUTUBE_INVALID_MESSAGE = (
     "Это не похоже на ссылку YouTube. Пришли ссылку вида "
     "youtube.com/watch?v=..., youtu.be/... или youtube.com/shorts/..."
 )
+ADD_ZNAMBO_SESSION_INSTAGRAM = "znambo:instagram"
+ADD_ZNAMBO_SESSION_DATE = "znambo:date"
+ADD_ZNAMBO_UNAUTHORIZED_MESSAGE = "Команда доступна только суперадмину."
+ADD_ZNAMBO_LINK_PROMPT = "Пришли ссылку на Instagram/Reels"
+ADD_ZNAMBO_INVALID_LINK_MESSAGE = "Это не похоже на ссылку Instagram/Reels. Пришли корректную ссылку."
+ADD_ZNAMBO_DATE_PROMPT = "Укажи дату публикации"
+ADD_ZNAMBO_INVALID_DATE_MESSAGE = (
+    "Не понял дату. Используй Сегодня, Вчера, Позавчера, ДД.ММ или ГГГГ-ММ-ДД."
+)
+ADD_ZNAMBO_NAME = "Знамбо"
+ADD_ZNAMBO_USERNAME = "znambo"
+ADD_ZNAMBO_SORT_WEIGHTS = {"author": 100, "montage": 100, "voice": 20}
+ADD_ZNAMBO_DATE_PRESETS = {
+    "today": "Сегодня",
+    "yesterday": "Вчера",
+    "before_yesterday": "Позавчера",
+}
 
 VIDEO_SELECT = """
 SELECT
@@ -220,6 +237,8 @@ def _send_main_menu(tg: TelegramClient, actor: Actor, text: str) -> None:
         [("🧵 Добавить большой рекап", "cmd:new_bigrecap")],
         [("📋 Мои заявки", "cmd:my"), ("ℹ️ Помощь", "cmd:help")],
     ]
+    if is_superadmin(actor.tg_id):
+        rows.append([("⚡ Добавить мой ролик", "cmd:add_znambo")])
     if is_admin(actor.tg_id):
         rows.insert(3, [("Админка", "cmd:admin"), ("Сводка", "cmd:summary")])
         rows.insert(4, [("Переотправить pending", "cmd:resend_pending")])
@@ -250,6 +269,8 @@ def handle_message(message: dict[str, Any]) -> None:
             start_new_video(tg, actor)
         elif command == "/new_bigrecap":
             start_new_bigrecap(tg, actor)
+        elif command == "/add_znambo":
+            start_add_znambo(tg, actor)
         elif command == "/chatid":
             send_chatid(tg, actor, message.get("chat") or {}, message.get("from") or {})
         elif command == "/my_requests":
@@ -313,6 +334,8 @@ def handle_callback(callback: dict[str, Any]) -> None:
         start_new_video(tg, actor)
     elif data == "cmd:new_bigrecap":
         start_new_bigrecap(tg, actor)
+    elif data == "cmd:add_znambo":
+        start_add_znambo(tg, actor)
     elif data == "cmd:my":
         show_my_requests(tg, actor)
     elif data == "cmd:admin":
@@ -344,6 +367,9 @@ def handle_callback(callback: dict[str, Any]) -> None:
     elif data.startswith("adm:manualdate:"):
         _, _, raw_video_id, raw_batch_id, raw_index = data.split(":", 4)
         start_admin_manual_date(tg, actor, int(raw_video_id), int(raw_batch_id), int(raw_index))
+    elif data.startswith("znambo:date:"):
+        _, _, preset = data.split(":", 2)
+        handle_add_znambo_date(tg, actor, ADD_ZNAMBO_DATE_PRESETS.get(preset, ""))
     elif data.startswith("p:"):
         _, short_role, raw_person_id = data.split(":", 2)
         handle_person_pick(tg, actor, short_role, int(raw_person_id))
@@ -431,33 +457,38 @@ def handle_callback(callback: dict[str, Any]) -> None:
 
 
 def send_help(tg: TelegramClient, actor: Actor) -> None:
-    text = "\n".join(
-        [
-            "Команды:",
-            "/new_video — добавить Reels",
-            "/new_bigrecap — добавить большой рекап",
-            "/my_requests — мои заявки и дополнение ссылок",
-            "/chatid — показать ID текущего Telegram-чата",
-            "/admin — очередь проверки",
-            "/summary — сводка для админов",
-            "/calendar — календарь публикаций",
-            "/people — участники",
-            "/search — поиск",
-            "/sync_sheets — повторная синхронизация Google Sheets",
-            "/resend_pending — переотправить pending в админский чат",
-            "/sync_youtube_metrics — обновить YouTube-метрики",
-            "/metrics_youtube_today — YouTube сегодня",
-            "/metrics_youtube_all — YouTube всего",
-            "/metrics_video id — метрики одного видео",
-            "",
-            "Для суперадминов:",
-            "/add_person role name [tg_id] [@username]",
-            "/activate_person id",
-            "/deactivate_person id",
-            "",
-            "Роли: author, montage, voice, admin, superadmin.",
-        ]
-    )
+    lines = [
+        "Команды:",
+        "/new_video — добавить Reels",
+        "/new_bigrecap — добавить большой рекап",
+        "/my_requests — мои заявки и дополнение ссылок",
+        "/chatid — показать ID текущего Telegram-чата",
+        "/admin — очередь проверки",
+        "/summary — сводка для админов",
+        "/calendar — календарь публикаций",
+        "/people — участники",
+        "/search — поиск",
+        "/sync_sheets — повторная синхронизация Google Sheets",
+        "/resend_pending — переотправить pending в админский чат",
+        "/sync_youtube_metrics — обновить YouTube-метрики",
+        "/metrics_youtube_today — YouTube сегодня",
+        "/metrics_youtube_all — YouTube всего",
+        "/metrics_video id — метрики одного видео",
+    ]
+    if is_superadmin(actor.tg_id):
+        lines.extend(
+            [
+                "",
+                "Для суперадминов:",
+                "/add_znambo — быстро добавить мой ролик",
+                "/add_person role name [tg_id] [@username]",
+                "/activate_person id",
+                "/deactivate_person id",
+                "",
+                "Роли: author, montage, voice, admin, superadmin.",
+            ]
+        )
+    text = "\n".join(lines)
     tg.send_message(actor.chat_id, text)
 
 
@@ -467,6 +498,478 @@ def start_new_video(tg: TelegramClient, actor: Actor) -> None:
 
 def start_new_bigrecap(tg: TelegramClient, actor: Actor) -> None:
     start_new_submission(tg, actor, VIDEO_TYPE_BIGRECAP)
+
+
+def start_add_znambo(tg: TelegramClient, actor: Actor) -> None:
+    if not is_superadmin(actor.tg_id):
+        tg.send_message(actor.chat_id, ADD_ZNAMBO_UNAUTHORIZED_MESSAGE)
+        return
+    if actor.chat_type != "private":
+        username = get_settings().bot_username or "rngn_reels_wc_bot"
+        tg.send_message(actor.chat_id, f"Команда работает в личке с ботом. Открой @{username} и отправь /add_znambo.")
+        return
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state=ADD_ZNAMBO_SESSION_INSTAGRAM,
+        data={
+            "flow": "add_znambo",
+            "step": "awaiting_znambo_instagram",
+            "video_type": VIDEO_TYPE_REGULAR,
+        },
+    )
+    tg.send_message(actor.chat_id, ADD_ZNAMBO_LINK_PROMPT)
+
+
+def handle_add_znambo_instagram(
+    tg: TelegramClient,
+    actor: Actor,
+    data: dict[str, Any],
+    text: str,
+) -> None:
+    if not is_superadmin(actor.tg_id):
+        db.clear_session(actor.tg_id)
+        tg.send_message(actor.chat_id, ADD_ZNAMBO_UNAUTHORIZED_MESSAGE)
+        return
+    try:
+        link = normalize_instagram(text)
+    except ValueError:
+        tg.send_message(actor.chat_id, ADD_ZNAMBO_INVALID_LINK_MESSAGE)
+        return
+
+    duplicate = find_video_by_instagram_id(link.external_id or "")
+    if duplicate:
+        db.clear_session(actor.tg_id)
+        tg.send_message(actor.chat_id, format_add_znambo_duplicate(duplicate))
+        return
+
+    data.update(
+        {
+            "flow": "add_znambo",
+            "step": "awaiting_znambo_publish_date",
+            "video_type": VIDEO_TYPE_REGULAR,
+            "instagram_url": link.url,
+            "instagram_id": link.external_id,
+        }
+    )
+    ask_add_znambo_date(tg, actor, data)
+
+
+def ask_add_znambo_date(tg: TelegramClient, actor: Actor, data: dict[str, Any]) -> None:
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state=ADD_ZNAMBO_SESSION_DATE,
+        data=data,
+    )
+    tg.send_message(
+        actor.chat_id,
+        ADD_ZNAMBO_DATE_PROMPT,
+        inline_keyboard(
+            [
+                [("Сегодня", "znambo:date:today"), ("Вчера", "znambo:date:yesterday")],
+                [("Позавчера", "znambo:date:before_yesterday")],
+            ]
+        ),
+    )
+
+
+def parse_add_znambo_date(raw: str) -> date:
+    value = (raw or "").strip().lower()
+    today = datetime.now(get_settings().tz).date()
+    offsets = {
+        "сегодня": 0,
+        "today": 0,
+        "вчера": 1,
+        "yesterday": 1,
+        "позавчера": 2,
+        "before_yesterday": 2,
+    }
+    if value in offsets:
+        return today - timedelta(days=offsets[value])
+    try:
+        return parse_publish_date(raw)
+    except ValueError as exc:
+        raise ValueError(ADD_ZNAMBO_INVALID_DATE_MESSAGE) from exc
+
+
+def handle_add_znambo_date(tg: TelegramClient, actor: Actor, text: str) -> None:
+    if not is_superadmin(actor.tg_id):
+        db.clear_session(actor.tg_id)
+        tg.send_message(actor.chat_id, ADD_ZNAMBO_UNAUTHORIZED_MESSAGE)
+        return
+    session = db.get_session(actor.tg_id)
+    if not session or session.get("state") != ADD_ZNAMBO_SESSION_DATE:
+        tg.send_message(actor.chat_id, "Начни заново: /add_znambo.")
+        return
+    data = session.get("data") or {}
+    try:
+        publish_date = parse_add_znambo_date(text)
+    except ValueError as exc:
+        tg.send_message(actor.chat_id, str(exc))
+        return
+
+    try:
+        result = upsert_znambo_quick_video(actor, data, publish_date)
+    except psycopg.errors.UniqueViolation:
+        duplicate = find_video_by_instagram_id(data.get("instagram_id") or "")
+        db.clear_session(actor.tg_id)
+        if duplicate:
+            tg.send_message(actor.chat_id, format_add_znambo_duplicate(duplicate))
+        else:
+            tg.send_message(actor.chat_id, "Похоже, ролик уже был добавлен. Проверь /search.")
+        return
+    except Exception as exc:
+        db.clear_session(actor.tg_id)
+        record_system_log(
+            "znambo_quick_failed",
+            "video",
+            None,
+            {"error": _safe_error(exc), "instagram_id": data.get("instagram_id")},
+            actor,
+        )
+        tg.send_message(actor.chat_id, f"Не удалось добавить ролик: {_safe_error(exc)}")
+        return
+
+    duplicate = result.get("duplicate")
+    if duplicate:
+        db.clear_session(actor.tg_id)
+        tg.send_message(actor.chat_id, format_add_znambo_duplicate(duplicate))
+        return
+
+    video = result["video"]
+    db.clear_session(actor.tg_id)
+    sheet_ok, sheet_error = sync_znambo_quick_to_sheets(video, actor)
+    if not sheet_ok:
+        tg.send_message(
+            actor.chat_id,
+            "⚠️ Ролик добавлен в базу, но не синхронизирован с Google Sheets.\n"
+            f"ID: {video['id']}\n"
+            f"Ошибка: {sheet_error or 'unknown'}",
+        )
+        return
+    tg.send_message(actor.chat_id, format_add_znambo_success(video))
+
+
+def _format_ddmmyyyy(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.date().strftime("%d.%m.%Y")
+    if isinstance(value, date):
+        return value.strftime("%d.%m.%Y")
+    text = str(value or "").strip()
+    if not text:
+        return "не указана"
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date().strftime("%d.%m.%Y")
+    except ValueError:
+        return text
+
+
+def format_add_znambo_duplicate(video: dict[str, Any]) -> str:
+    lines = ["Этот ролик уже есть в базе."]
+    if video.get("id") is not None:
+        lines.append(f"ID: {video['id']}")
+    if video.get("status"):
+        lines.append(f"Статус: {video['status']}")
+    if video.get("publish_date"):
+        lines.append(f"Дата: {_format_ddmmyyyy(video.get('publish_date'))}")
+    return "\n".join(lines)
+
+
+def format_add_znambo_success(video: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "✅ Ролик Знамбо добавлен",
+            "",
+            f"Дата: {_format_ddmmyyyy(video.get('publish_date'))}",
+            f"Instagram: {video.get('instagram_url') or ''}",
+            f"Автор: {person_display(ADD_ZNAMBO_NAME, ADD_ZNAMBO_USERNAME)}",
+            f"Озвучка: {person_display(ADD_ZNAMBO_NAME, ADD_ZNAMBO_USERNAME)}",
+            f"Монтажёр: {person_display(ADD_ZNAMBO_NAME, ADD_ZNAMBO_USERNAME)}",
+            f"Статус: {video.get('status') or 'approved'}",
+        ]
+    )
+
+
+def _find_instagram_video_for_quick(conn, instagram_id: str, *, deleted: bool) -> dict[str, Any] | None:
+    if not instagram_id:
+        return None
+    status_clause = "v.status = 'deleted'" if deleted else "v.status <> 'deleted'"
+    order_clause = "v.updated_at DESC, v.id DESC" if deleted else "v.created_at ASC, v.id ASC"
+    with conn.cursor() as cur:
+        cur.execute(
+            VIDEO_SELECT
+            + f"""
+            WHERE v.instagram_id = %s
+              AND {status_clause}
+            ORDER BY {order_clause}
+            LIMIT 1
+            """,
+            (instagram_id,),
+        )
+        return cur.fetchone()
+
+
+def resolve_znambo_people(conn) -> dict[str, dict[str, Any]]:
+    people: dict[str, dict[str, Any]] = {}
+    for role in ("author", "montage", "voice"):
+        sort_weight = ADD_ZNAMBO_SORT_WEIGHTS[role]
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM people
+                WHERE role = %s
+                  AND (
+                    lower(COALESCE(username, '')) = lower(%s)
+                    OR lower(name) = lower(%s)
+                  )
+                ORDER BY
+                    CASE WHEN lower(COALESCE(username, '')) = lower(%s) THEN 0 ELSE 1 END,
+                    CASE WHEN lower(name) = lower(%s) THEN 0 ELSE 1 END,
+                    CASE WHEN is_active THEN 0 ELSE 1 END,
+                    sort_weight DESC,
+                    id ASC
+                LIMIT 1
+                """,
+                (role, ADD_ZNAMBO_USERNAME, ADD_ZNAMBO_NAME, ADD_ZNAMBO_USERNAME, ADD_ZNAMBO_NAME),
+            )
+            row = cur.fetchone()
+            if row:
+                cur.execute(
+                    """
+                    UPDATE people
+                    SET name = %s,
+                        username = %s,
+                        is_active = true,
+                        sort_weight = GREATEST(COALESCE(sort_weight, 0), %s)
+                    WHERE id = %s
+                    RETURNING id, name, username
+                    """,
+                    (ADD_ZNAMBO_NAME, ADD_ZNAMBO_USERNAME, sort_weight, row["id"]),
+                )
+                people[role] = cur.fetchone()
+                continue
+            cur.execute(
+                """
+                INSERT INTO people (name, username, role, is_active, sort_weight)
+                VALUES (%s, %s, %s, true, %s)
+                RETURNING id, name, username
+                """,
+                (ADD_ZNAMBO_NAME, ADD_ZNAMBO_USERNAME, role, sort_weight),
+            )
+            people[role] = cur.fetchone()
+    return people
+
+
+def upsert_znambo_quick_video(
+    actor: Actor,
+    data: dict[str, Any],
+    publish_date: date,
+) -> dict[str, Any]:
+    instagram_id = data.get("instagram_id")
+    instagram_url = data.get("instagram_url")
+    if not instagram_id or not instagram_url:
+        raise ValueError("add_znambo requires instagram_url and instagram_id")
+
+    with db.transaction() as conn:
+        active = _find_instagram_video_for_quick(conn, instagram_id, deleted=False)
+        if active:
+            return {"duplicate": active, "video": None, "restored": False}
+
+        people = resolve_znambo_people(conn)
+        author = people["author"]
+        montage = people["montage"]
+        voice = people["voice"]
+        deleted = _find_instagram_video_for_quick(conn, instagram_id, deleted=True)
+        old_batch_id = deleted.get("batch_id") if deleted else None
+        batch_id = ensure_open_batch(conn, actor)
+
+        with conn.cursor() as cur:
+            if deleted:
+                cur.execute(
+                    """
+                    UPDATE videos
+                    SET status = 'approved',
+                        video_type = %s,
+                        publish_date = %s,
+                        instagram_url = %s,
+                        instagram_id = %s,
+                        youtube_url = NULL,
+                        youtube_id = NULL,
+                        youtube_views = NULL,
+                        youtube_likes = NULL,
+                        youtube_comments = NULL,
+                        youtube_last_sync_at = NULL,
+                        tiktok_url = NULL,
+                        tiktok_id = NULL,
+                        vk_url = NULL,
+                        vk_id = NULL,
+                        author_id = %s,
+                        author_name = %s,
+                        author_username = %s,
+                        montage_id = %s,
+                        montage_name = %s,
+                        montage_username = %s,
+                        montage_same_as_author = false,
+                        voice_id = %s,
+                        voice_name = %s,
+                        voice_username = %s,
+                        added_by_tg_id = %s,
+                        added_by_username = %s,
+                        checked_by_tg_id = %s,
+                        checked_by_username = %s,
+                        checked_at = now(),
+                        publish_date_set_by_tg_id = %s,
+                        publish_date_set_by_username = %s,
+                        publish_date_set_at = now(),
+                        admin_message_chat_id = NULL,
+                        admin_message_id = NULL,
+                        admin_notified_at = NULL,
+                        batch_id = %s,
+                        comment = NULL,
+                        updated_at = now()
+                    WHERE id = %s
+                      AND status = 'deleted'
+                    RETURNING id
+                    """,
+                    (
+                        VIDEO_TYPE_REGULAR,
+                        publish_date,
+                        instagram_url,
+                        instagram_id,
+                        author["id"],
+                        author["name"],
+                        author.get("username"),
+                        montage["id"],
+                        montage["name"],
+                        montage.get("username"),
+                        voice["id"],
+                        voice["name"],
+                        voice.get("username"),
+                        actor.tg_id,
+                        actor.username,
+                        actor.tg_id,
+                        actor.username,
+                        actor.tg_id,
+                        actor.username,
+                        batch_id,
+                        deleted["id"],
+                    ),
+                )
+                row = cur.fetchone()
+                if not row:
+                    active_after_race = _find_instagram_video_for_quick(conn, instagram_id, deleted=False)
+                    if active_after_race:
+                        return {"duplicate": active_after_race, "video": None, "restored": False}
+                    raise RuntimeError("deleted video restore failed")
+                video_id = int(row["id"])
+                action = "znambo_quick_restored"
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO videos (
+                        status, video_type, publish_date,
+                        instagram_url, instagram_id,
+                        youtube_url, youtube_id, tiktok_url, tiktok_id, vk_url, vk_id,
+                        author_id, author_name, author_username,
+                        montage_id, montage_name, montage_username, montage_same_as_author,
+                        voice_id, voice_name, voice_username,
+                        added_by_tg_id, added_by_username,
+                        checked_by_tg_id, checked_by_username, checked_at,
+                        publish_date_set_by_tg_id, publish_date_set_by_username, publish_date_set_at,
+                        batch_id, comment
+                    )
+                    VALUES (
+                        'approved', %s, %s,
+                        %s, %s,
+                        NULL, NULL, NULL, NULL, NULL, NULL,
+                        %s, %s, %s,
+                        %s, %s, %s, false,
+                        %s, %s, %s,
+                        %s, %s,
+                        %s, %s, now(),
+                        %s, %s, now(),
+                        %s, NULL
+                    )
+                    RETURNING id
+                    """,
+                    (
+                        VIDEO_TYPE_REGULAR,
+                        publish_date,
+                        instagram_url,
+                        instagram_id,
+                        author["id"],
+                        author["name"],
+                        author.get("username"),
+                        montage["id"],
+                        montage["name"],
+                        montage.get("username"),
+                        voice["id"],
+                        voice["name"],
+                        voice.get("username"),
+                        actor.tg_id,
+                        actor.username,
+                        actor.tg_id,
+                        actor.username,
+                        actor.tg_id,
+                        actor.username,
+                        batch_id,
+                    ),
+                )
+                video_id = int(cur.fetchone()["id"])
+                action = "znambo_quick_added"
+            cur.execute("DELETE FROM admin_locks WHERE video_id = %s", (video_id,))
+
+        if old_batch_id and int(old_batch_id) != int(batch_id):
+            recalculate_batch(conn, int(old_batch_id))
+        recalculate_batch(conn, int(batch_id))
+        video = get_video_by_id(conn, video_id)
+        db.log_event(
+            conn,
+            entity_type="video",
+            entity_id=video_id,
+            action=action,
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+            before_data={"status": "deleted", "batch_id": old_batch_id} if deleted else None,
+            after_data={
+                "status": "approved",
+                "batch_id": batch_id,
+                "video_type": VIDEO_TYPE_REGULAR,
+                "publish_date": publish_date.isoformat(),
+                "instagram_id": instagram_id,
+            },
+        )
+        return {"duplicate": None, "video": video, "restored": bool(deleted)}
+
+
+def sync_znambo_quick_to_sheets(video: dict[str, Any], actor: Actor) -> tuple[bool, str | None]:
+    try:
+        row_number = sheets.upsert_video(video)
+        if row_number:
+            db.execute("UPDATE videos SET sheet_row = %s, updated_at = now() WHERE id = %s", (row_number, video["id"]))
+            video["sheet_row"] = row_number
+        record_system_log(
+            "sync_sheets_ok",
+            "video",
+            int(video["id"]),
+            {"flow": "add_znambo", "sheet_row": row_number},
+            actor,
+        )
+        return True, None
+    except Exception as exc:
+        error = _safe_error(exc)
+        record_system_log(
+            "sync_sheets_failed",
+            "video",
+            int(video["id"]),
+            {"flow": "add_znambo", "error": error},
+            actor,
+        )
+        return False, error
 
 
 def start_new_submission(tg: TelegramClient, actor: Actor, video_type: str) -> None:
@@ -518,6 +1021,10 @@ def handle_session_message(
         handle_new_instagram(tg, actor, data, text)
     elif state == "new:bigrecap_youtube":
         handle_new_bigrecap_youtube(tg, actor, data, text)
+    elif state == ADD_ZNAMBO_SESSION_INSTAGRAM:
+        handle_add_znambo_instagram(tg, actor, data, text)
+    elif state == ADD_ZNAMBO_SESSION_DATE:
+        handle_add_znambo_date(tg, actor, text)
     elif state == "admin:date":
         handle_admin_date_message(tg, actor, data, text)
     elif state == "new:author_manual":
