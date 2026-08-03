@@ -31,6 +31,7 @@ from bot.sheets import (
     build_project_stats_rows,
 )
 from bot.telegram import TelegramAPIError
+from scripts.init_db import SCHEMA_SQL
 
 
 class FakeTelegram:
@@ -106,6 +107,13 @@ def dashboard_transaction():
 
 
 class ProjectsV1013Tests(unittest.TestCase):
+    def test_existing_database_adds_project_columns_before_indexes(self) -> None:
+        alter_position = SCHEMA_SQL.index("ALTER TABLE videos ADD COLUMN IF NOT EXISTS project_id")
+        project_index_position = SCHEMA_SQL.index("CREATE INDEX IF NOT EXISTS idx_videos_project_id")
+        status_index_position = SCHEMA_SQL.index("CREATE INDEX IF NOT EXISTS idx_videos_status_project")
+        self.assertLess(alter_position, project_index_position)
+        self.assertLess(alter_position, status_index_position)
+
     def test_repeated_project_seed_has_nine_unique_active_projects(self) -> None:
         conn = SeedConnection()
         self.assertEqual(seed_projects(conn), 9)

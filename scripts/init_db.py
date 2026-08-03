@@ -152,8 +152,6 @@ CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
 CREATE INDEX IF NOT EXISTS idx_videos_publish_date ON videos(publish_date);
 CREATE INDEX IF NOT EXISTS idx_videos_batch_id ON videos(batch_id);
 CREATE INDEX IF NOT EXISTS idx_videos_pending_fifo ON videos(status, created_at, id);
-CREATE INDEX IF NOT EXISTS idx_videos_project_id ON videos(project_id);
-CREATE INDEX IF NOT EXISTS idx_videos_status_project ON videos(status, project_id);
 CREATE INDEX IF NOT EXISTS idx_people_role_active ON people(role, is_active);
 CREATE INDEX IF NOT EXISTS idx_logs_entity ON logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_metrics_video_platform_time
