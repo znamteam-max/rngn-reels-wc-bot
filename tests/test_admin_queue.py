@@ -73,7 +73,8 @@ class AdminQueuePresentationV1011Tests(unittest.TestCase):
     def test_active_card_starts_with_id_and_hides_empty_links(self) -> None:
         text = format_admin_queue_card(self.video, total=34)
         self.assertTrue(text.startswith("Заявка #52\n"))
-        self.assertIn("Очередь: 1 из 34", text)
+        self.assertIn("Очередь: Все проекты", text)
+        self.assertIn("Позиция: 1 из 34", text)
         self.assertIn("Instagram: https://www.instagram.com/reel/ABC/", text)
         self.assertIn("VK: https://vk.com/clip-1_2", text)
         self.assertNotIn("YouTube:", text)

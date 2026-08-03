@@ -105,7 +105,17 @@ CREATE TABLE IF NOT EXISTS admin_queue_state (
     dashboard_chat_id bigint,
     dashboard_message_id bigint,
     dashboard_updated_at timestamptz,
+    queue_filter_type text NOT NULL DEFAULT 'global',
+    queue_filter_value text,
     updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS daily_reports (
+    report_date date PRIMARY KEY,
+    telegram_chat_id bigint,
+    telegram_message_id bigint,
+    sent_at timestamptz NOT NULL DEFAULT now(),
+    payload jsonb
 );
 
 CREATE TABLE IF NOT EXISTS logs (
@@ -183,6 +193,12 @@ ALTER TABLE videos ADD COLUMN IF NOT EXISTS project_name text NULL;
 ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS dashboard_chat_id bigint NULL;
 ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS dashboard_message_id bigint NULL;
 ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS dashboard_updated_at timestamptz NULL;
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS queue_filter_type text NOT NULL DEFAULT 'global';
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS queue_filter_value text NULL;
+
+UPDATE admin_queue_state
+SET queue_filter_type = 'global', queue_filter_value = NULL
+WHERE queue_filter_type NOT IN ('global', 'project', 'other', 'unassigned');
 
 UPDATE videos
 SET video_type = 'regular'
@@ -195,6 +211,10 @@ CREATE INDEX IF NOT EXISTS idx_videos_video_type ON videos(video_type);
 CREATE INDEX IF NOT EXISTS idx_videos_youtube_id ON videos(youtube_id);
 CREATE INDEX IF NOT EXISTS idx_videos_project_id ON videos(project_id);
 CREATE INDEX IF NOT EXISTS idx_videos_status_project ON videos(status, project_id);
+CREATE INDEX IF NOT EXISTS idx_videos_tiktok_id ON videos(tiktok_id);
+CREATE INDEX IF NOT EXISTS idx_videos_vk_id ON videos(vk_id);
+CREATE INDEX IF NOT EXISTS idx_people_username_lower ON people(lower(username));
+CREATE INDEX IF NOT EXISTS idx_people_name_lower ON people(lower(name));
 
 INSERT INTO admin_queue_state (queue_name)
 VALUES ('main')

@@ -20,6 +20,13 @@ def _admin_queue_debug() -> dict[str, object]:
             q.active_message_id AS active_queue_message_id,
             q.dashboard_message_id,
             q.dashboard_updated_at,
+            q.queue_filter_type,
+            q.queue_filter_value,
+            EXTRACT(
+                EPOCH FROM now() - (
+                    SELECT min(created_at) FROM videos WHERE status = 'pending'
+                )
+            )::bigint AS oldest_pending_age_seconds,
             v.status AS active_queue_video_status
         FROM admin_queue_state q
         LEFT JOIN videos v ON v.id = q.active_video_id
@@ -33,6 +40,11 @@ def _admin_queue_debug() -> dict[str, object]:
         "active_queue_video_status": row.get("active_queue_video_status"),
         "dashboard_message_id": row.get("dashboard_message_id"),
         "dashboard_updated_at": row["dashboard_updated_at"].isoformat() if row.get("dashboard_updated_at") else None,
+        "queue_filter_type": row.get("queue_filter_type") or "global",
+        "queue_filter_value": row.get("queue_filter_value"),
+        "oldest_pending_age_seconds": max(0, int(row["oldest_pending_age_seconds"]))
+        if row.get("oldest_pending_age_seconds") is not None
+        else None,
     }
 
 
@@ -54,6 +66,21 @@ def _projects_debug() -> dict[str, int]:
     }
 
 
+def _daily_report_debug() -> dict[str, object]:
+    row = db.fetch_one(
+        """
+        SELECT report_date, telegram_message_id
+        FROM daily_reports
+        ORDER BY report_date DESC
+        LIMIT 1
+        """
+    ) or {}
+    return {
+        "last_report_date": row["report_date"].isoformat() if row.get("report_date") else None,
+        "last_report_message_id": row.get("telegram_message_id"),
+    }
+
+
 class handler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         self.do_GET()
@@ -71,6 +98,7 @@ class handler(BaseHTTPRequestHandler):
             "runtime_migration": runtime_migration,
             "projects": _projects_debug(),
             "admin_queue": _admin_queue_debug(),
+            "daily_report": _daily_report_debug(),
         }
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_response(200)

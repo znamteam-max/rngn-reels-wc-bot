@@ -8,11 +8,15 @@ import psycopg
 
 from bot import db, metrics, sheets
 from bot.config import get_settings
+from bot.daily_reports import preview_daily_report, previous_report_date, send_daily_report
 from bot.links import (
     extract_youtube_id,
     is_skip_text,
     normalize_instagram,
     normalize_optional,
+    normalize_tiktok,
+    normalize_vk,
+    normalize_youtube,
     parse_publish_date,
 )
 from bot.messages import (
@@ -72,6 +76,7 @@ ADMIN_DATE_CLAIM_SECONDS = 300
 ADMIN_RESET_ARCHIVE_LIMIT = 8
 ADMIN_DATE_PROMPT = "Сегодня, Вчера, Позавчера, YYYY-MM-DD, DD.MM или D.M."
 ADMIN_QUEUE_STALE_MESSAGE = "Эта карточка устарела. Открой актуальную очередь: /admin"
+ADMIN_QUEUE_FILTER_TYPES = {"global", "project", "other", "unassigned"}
 
 VIDEO_SELECT = """
 SELECT
@@ -306,8 +311,12 @@ def handle_message(message: dict[str, Any]) -> None:
             show_calendar(tg, actor)
         elif command == "/people":
             show_people(tg, actor)
-        elif command == "/search":
+        elif command == "/person":
+            person_command(tg, actor, rest)
+        elif command in {"/search", "/find"}:
             start_or_run_search(tg, actor, rest)
+        elif command == "/daily_report":
+            daily_report_command(tg, actor, rest)
         elif command == "/sync_sheets":
             sync_sheets_command(tg, actor)
         elif command == "/sync_youtube_metrics":
@@ -352,7 +361,13 @@ def handle_callback(callback: dict[str, Any]) -> None:
 
     callback_id = str(callback.get("id") or "")
     if data.startswith("dash:"):
-        handle_dashboard_callback(tg, actor, data, callback_id)
+        handle_dashboard_callback(tg, actor, data, message_id, callback_id)
+        return
+    if data.startswith("person:"):
+        handle_person_profile_callback(tg, actor, data, callback_id)
+        return
+    if data.startswith("daily:"):
+        handle_daily_report_callback(tg, actor, data, callback_id)
         return
     if data.startswith("admq:"):
         handle_admin_queue_callback(tg, actor, data, message_id, callback_id)
@@ -513,7 +528,9 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
         "/summary — сводка для админов",
         "/calendar — календарь публикаций",
         "/people — участники",
-        "/search — поиск",
+        "/person запрос — карточка участника",
+        "/find запрос — точный поиск",
+        "/daily_report [YYYY-MM-DD] — ежедневный отчёт",
         "/sync_sheets — повторная синхронизация Google Sheets",
         "/resend_pending — восстановить текущую FIFO-карточку",
         "/sync_youtube_metrics — обновить YouTube-метрики",
@@ -1219,9 +1236,12 @@ def handle_session_message(
         tg.send_message(actor.chat_id, "Выберите действие кнопкой: добавить VK или пропустить.")
     elif state == "new:bigrecap_vk":
         handle_optional_link(tg, actor, "vk", text)
-    elif state == "search:query":
+    elif state in {"search:query", "admin:search"}:
         db.clear_session(actor.tg_id)
         run_search(tg, actor, text)
+    elif state == "admin:person":
+        db.clear_session(actor.tg_id)
+        person_command(tg, actor, text)
     elif state == "links:youtube":
         handle_add_links_message(tg, actor, data, "youtube", text)
     elif state == "links:tiktok":
@@ -2074,6 +2094,7 @@ def queue_status_command(tg: TelegramClient, actor: Actor) -> None:
         state = _queue_state_for_update(conn)
         snapshot = _admin_dashboard_snapshot(conn, state)
         dashboard_message_id = state.get("dashboard_message_id")
+        filtered_count = _pending_video_count(conn, state)
     tg.send_message(
         actor.chat_id,
         "\n".join(
@@ -2081,25 +2102,165 @@ def queue_status_command(tg: TelegramClient, actor: Actor) -> None:
                 f"Pending: {snapshot['pending_count']}",
                 f"Active: #{snapshot['active_video_id']}" if snapshot.get("active_video_id") else "Active: —",
                 f"Dashboard message: {dashboard_message_id or '—'}",
+                f"Filter: {_queue_filter_label(state)}",
+                f"Filtered pending: {filtered_count}",
                 f"Oldest: {_format_pending_age(snapshot.get('oldest_created_at'))}",
             ]
         ),
     )
 
 
+def _dashboard_callback_is_current(actor: Actor, message_id: int | None) -> bool:
+    try:
+        state = db.fetch_one(
+            """
+            SELECT dashboard_chat_id, dashboard_message_id
+            FROM admin_queue_state
+            WHERE queue_name = %s
+            """,
+            (ADMIN_QUEUE_NAME,),
+        )
+    except Exception:
+        return False
+    return bool(
+        state
+        and message_id
+        and int(state.get("dashboard_chat_id") or 0) == actor.chat_id
+        and int(state.get("dashboard_message_id") or 0) == int(message_id)
+    )
+
+
+def _show_admin_queue_filters(tg: TelegramClient, actor: Actor) -> None:
+    refresh_admin_dashboard(tg, actor)
+    with db.transaction() as conn:
+        state = _queue_state_for_update(conn)
+        snapshot = _admin_dashboard_snapshot(conn, state)
+        chat_id = int(state["dashboard_chat_id"])
+        message_id = int(state["dashboard_message_id"])
+    _edit_message_text_idempotent(
+        tg,
+        chat_id,
+        message_id,
+        "📂 ОЧЕРЕДЬ ПО ПРОЕКТАМ\n\nВыберите фильтр:",
+        admin_queue_filter_keyboard(snapshot),
+    )
+
+
+def change_admin_queue_filter(
+    tg: TelegramClient,
+    actor: Actor,
+    filter_type: str,
+    filter_value: str | None = None,
+) -> dict[str, Any]:
+    if filter_type not in ADMIN_QUEUE_FILTER_TYPES:
+        raise ValueError("unknown queue filter")
+    if filter_type == "project":
+        project = get_active_project(str(filter_value or ""))
+        if not project or project["code"] == "other":
+            raise ValueError("project filter is unavailable")
+        filter_value = str(project["code"])
+    else:
+        filter_value = None
+
+    archived: tuple[int, int, int] | None = None
+    kept: tuple[int, int, dict[str, Any], int, int, str] | None = None
+    with db.transaction() as conn:
+        state = _queue_state_for_update(conn)
+        before_type, before_value = _queue_filter(state)
+        active_id = int(state["active_video_id"]) if state.get("active_video_id") else None
+        active_chat_id = int(state["active_chat_id"]) if state.get("active_chat_id") else None
+        active_message_id = int(state["active_message_id"]) if state.get("active_message_id") else None
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE admin_queue_state
+                SET queue_filter_type = %s,
+                    queue_filter_value = %s,
+                    updated_at = now()
+                WHERE queue_name = %s
+                """,
+                (filter_type, filter_value, ADMIN_QUEUE_NAME),
+            )
+        filtered_state = dict(state)
+        filtered_state["queue_filter_type"] = filter_type
+        filtered_state["queue_filter_value"] = filter_value
+        target = _oldest_pending_video(conn, filtered_state)
+        target_id = int(target["id"]) if target else None
+        pointer_matches_target = bool(
+            active_id
+            and active_id == target_id
+            and active_chat_id
+            and active_message_id
+            and active_chat_id == int(get_settings().admin_chat_id)
+        )
+        if pointer_matches_target and target:
+            total = _pending_video_count(conn, filtered_state)
+            position = _queue_position(conn, target, filtered_state)
+            kept = (
+                active_chat_id,
+                active_message_id,
+                target,
+                total,
+                position,
+                _queue_filter_label(filtered_state),
+            )
+        else:
+            if active_id and active_chat_id and active_message_id:
+                archived = (active_chat_id, active_message_id, active_id)
+            _clear_queue_state(conn)
+        db.log_event(
+            conn,
+            entity_type="admin_queue",
+            entity_id=active_id,
+            action="admin_queue_filter_changed",
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+            before_data={"filter_type": before_type, "filter_value": before_value},
+            after_data={
+                "filter_type": filter_type,
+                "filter_value": filter_value,
+                "target_video_id": target_id,
+            },
+        )
+
+    if archived:
+        _archive_queue_message(
+            tg,
+            archived[0],
+            archived[1],
+            f"📂 Заявка #{archived[2]} скрыта после смены фильтра очереди.",
+            actor,
+        )
+    if kept:
+        _edit_message_text_idempotent(
+            tg,
+            kept[0],
+            kept[1],
+            format_admin_queue_card(kept[2], kept[3], kept[4], kept[5]),
+            admin_queue_keyboard(int(kept[2]["id"])),
+        )
+    result = pump_admin_queue(tg, actor)
+    _safe_refresh_admin_dashboard(tg, actor)
+    return result
+
+
 def handle_dashboard_callback(
     tg: TelegramClient,
     actor: Actor,
     data: str,
+    message_id: int | None,
     callback_id: str,
 ) -> None:
     if not is_admin(actor.tg_id):
         _answer_queue_callback(tg, callback_id, "Это действие доступно только админам.", show_alert=True)
         return
+    if not _dashboard_callback_is_current(actor, message_id):
+        _answer_queue_callback(tg, callback_id, "Этот дашборд устарел. Откройте /admin.", show_alert=True)
+        return
     action = data.split(":", 1)[1] if ":" in data else ""
     try:
-        _safe_refresh_admin_dashboard(tg, actor)
         if action == "open":
+            _safe_refresh_admin_dashboard(tg, actor)
             result = pump_admin_queue(tg, actor, force_repost=True)
             record_system_log(
                 "admin_queue_pumped",
@@ -2109,7 +2270,20 @@ def handle_dashboard_callback(
                 actor,
             )
             _safe_refresh_admin_dashboard(tg, actor)
-        elif action not in {"refresh", "projects"}:
+        elif action == "projects":
+            _show_admin_queue_filters(tg, actor)
+        elif action == "people":
+            start_person_lookup(tg, actor)
+        elif action == "search":
+            start_admin_search(tg, actor)
+        elif action == "refresh":
+            _safe_refresh_admin_dashboard(tg, actor)
+        elif action.startswith("filter:"):
+            parts = action.split(":")
+            filter_type = parts[1] if len(parts) > 1 else ""
+            filter_value = parts[2] if len(parts) > 2 else None
+            change_admin_queue_filter(tg, actor, filter_type, filter_value)
+        else:
             _answer_queue_callback(tg, callback_id, "Действие устарело.", show_alert=True)
             return
         _answer_queue_callback(tg, callback_id)
@@ -2251,9 +2425,66 @@ def _clear_queue_state(conn) -> None:
         )
 
 
-def _pending_video_count(conn) -> int:
+def _queue_filter(state: dict[str, Any] | None) -> tuple[str, str | None]:
+    filter_type = str((state or {}).get("queue_filter_type") or "global")
+    filter_value = (state or {}).get("queue_filter_value")
+    if filter_type not in ADMIN_QUEUE_FILTER_TYPES:
+        return "global", None
+    if filter_type == "project" and not filter_value:
+        return "global", None
+    return filter_type, str(filter_value) if filter_value else None
+
+
+def _queue_filter_sql(
+    state: dict[str, Any] | None,
+    *,
+    alias: str = "v",
+) -> tuple[str, tuple[Any, ...]]:
+    filter_type, filter_value = _queue_filter(state)
+    if filter_type == "project":
+        return f"{alias}.project_code = %s", (filter_value,)
+    if filter_type == "other":
+        return f"{alias}.project_code = 'other'", ()
+    if filter_type == "unassigned":
+        return (
+            f"(COALESCE({alias}.project_code, '') = '' OR COALESCE({alias}.project_name, '') = '')",
+            (),
+        )
+    return "TRUE", ()
+
+
+def _queue_filter_label(state: dict[str, Any] | None) -> str:
+    filter_type, filter_value = _queue_filter(state)
+    if filter_type == "project":
+        project = next((item for item in PROJECTS if item["code"] == filter_value), None)
+        return str(project["name"]) if project else str(filter_value)
+    if filter_type == "other":
+        return "Другие проекты"
+    if filter_type == "unassigned":
+        return "Без проекта"
+    return "Все проекты"
+
+
+def _video_matches_queue_filter(video: dict[str, Any], state: dict[str, Any] | None) -> bool:
+    filter_type, filter_value = _queue_filter(state)
+    project_code = str(video.get("project_code") or "")
+    project_name = str(video.get("project_name") or "")
+    if filter_type == "project":
+        return project_code == filter_value
+    if filter_type == "other":
+        return project_code == "other"
+    if filter_type == "unassigned":
+        return not project_code or not project_name
+    return True
+
+
+def _pending_video_count(conn, state: dict[str, Any] | None = None) -> int:
+    condition, params = _queue_filter_sql(state)
     with conn.cursor() as cur:
-        cur.execute("SELECT count(*) AS count FROM videos WHERE status = 'pending'")
+        cur.execute(
+            f"SELECT count(*) AS count FROM videos v WHERE v.status = 'pending' AND {condition}",
+            params,
+        )
         return int(cur.fetchone()["count"])
 
 
@@ -2335,20 +2566,24 @@ def _admin_dashboard_snapshot(conn, state: dict[str, Any] | None = None) -> dict
         "oldest_created_at": totals.get("oldest_created_at"),
         "project_counts": project_counts,
         "updated_at": datetime.now(get_settings().tz),
+        "queue_filter_type": _queue_filter(queue_state)[0],
+        "queue_filter_value": _queue_filter(queue_state)[1],
+        "queue_filter_label": _queue_filter_label(queue_state),
     }
 
 
 def format_admin_dashboard(snapshot: dict[str, Any]) -> str:
     pending_count = int(snapshot.get("pending_count") or 0)
     active_id = snapshot.get("active_video_id")
-    lines = ["📊 ОЧЕРЕДЬ РИЛЗОВ", "", f"Неразобрано: {pending_count}"]
+    lines = ["📊 ОЧЕРЕДЬ РИЛЗОВ", ""]
     if pending_count == 0:
-        lines.append("Очередь разобрана")
+        lines.append("🟢 Очередь разобрана")
     else:
         lines.extend(
             [
-                f"Текущая заявка: #{active_id}" if active_id else "Текущая заявка: не назначена",
-                f"Самая старая: {_format_pending_age(snapshot.get('oldest_created_at'))}",
+                f"🔴 Ждут проверки: {pending_count}",
+                f"▶️ Текущая заявка: #{active_id}" if active_id else "▶️ Текущая заявка: не назначена",
+                f"⏳ Самая старая: {_format_pending_age(snapshot.get('oldest_created_at'))}",
                 "",
                 "По проектам:",
             ]
@@ -2366,10 +2601,66 @@ def format_admin_dashboard(snapshot: dict[str, Any]) -> str:
 def admin_dashboard_keyboard() -> dict[str, Any]:
     return inline_keyboard(
         [
-            [("▶️ Открыть текущую заявку", "dash:open")],
-            [("🔄 Обновить", "dash:refresh"), ("📂 По проектам", "dash:projects")],
+            [("▶️ Открыть текущую", "dash:open")],
+            [("📂 Очередь по проектам", "dash:projects")],
+            [("👥 Участники", "dash:people"), ("🔎 Поиск", "dash:search")],
+            [("🔄 Обновить", "dash:refresh")],
         ]
     )
+
+
+def admin_queue_filter_keyboard(snapshot: dict[str, Any]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for row in snapshot.get("project_counts") or []:
+        code = str(row.get("code") or "unassigned")
+        counts[code] = counts.get(code, 0) + int(row.get("count") or 0)
+    current_type = str(snapshot.get("queue_filter_type") or "global")
+    current_value = snapshot.get("queue_filter_value")
+
+    def label(text: str, selected: bool) -> str:
+        return f"✓ {text}" if selected else text
+
+    rows: list[list[tuple[str, str]]] = [
+        [
+            (
+                label(f"🌐 Все проекты — {int(snapshot.get('pending_count') or 0)}", current_type == "global"),
+                "dash:filter:global",
+            )
+        ]
+    ]
+    for project in PROJECTS:
+        if project["code"] == "other":
+            continue
+        code = str(project["code"])
+        rows.append(
+            [
+                (
+                    label(
+                        f"{project['emoji']} {project['name']} — {counts.get(code, 0)}",
+                        current_type == "project" and current_value == code,
+                    ),
+                    f"dash:filter:project:{code}",
+                )
+            ]
+        )
+    rows.extend(
+        [
+            [
+                (
+                    label(f"➕ Другие проекты — {counts.get('other', 0)}", current_type == "other"),
+                    "dash:filter:other",
+                )
+            ],
+            [
+                (
+                    label(f"❓ Без проекта — {counts.get('unassigned', 0)}", current_type == "unassigned"),
+                    "dash:filter:unassigned",
+                )
+            ],
+            [("↩️ Назад", "dash:refresh")],
+        ]
+    )
+    return inline_keyboard(rows)
 
 
 def _dashboard_message_missing(exc: TelegramAPIError) -> bool:
@@ -2476,29 +2767,33 @@ def _safe_refresh_admin_dashboard(
         return None
 
 
-def _oldest_pending_video(conn) -> dict[str, Any] | None:
+def _oldest_pending_video(conn, state: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    condition, params = _queue_filter_sql(state)
     with conn.cursor() as cur:
         cur.execute(
             VIDEO_SELECT
-            + """
-            WHERE v.status = 'pending'
+            + f"""
+            WHERE v.status = 'pending' AND {condition}
             ORDER BY v.created_at ASC, v.id ASC
             LIMIT 1
-            """
+            """,
+            params,
         )
         return cur.fetchone()
 
 
-def _queue_position(conn, video: dict[str, Any]) -> int:
+def _queue_position(conn, video: dict[str, Any], state: dict[str, Any] | None = None) -> int:
+    condition, filter_params = _queue_filter_sql(state, alias="videos")
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT count(*) + 1 AS position
             FROM videos
             WHERE status = 'pending'
+              AND {condition}
               AND (created_at, id) < (%s, %s)
             """,
-            (video["created_at"], video["id"]),
+            (*filter_params, video["created_at"], video["id"]),
         )
         return int(cur.fetchone()["position"])
 
@@ -2520,7 +2815,12 @@ def _date_iso(value: Any) -> str | None:
     return text or None
 
 
-def format_admin_queue_card(video: dict[str, Any], total: int, position: int = 1) -> str:
+def format_admin_queue_card(
+    video: dict[str, Any],
+    total: int,
+    position: int = 1,
+    queue_label: str = "Все проекты",
+) -> str:
     platforms = (
         (("YouTube", "youtube_url"), ("VK", "vk_url"))
         if normalize_video_type(video.get("video_type")) == VIDEO_TYPE_BIGRECAP
@@ -2536,7 +2836,8 @@ def format_admin_queue_card(video: dict[str, Any], total: int, position: int = 1
     video_type = "большой рекап" if normalize_video_type(video.get("video_type")) == VIDEO_TYPE_BIGRECAP else "ролик"
     lines = [
         f"Заявка #{video['id']}",
-        f"Очередь: {position} из {total}",
+        f"Очередь: {queue_label}",
+        f"Позиция: {position} из {total}",
         f"Проект: {video.get('project_name') or 'не указан'}",
         f"Тип: {video_type}",
         "Статус: ожидает проверки",
@@ -2610,11 +2911,12 @@ def _send_queue_card(
     video: dict[str, Any],
     total: int,
     position: int,
+    state: dict[str, Any],
 ) -> int:
     chat_id = int(get_settings().admin_chat_id)
     response = tg.send_message(
         chat_id,
-        format_admin_queue_card(video, total, position),
+        format_admin_queue_card(video, total, position, _queue_filter_label(state)),
         admin_queue_keyboard(int(video["id"])),
     )
     message_id = _message_id(response)
@@ -2657,7 +2959,8 @@ def pump_admin_queue(
 ) -> dict[str, Any]:
     with db.transaction() as conn:
         state = _queue_state_for_update(conn)
-        total = _pending_video_count(conn)
+        total = _pending_video_count(conn, state)
+        global_total = _pending_video_count(conn)
         active_id = int(state["active_video_id"]) if state.get("active_video_id") else None
         active_video = None
         if active_id:
@@ -2671,12 +2974,18 @@ def pump_admin_queue(
             )
             if active_status and active_status["status"] == "pending" and pointer_is_complete:
                 active_video = get_video_by_id(conn, active_id)
-                if not force_repost:
+                if not _video_matches_queue_filter(active_video, state):
+                    active_video = None
+                    _clear_queue_state(conn)
+                elif not force_repost:
                     return {
                         "pending_count": total,
+                        "global_pending_count": global_total,
                         "active_video_id": active_id,
                         "active_message_id": int(state["active_message_id"]),
                         "sent": False,
+                        "queue_filter_type": _queue_filter(state)[0],
+                        "queue_filter_value": _queue_filter(state)[1],
                     }
             else:
                 _clear_queue_state(conn)
@@ -2684,17 +2993,33 @@ def pump_admin_queue(
 
         if total == 0:
             _clear_queue_state(conn)
-            return {"pending_count": 0, "active_video_id": None, "active_message_id": None, "sent": False}
+            return {
+                "pending_count": 0,
+                "global_pending_count": global_total,
+                "active_video_id": None,
+                "active_message_id": None,
+                "sent": False,
+                "queue_filter_type": _queue_filter(state)[0],
+                "queue_filter_value": _queue_filter(state)[1],
+            }
 
-        video = active_video or _oldest_pending_video(conn)
+        video = active_video or _oldest_pending_video(conn, state)
         if not video:
             _clear_queue_state(conn)
-            return {"pending_count": total, "active_video_id": None, "active_message_id": None, "sent": False}
+            return {
+                "pending_count": total,
+                "global_pending_count": global_total,
+                "active_video_id": None,
+                "active_message_id": None,
+                "sent": False,
+                "queue_filter_type": _queue_filter(state)[0],
+                "queue_filter_value": _queue_filter(state)[1],
+            }
 
         old_chat_id = int(state["active_chat_id"]) if active_video and state.get("active_chat_id") else None
         old_message_id = int(state["active_message_id"]) if active_video and state.get("active_message_id") else None
-        position = _queue_position(conn, video)
-        message_id = _send_queue_card(tg, conn, video, total, position)
+        position = _queue_position(conn, video, state)
+        message_id = _send_queue_card(tg, conn, video, total, position, state)
         if old_chat_id and old_message_id and old_message_id != message_id:
             _archive_queue_message(
                 tg,
@@ -2705,9 +3030,12 @@ def pump_admin_queue(
             )
         return {
             "pending_count": total,
+            "global_pending_count": global_total,
             "active_video_id": int(video["id"]),
             "active_message_id": message_id,
             "sent": True,
+            "queue_filter_type": _queue_filter(state)[0],
+            "queue_filter_value": _queue_filter(state)[1],
         }
 
 
@@ -2767,10 +3095,15 @@ def _lock_current_queue_item(
     return state, locked, None
 
 
-def _active_queue_card(conn, video_id: int) -> tuple[dict[str, Any], int, int]:
+def _active_queue_card(
+    conn,
+    video_id: int,
+    state: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], int, int]:
+    queue_state = state or _queue_state_for_update(conn)
     video = get_video_by_id(conn, video_id)
-    total = _pending_video_count(conn)
-    return video, total, _queue_position(conn, video)
+    total = _pending_video_count(conn, queue_state)
+    return video, total, _queue_position(conn, video, queue_state)
 
 
 def _refresh_active_queue_card(
@@ -2780,15 +3113,15 @@ def _refresh_active_queue_card(
     message_id: int | None,
 ) -> str | None:
     with db.transaction() as conn:
-        _, _, error = _lock_current_queue_item(conn, video_id, actor.chat_id, message_id)
+        state, _, error = _lock_current_queue_item(conn, video_id, actor.chat_id, message_id)
         if error:
             return error
-        video, total, position = _active_queue_card(conn, video_id)
+        video, total, position = _active_queue_card(conn, video_id, state)
         _edit_message_text_idempotent(
             tg,
             actor.chat_id,
             int(message_id),
-            format_admin_queue_card(video, total, position),
+            format_admin_queue_card(video, total, position, _queue_filter_label(state)),
             admin_queue_keyboard(video_id),
         )
     return None
@@ -2864,8 +3197,10 @@ def _set_active_queue_project(
     project_code: str,
     project_name: str,
 ) -> str | None:
+    moved_out_of_filter = False
+    updated_video: dict[str, Any] | None = None
     with db.transaction() as conn:
-        _, locked, error = _lock_current_queue_item(
+        state, locked, error = _lock_current_queue_item(
             conn,
             video_id,
             actor.chat_id,
@@ -2898,14 +3233,28 @@ def _set_active_queue_project(
             before_data={"project_code": before.get("project_code"), "project_name": before.get("project_name")},
             after_data={"project_code": project_code, "project_name": project_name},
         )
-        video, total, position = _active_queue_card(conn, video_id)
-        _edit_message_text_idempotent(
+        updated_video = get_video_by_id(conn, video_id)
+        moved_out_of_filter = not _video_matches_queue_filter(updated_video, state)
+        if moved_out_of_filter:
+            _clear_queue_state(conn)
+        else:
+            video, total, position = _active_queue_card(conn, video_id, state)
+            _edit_message_text_idempotent(
+                tg,
+                actor.chat_id,
+                active_message_id,
+                format_admin_queue_card(video, total, position, _queue_filter_label(state)),
+                admin_queue_keyboard(video_id),
+            )
+    if moved_out_of_filter and updated_video:
+        _archive_queue_message(
             tg,
             actor.chat_id,
             active_message_id,
-            format_admin_queue_card(video, total, position),
-            admin_queue_keyboard(video_id),
+            f"📂 Проект заявки #{video_id} изменён; она больше не входит в выбранный фильтр.",
+            actor,
         )
+        pump_admin_queue(tg, actor)
     _safe_refresh_admin_dashboard(tg, actor)
     return None
 
@@ -3075,12 +3424,12 @@ def _set_active_queue_publish_date(
             before_data={"publish_date": _date_iso(before.get("publish_date"))},
             after_data={"publish_date": publish_date.isoformat()},
         )
-        video, total, position = _active_queue_card(conn, video_id)
+        video, total, position = _active_queue_card(conn, video_id, state)
         _edit_message_text_idempotent(
             tg,
             active_chat_id,
             active_message_id,
-            format_admin_queue_card(video, total, position),
+            format_admin_queue_card(video, total, position, _queue_filter_label(state)),
             admin_queue_keyboard(video_id),
         )
     return None
@@ -3318,7 +3667,12 @@ def reset_admin_queue_command(tg: TelegramClient, actor: Actor) -> None:
         _queue_state_for_update(conn)
         _clear_queue_state(conn)
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM user_sessions WHERE state IN ('admin:date', 'admin:project_other')")
+            cur.execute(
+                """
+                DELETE FROM user_sessions
+                WHERE state IN ('admin:date', 'admin:project_other', 'admin:search', 'admin:person')
+                """
+            )
             cur.execute(
                 """
                 UPDATE videos
@@ -4076,60 +4430,565 @@ def show_people(tg: TelegramClient, actor: Actor) -> None:
     tg.send_message(actor.chat_id, "\n".join(lines))
 
 
+def start_person_lookup(tg: TelegramClient, actor: Actor) -> None:
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state="admin:person",
+        data={},
+    )
+    tg.send_message(actor.chat_id, "Введите @username, Telegram ID, people.id или точное имя участника.")
+
+
+def _person_identity_key(row: dict[str, Any]) -> tuple[str, str]:
+    if row.get("tg_id") is not None:
+        return "tg", str(row["tg_id"])
+    if row.get("username"):
+        return "username", str(row["username"]).lower()
+    return "name", str(row.get("name") or "").lower()
+
+
+def find_person_candidates(query: str) -> list[dict[str, Any]]:
+    raw = query.strip()
+    normalized = raw.lstrip("@").strip()
+    if not normalized:
+        return []
+    if normalized.isdigit():
+        rows = db.fetch_all(
+            """
+            SELECT id, name, username, tg_id, role, is_active
+            FROM people
+            WHERE id = %s OR tg_id = %s
+            ORDER BY is_active DESC, id
+            """,
+            (int(normalized), int(normalized)),
+        )
+    else:
+        rows = db.fetch_all(
+            """
+            SELECT id, name, username, tg_id, role, is_active
+            FROM people
+            WHERE lower(username) = lower(%s) OR lower(name) = lower(%s)
+            ORDER BY is_active DESC, id
+            """,
+            (normalized, normalized),
+        )
+    identities: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        identities.setdefault(_person_identity_key(row), row)
+    return list(identities.values())
+
+
+def _load_person_identity(conn, person_id: int) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, name, username, tg_id, role, is_active FROM people WHERE id = %s",
+            (person_id,),
+        )
+        selected = cur.fetchone()
+        if not selected:
+            return None
+        if selected.get("tg_id") is not None:
+            cur.execute("SELECT id FROM people WHERE tg_id = %s ORDER BY id", (selected["tg_id"],))
+        elif selected.get("username"):
+            cur.execute(
+                "SELECT id FROM people WHERE lower(username) = lower(%s) ORDER BY id",
+                (selected["username"],),
+            )
+        else:
+            cur.execute(
+                "SELECT id FROM people WHERE lower(name) = lower(%s) ORDER BY id",
+                (selected["name"],),
+            )
+        identity_ids = [int(row["id"]) for row in cur.fetchall()]
+    return {**selected, "identity_ids": identity_ids}
+
+
+def _person_role_condition(role: str, identity: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
+    clauses = [f"v.{role}_id = ANY(%s)"]
+    params: list[Any] = [identity["identity_ids"]]
+    if identity.get("username"):
+        clauses.append(f"lower(v.{role}_username) = lower(%s)")
+        params.append(identity["username"])
+    elif identity.get("name"):
+        clauses.append(f"lower(v.{role}_name) = lower(%s)")
+        params.append(identity["name"])
+    return "(" + " OR ".join(clauses) + ")", tuple(params)
+
+
+def _person_any_condition(identity: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    for role in ("author", "montage", "voice"):
+        clause, role_params = _person_role_condition(role, identity)
+        clauses.append(clause)
+        params.extend(role_params)
+    return "(" + " OR ".join(clauses) + ")", tuple(params)
+
+
+def load_person_profile(person_id: int, *, offset: int = 0, limit: int = 5) -> dict[str, Any] | None:
+    settings = get_settings()
+    now = datetime.now(settings.tz)
+    month_start_local = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if month_start_local.month == 12:
+        next_month_local = month_start_local.replace(year=month_start_local.year + 1, month=1)
+    else:
+        next_month_local = month_start_local.replace(month=month_start_local.month + 1)
+    month_start = month_start_local.astimezone(timezone.utc)
+    next_month = next_month_local.astimezone(timezone.utc)
+    with db.connect() as conn:
+        identity = _load_person_identity(conn, person_id)
+        if not identity:
+            return None
+        role_counts: dict[str, dict[str, int]] = {}
+        with conn.cursor() as cur:
+            for role in ("author", "montage", "voice"):
+                condition, params = _person_role_condition(role, identity)
+                cur.execute(
+                    f"""
+                    SELECT
+                        count(*) FILTER (WHERE v.status = 'approved') AS all_count,
+                        count(*) FILTER (
+                            WHERE v.status = 'approved'
+                              AND v.checked_at >= %s
+                              AND v.checked_at < %s
+                        ) AS month_count
+                    FROM videos v
+                    WHERE {condition}
+                    """,
+                    (month_start, next_month, *params),
+                )
+                row = cur.fetchone()
+                role_counts[role] = {
+                    "all": int(row["all_count"] or 0),
+                    "month": int(row["month_count"] or 0),
+                }
+            any_condition, any_params = _person_any_condition(identity)
+            cur.execute(
+                f"SELECT count(*) AS count FROM videos v WHERE v.status = 'pending' AND {any_condition}",
+                any_params,
+            )
+            pending_count = int(cur.fetchone()["count"])
+            cur.execute(
+                f"""
+                SELECT
+                    COALESCE(project_code, 'unassigned') AS project_code,
+                    COALESCE(NULLIF(project_name, ''), 'Без проекта') AS project_name,
+                    count(*) AS count
+                FROM videos v
+                WHERE v.status = 'approved' AND {any_condition}
+                GROUP BY
+                    COALESCE(project_code, 'unassigned'),
+                    COALESCE(NULLIF(project_name, ''), 'Без проекта')
+                ORDER BY count(*) DESC, project_name
+                """,
+                any_params,
+            )
+            projects = [
+                {
+                    "project_code": row["project_code"],
+                    "project_name": row["project_name"],
+                    "count": int(row["count"]),
+                }
+                for row in cur.fetchall()
+            ]
+            cur.execute(
+                VIDEO_SELECT
+                + f"""
+                WHERE v.status <> 'deleted' AND {any_condition}
+                ORDER BY COALESCE(v.publish_date, v.created_at::date) DESC, v.created_at DESC, v.id DESC
+                LIMIT %s OFFSET %s
+                """,
+                (*any_params, limit + 1, max(0, offset)),
+            )
+            video_rows = list(cur.fetchall())
+    return {
+        "id": int(identity["id"]),
+        "name": identity["name"],
+        "username": identity.get("username"),
+        "tg_id": identity.get("tg_id"),
+        "role_counts": role_counts,
+        "pending_count": pending_count,
+        "projects": projects,
+        "videos": video_rows[:limit],
+        "has_more": len(video_rows) > limit,
+        "offset": max(0, offset),
+        "page_size": limit,
+    }
+
+
+def _profile_name(profile: dict[str, Any]) -> str:
+    username = profile.get("username")
+    return f"{profile['name']} (@{username})" if username else str(profile["name"])
+
+
+def _video_display_date(video: dict[str, Any]) -> str:
+    value = video.get("publish_date") or video.get("created_at")
+    if isinstance(value, datetime):
+        value = value.astimezone(get_settings().tz).date()
+    return value.strftime("%d.%m.%Y") if isinstance(value, date) else "дата не указана"
+
+
+def format_person_profile(profile: dict[str, Any]) -> str:
+    counts = profile["role_counts"]
+    lines = [
+        f"👤 {_profile_name(profile)}",
+        "",
+        "За всё время:",
+        f"Автор — {counts['author']['all']}",
+        f"Монтаж — {counts['montage']['all']}",
+        f"Озвучка — {counts['voice']['all']}",
+        "",
+        "За текущий месяц:",
+        f"Автор — {counts['author']['month']}",
+        f"Монтаж — {counts['montage']['month']}",
+        f"Озвучка — {counts['voice']['month']}",
+        "",
+        f"Ожидают проверки: {profile['pending_count']}",
+    ]
+    if profile["projects"]:
+        lines.extend(["", "По проектам:"])
+        lines.extend(
+            f"{row['project_name']} — {row['count']}" for row in profile["projects"][:8]
+        )
+    if profile["videos"]:
+        video = profile["videos"][0]
+        lines.extend(
+            [
+                "",
+                "Последний ролик:",
+                f"#{video['id']} — {_video_display_date(video)}",
+                f"Проект: {video.get('project_name') or 'не указан'}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def person_profile_keyboard(person_id: int) -> dict[str, Any]:
+    return inline_keyboard(
+        [
+            [("🎬 Последние ролики", f"person:videos:{person_id}:0")],
+            [("📂 Все проекты", f"person:projects:{person_id}")],
+        ]
+    )
+
+
+def show_person_profile(tg: TelegramClient, actor: Actor, person_id: int) -> None:
+    profile = load_person_profile(person_id)
+    if not profile:
+        tg.send_message(actor.chat_id, "Участник не найден.")
+        return
+    tg.send_message(actor.chat_id, format_person_profile(profile), person_profile_keyboard(profile["id"]))
+    record_system_log(
+        "person_profile_viewed",
+        "person",
+        int(profile["id"]),
+        {"query_person_id": person_id},
+        actor,
+    )
+
+
+def person_command(tg: TelegramClient, actor: Actor, query: str) -> None:
+    if not require_admin(tg, actor):
+        return
+    if not query.strip():
+        start_person_lookup(tg, actor)
+        return
+    candidates = find_person_candidates(query)
+    if not candidates:
+        tg.send_message(actor.chat_id, "Участник не найден.")
+        return
+    if len(candidates) == 1:
+        show_person_profile(tg, actor, int(candidates[0]["id"]))
+        return
+    buttons = [
+        [
+            (
+                f"{row['name']} (@{row['username']})" if row.get("username") else f"{row['name']} · ID {row['id']}",
+                f"person:view:{row['id']}",
+            )
+        ]
+        for row in candidates[:10]
+    ]
+    tg.send_message(actor.chat_id, "Найдено несколько участников. Выберите нужного:", inline_keyboard(buttons))
+
+
+def _format_person_videos(profile: dict[str, Any]) -> str:
+    page = profile["offset"] // profile["page_size"] + 1
+    lines = [f"🎬 Ролики: {_profile_name(profile)}", f"Страница {page}"]
+    if not profile["videos"]:
+        lines.extend(["", "Роликов на этой странице нет."])
+    for video in profile["videos"]:
+        lines.extend(
+            [
+                "",
+                f"#{video['id']} — {_video_display_date(video)}",
+                f"Статус: {video.get('status')}",
+                f"Проект: {video.get('project_name') or 'не указан'}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _person_videos_keyboard(profile: dict[str, Any]) -> dict[str, Any]:
+    person_id = int(profile["id"])
+    offset = int(profile["offset"])
+    page_size = int(profile["page_size"])
+    navigation: list[tuple[str, str]] = []
+    if offset > 0:
+        navigation.append(("⬅️", f"person:videos:{person_id}:{max(0, offset - page_size)}"))
+    if profile.get("has_more"):
+        navigation.append(("➡️", f"person:videos:{person_id}:{offset + page_size}"))
+    rows = [navigation] if navigation else []
+    rows.append([("↩️ К профилю", f"person:view:{person_id}")])
+    return inline_keyboard(rows)
+
+
+def handle_person_profile_callback(
+    tg: TelegramClient,
+    actor: Actor,
+    data: str,
+    callback_id: str,
+) -> None:
+    if not is_admin(actor.tg_id):
+        _answer_queue_callback(tg, callback_id, "Это действие доступно только админам.", show_alert=True)
+        return
+    try:
+        parts = data.split(":")
+        action = parts[1]
+        person_id = int(parts[2])
+        if action == "view":
+            show_person_profile(tg, actor, person_id)
+        elif action == "videos":
+            offset = max(0, int(parts[3]))
+            profile = load_person_profile(person_id, offset=offset)
+            if not profile:
+                raise ValueError("person not found")
+            tg.send_message(actor.chat_id, _format_person_videos(profile), _person_videos_keyboard(profile))
+        elif action == "projects":
+            profile = load_person_profile(person_id)
+            if not profile:
+                raise ValueError("person not found")
+            lines = [f"📂 Проекты: {_profile_name(profile)}", ""]
+            lines.extend(
+                f"{row['project_name']} — {row['count']}" for row in profile["projects"]
+            )
+            if not profile["projects"]:
+                lines.append("Одобренных роликов пока нет.")
+            tg.send_message(
+                actor.chat_id,
+                "\n".join(lines),
+                inline_keyboard([[('↩️ К профилю', f"person:view:{person_id}")]]),
+            )
+        else:
+            raise ValueError("unknown person callback")
+        _answer_queue_callback(tg, callback_id)
+    except (IndexError, TypeError, ValueError):
+        _answer_queue_callback(tg, callback_id, "Карточка участника устарела.", show_alert=True)
+
+
+def start_admin_search(tg: TelegramClient, actor: Actor) -> None:
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state="admin:search",
+        data={},
+    )
+    record_system_log("admin_search_started", "admin_search", None, {"source": "prompt"}, actor)
+    tg.send_message(actor.chat_id, "Введите ID, shortcode, ссылку, @username или точное имя.")
+
+
 def start_or_run_search(tg: TelegramClient, actor: Actor, query: str) -> None:
     if not require_admin(tg, actor):
         return
     if query:
         run_search(tg, actor, query)
         return
-    db.set_session(
-        tg_id=actor.tg_id,
-        chat_id=actor.chat_id,
-        username=actor.username,
-        state="search:query",
-        data={},
+    start_admin_search(tg, actor)
+
+
+def _external_id(raw: str, normalizer) -> str | None:
+    try:
+        return normalizer(raw).external_id
+    except Exception:
+        return None
+
+
+def find_videos_exact(query: str) -> tuple[str, list[dict[str, Any]]]:
+    q = query.strip()
+    if not q:
+        return "empty", []
+    if q.isdigit():
+        rows = db.fetch_all(VIDEO_SELECT + " WHERE v.id = %s LIMIT 1", (int(q),))
+        if rows:
+            return "video_id", rows
+
+    plain_token = q if "://" not in q and " " not in q else None
+    candidates = [
+        ("instagram_id", _external_id(q, normalize_instagram) or plain_token),
+        ("youtube_id", _external_id(q, normalize_youtube) or plain_token),
+        ("tiktok_id", _external_id(q, normalize_tiktok) or plain_token),
+        ("vk_id", _external_id(q, normalize_vk) or plain_token),
+    ]
+    for column, value in candidates:
+        if not value:
+            continue
+        rows = db.fetch_all(
+            VIDEO_SELECT + f" WHERE v.{column} = %s ORDER BY v.created_at DESC LIMIT 10",
+            (value,),
+        )
+        if rows:
+            return column, rows
+
+    person_query = q.lstrip("@").strip()
+    rows = db.fetch_all(
+        VIDEO_SELECT
+        + """
+        WHERE lower(v.author_username) = lower(%s)
+           OR lower(v.montage_username) = lower(%s)
+           OR lower(v.voice_username) = lower(%s)
+        ORDER BY v.created_at DESC
+        LIMIT 10
+        """,
+        (person_query, person_query, person_query),
     )
-    tg.send_message(actor.chat_id, "Введите ID, shortcode, ссылку или имя.")
+    if rows:
+        return "username", rows
+
+    rows = db.fetch_all(
+        VIDEO_SELECT
+        + """
+        WHERE lower(v.author_name) = lower(%s)
+           OR lower(v.montage_name) = lower(%s)
+           OR lower(v.voice_name) = lower(%s)
+        ORDER BY v.created_at DESC
+        LIMIT 10
+        """,
+        (q, q, q),
+    )
+    if rows:
+        return "name", rows
+
+    like = f"%{q}%"
+    rows = db.fetch_all(
+        VIDEO_SELECT
+        + """
+        WHERE v.instagram_url ILIKE %s
+           OR v.youtube_url ILIKE %s
+           OR v.tiktok_url ILIKE %s
+           OR v.vk_url ILIKE %s
+        ORDER BY v.created_at DESC
+        LIMIT 10
+        """,
+        (like, like, like, like),
+    )
+    return "url_substring", rows
+
+
+def format_search_result(video: dict[str, Any]) -> str:
+    lines = [
+        f"🔎 Заявка #{video['id']}",
+        f"Статус: {video.get('status') or 'не указан'}",
+        f"Проект: {video.get('project_name') or 'не указан'}",
+        f"Дата: {_video_display_date(video)}",
+        "",
+        "Ссылки:",
+    ]
+    links = [
+        ("Instagram", video.get("instagram_url")),
+        ("YouTube", video.get("youtube_url")),
+        ("TikTok", video.get("tiktok_url")),
+        ("VK", video.get("vk_url")),
+    ]
+    lines.extend(f"{label}: {value}" for label, value in links if value)
+    if not any(value for _, value in links):
+        lines.append("нет")
+    lines.extend(
+        [
+            "",
+            "Участники:",
+            f"Автор: {person_value(video, 'author')}",
+            f"Монтаж: {person_value(video, 'montage')}",
+            f"Озвучка: {person_value(video, 'voice') if video.get('voice_name') else 'нет'}",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def run_search(tg: TelegramClient, actor: Actor, query: str) -> None:
     q = query.strip()
-    instagram_id = None
-    try:
-        instagram_id = normalize_instagram(q).external_id
-    except Exception:
-        pass
-    params: list[Any] = []
-    clauses = []
-    if q.isdigit():
-        clauses.append("v.id = %s")
-        params.append(int(q))
-    if instagram_id:
-        clauses.append("v.instagram_id = %s")
-        params.append(instagram_id)
-    clauses.append(
-        """
-        (
-            v.instagram_id ILIKE %s OR v.author_name ILIKE %s OR
-            v.montage_name ILIKE %s OR v.voice_name ILIKE %s OR
-            v.youtube_url ILIKE %s OR v.tiktok_url ILIKE %s OR v.vk_url ILIKE %s
-        )
-        """
-    )
-    like = f"%{q}%"
-    params.extend([like, like, like, like, like, like, like])
-    rows = db.fetch_all(
-        VIDEO_SELECT
-        + " WHERE "
-        + " OR ".join(clauses)
-        + " ORDER BY v.created_at DESC LIMIT 10",
-        tuple(params),
+    record_system_log("admin_search_started", "admin_search", None, {"query": q[:100]}, actor)
+    stage, rows = find_videos_exact(q)
+    record_system_log(
+        "admin_search_result",
+        "admin_search",
+        int(rows[0]["id"]) if len(rows) == 1 else None,
+        {"query": q[:100], "stage": stage, "count": len(rows)},
+        actor,
     )
     if not rows:
         tg.send_message(actor.chat_id, "Ничего не найдено.")
         return
     for row in rows:
-        tg.send_message(actor.chat_id, format_video_card(row, title="Найдено"))
+        tg.send_message(actor.chat_id, format_search_result(row))
+
+
+def _parse_daily_report_date(raw: str) -> date:
+    if not raw.strip():
+        return previous_report_date()
+    try:
+        return date.fromisoformat(raw.strip())
+    except ValueError as exc:
+        raise ValueError("Используйте дату в формате YYYY-MM-DD.") from exc
+
+
+def daily_report_command(tg: TelegramClient, actor: Actor, raw_date: str) -> None:
+    if not require_admin(tg, actor):
+        return
+    try:
+        report_date = _parse_daily_report_date(raw_date)
+        _, text = preview_daily_report(report_date)
+        tg.send_message(
+            actor.tg_id,
+            "Предпросмотр перед отправкой в admin chat:\n\n" + text,
+            inline_keyboard([[('📤 Отправить отчёт', f"daily:send:{report_date.isoformat()}")]]),
+        )
+        if actor.chat_id != actor.tg_id:
+            tg.send_message(actor.chat_id, "Предпросмотр отправлен вам в личку.")
+    except ValueError as exc:
+        tg.send_message(actor.chat_id, str(exc))
+    except Exception:
+        tg.send_message(actor.chat_id, "Не удалось отправить preview в личку. Сначала откройте диалог с ботом.")
+
+
+def handle_daily_report_callback(
+    tg: TelegramClient,
+    actor: Actor,
+    data: str,
+    callback_id: str,
+) -> None:
+    if not is_admin(actor.tg_id):
+        _answer_queue_callback(tg, callback_id, "Это действие доступно только админам.", show_alert=True)
+        return
+    try:
+        _, action, raw_date = data.split(":", 2)
+        if action != "send":
+            raise ValueError("unknown daily report action")
+        report_date = date.fromisoformat(raw_date)
+        result = send_daily_report(
+            report_date,
+            tg=tg,
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+        )
+        text = "Отчёт отправлен в admin chat." if result["sent"] else "Отчёт за эту дату уже отправлялся."
+        _answer_queue_callback(tg, callback_id, text, show_alert=True)
+    except (TypeError, ValueError):
+        _answer_queue_callback(tg, callback_id, "Кнопка отчёта устарела.", show_alert=True)
+    except Exception:
+        _answer_queue_callback(tg, callback_id, "Не удалось отправить отчёт.", show_alert=True)
 
 
 def sync_sheets_command(tg: TelegramClient, actor: Actor) -> None:

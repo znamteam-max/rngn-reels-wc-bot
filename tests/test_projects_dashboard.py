@@ -252,8 +252,8 @@ class DashboardV1013Tests(unittest.TestCase):
 
     def test_dashboard_text_contains_total_active_and_projects(self) -> None:
         text = format_admin_dashboard(self.snapshot)
-        self.assertIn("Неразобрано: 3", text)
-        self.assertIn("Текущая заявка: #64", text)
+        self.assertIn("🔴 Ждут проверки: 3", text)
+        self.assertIn("▶️ Текущая заявка: #64", text)
         self.assertIn("🏀 Взял Мяч — 2", text)
         self.assertIn("❓ Без проекта — 1", text)
 

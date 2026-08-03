@@ -92,6 +92,17 @@ def ensure_runtime_migrations() -> dict[str, Any]:
             cur.execute(
                 """
                 SELECT count(*)
+                FROM information_schema.columns
+                WHERE table_name = 'admin_queue_state'
+                  AND column_name IN ('queue_filter_type', 'queue_filter_value')
+                """
+            )
+            queue_filter_columns = int(cur.fetchone()[0])
+            cur.execute("SELECT to_regclass('daily_reports') IS NOT NULL")
+            daily_reports_table_exists = bool(cur.fetchone()[0])
+            cur.execute(
+                """
+                SELECT count(*)
                 FROM people
                 WHERE role = 'author'
                   AND lower(name) = lower('Прокудин')
@@ -120,6 +131,8 @@ def ensure_runtime_migrations() -> dict[str, Any]:
             "idx_videos_project_id": project_index_exists,
             "idx_videos_status_project": status_project_index_exists,
             "admin_dashboard_columns": dashboard_columns,
+            "admin_queue_filter_columns": queue_filter_columns,
+            "daily_reports_table": daily_reports_table_exists,
         },
         "seed": {
             "prokudin_action": seed_action,

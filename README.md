@@ -35,7 +35,7 @@ ADMIN_CHAT_ID=-5520370963
 GOOGLE_SERVICE_ACCOUNT_JSON_B64=base64 encoded service account JSON
 GOOGLE_SHEETS_SPREADSHEET_ID=Google Spreadsheet ID
 YOUTUBE_API_KEY=optional YouTube Data API v3 key for metrics
-CRON_SECRET=optional secret for /api/cron/youtube-metrics
+CRON_SECRET=optional secret for protected /api/cron/* endpoints
 TZ=Europe/Helsinki
 BOOTSTRAP_SUPERADMIN_IDS=comma-separated Telegram IDs for first setup
 ```
@@ -117,8 +117,8 @@ captured_at,video_id,platform,platform_video_id,views,likes,comments,shares,sour
 
 ## Vercel Deploy
 
-The project uses `api/webhook.py`, `api/health.py`, and `api/cron/youtube-metrics.py` as Python functions. `vercel.json` excludes the old Cloudflare/Node assets from the Python bundle and schedules YouTube metrics sync daily at `0 3 * * *`.
-`/api/health` and `/api/webhook` run idempotent runtime migrations on cold start, including `video_type` schema updates and the live Prokudin seed.
+The project uses `api/webhook.py`, `api/health.py`, `api/cron/youtube-metrics.py`, and `api/cron/daily-report.py` as Python functions. `vercel.json` excludes the old Cloudflare/Node assets from the Python bundle, schedules YouTube metrics sync at `0 3 * * *`, and sends the previous-day admin report at `0 6 * * *` (09:00 for the production UTC+3 timezone).
+`/api/health`, `/api/webhook`, and the daily report endpoint run idempotent runtime migrations on cold start, including queue filters and the `daily_reports` delivery ledger.
 
 Deploy:
 
@@ -139,6 +139,13 @@ Cron metrics endpoint:
 
 ```text
 GET /api/cron/youtube-metrics
+Authorization: Bearer <CRON_SECRET>
+```
+
+Daily report endpoint:
+
+```text
+GET /api/cron/daily-report
 Authorization: Bearer <CRON_SECRET>
 ```
 
@@ -177,8 +184,11 @@ Admin commands:
 /summary
 /calendar
 /people
-/search
+/person username_or_id
+/find query
+/daily_report [YYYY-MM-DD]
 /sync_sheets
+/queue_status
 /resend_pending
 /sync_youtube_metrics
 /metrics_youtube_today
@@ -206,7 +216,11 @@ Roles: `author`, `montage`, `voice`, `admin`, `superadmin`.
 
 Both commands work only in a private chat with the bot. In groups, the bot asks the user to open a private chat. The montage step includes `Смонтировал сам автор`. Participants do not set the publication date.
 
-After preview, the user sends the request to review. The video becomes `pending` and remains available in the global FIFO queue ordered by `created_at, id`. The bot keeps exactly one actionable card in `ADMIN_CHAT_ID`; later submissions stay pending without flooding the chat. A persistent pinned dashboard is edited in place with the total pending count, current video, oldest age, and project breakdown. `/admin` refreshes the dashboard and moves the current card to the bottom, `/queue_status` shows compact diagnostics, and `/resend_pending` repairs the pointer and reposts only that one card. Batches remain only for reporting and never hide pending videos from the admin queue.
+After preview, the user sends the request to review. The video becomes `pending` and remains available in FIFO order by `created_at, id`. The queue can stay global or be filtered by a permanent project, custom `other` projects, or unassigned legacy rows. Changing the filter never changes video statuses and moves the pointer to the oldest matching pending video. The bot keeps exactly one actionable card in `ADMIN_CHAT_ID`; later submissions stay pending without flooding the chat. A persistent pinned dashboard is edited in place with the global pending count, current video, oldest age, project breakdown, participants, search, and filter controls. `/admin` refreshes the dashboard and moves the current filtered card to the bottom, `/queue_status` shows compact diagnostics, and `/resend_pending` repairs the pointer and reposts only that one card. Batches remain only for reporting and never hide pending videos from the admin queue.
+
+`/find` resolves exact video ID and platform IDs first, then exact participant username/name, and only then uses a URL substring fallback. `/person` merges role-specific `people` rows that represent one Telegram identity and reports approved role counts for all time and the current month, pending work, project totals, and five-item video pages.
+
+`/daily_report` previews a selected date in the requesting admin's private chat. Its confirmation button sends the report to `ADMIN_CHAT_ID`. The cron sends the previous calendar day, uses `TIMEZONE` for date boundaries, and records one `daily_reports` row per date so repeated calls do not resend it.
 
 The permanent project catalog contains nine choices, including `Другой проект`. Permanent selections store project ID/code/name snapshots. A custom project stores `project_id = NULL`, `project_code = other`, and the entered name. Existing videos are not guessed or backfilled; an old pending video must receive a project from its active admin card before approval.
 
