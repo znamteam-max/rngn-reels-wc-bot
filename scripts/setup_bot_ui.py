@@ -21,6 +21,7 @@ COMMANDS = [
     ("daily_report", "Ежедневный отчёт"),
     ("chatid", "Показать ID текущего чата"),
     ("resend_pending", "Восстановить текущую FIFO-карточку"),
+    ("return_missing_dates", "Вернуть заявки без даты"),
     ("test_admin_chat", "Проверить админский чат"),
     ("sync_youtube_metrics", "Обновить YouTube-метрики"),
     ("metrics_youtube_today", "YouTube сегодня"),

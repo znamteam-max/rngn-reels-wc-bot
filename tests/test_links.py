@@ -311,6 +311,7 @@ class BotV108Tests(unittest.TestCase):
                 "youtube_id": "big123",
                 "project_code": "bolshe",
                 "project_name": "Больше",
+                "publish_date": "2026-08-03",
                 "tiktok_url": "https://www.tiktok.com/@x/video/1",
                 "tiktok_id": "1",
             }

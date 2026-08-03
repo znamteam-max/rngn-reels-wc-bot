@@ -5,6 +5,7 @@ import sys
 
 import psycopg
 
+from bot.people_seeds import seed_and_backfill_egor
 from bot.projects import seed_projects
 
 
@@ -283,6 +284,7 @@ def main() -> int:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
         seed_projects(conn)
+        seed_and_backfill_egor(conn)
         conn.commit()
     print("Database schema is ready.")
     return 0

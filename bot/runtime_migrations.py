@@ -5,6 +5,7 @@ from typing import Any
 import psycopg
 
 from bot.config import get_settings
+from bot.people_seeds import seed_and_backfill_egor
 from bot.projects import seed_projects
 from scripts.init_db import SCHEMA_SQL
 from scripts.seed_people import upsert_person
@@ -37,6 +38,7 @@ def ensure_runtime_migrations() -> dict[str, Any]:
                 "is_active": "true",
             },
         )
+        egor_montage = seed_and_backfill_egor(conn)
         active_project_count = seed_projects(conn)
         with conn.cursor() as cur:
             cur.execute(
@@ -139,6 +141,10 @@ def ensure_runtime_migrations() -> dict[str, Any]:
             "prokudin_id": person_id,
             "prokudin_active_rows": prokudin_active_rows,
             "active_project_count": active_project_count,
+            "egor_montage_action": egor_montage["action"],
+            "egor_montage_id": egor_montage["person_id"],
+            "egor_montage_active_rows": egor_montage["active_rows"],
+            "egor_montage_backfilled_count": egor_montage["backfilled_count"],
         },
     }
     _DONE = True

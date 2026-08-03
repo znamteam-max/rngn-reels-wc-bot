@@ -68,6 +68,15 @@ ADD_ZNAMBO_DATE_PRESETS = {
     "today": "Сегодня",
     "yesterday": "Вчера",
 }
+NEW_DATE_SESSION = "new:date"
+NEW_DATE_MANUAL_SESSION = "new:date_manual"
+NEW_DATE_PROMPT = "Укажи дату публикации ролика"
+NEW_DATE_MANUAL_PROMPT = (
+    "Введи дату публикации: YYYY-MM-DD, DD.MM или D.M.\n"
+    "Например: 2026-08-03 или 03.08"
+)
+NEW_DATE_INVALID_MESSAGE = "Не понял дату. Используй ДД.ММ или ГГГГ-ММ-ДД."
+NEW_DATE_PRESETS = {"today": "Сегодня", "yesterday": "Вчера"}
 PROJECT_PROMPT = "Для какого проекта сделан ролик?"
 PROJECT_OTHER_PROMPT = "Напиши название проекта"
 PROJECT_OTHER_INVALID_MESSAGE = "Название проекта должно содержать от 2 до 60 символов."
@@ -331,6 +340,8 @@ def handle_message(message: dict[str, Any]) -> None:
             resend_pending_command(tg, actor)
         elif command == "/reset_admin_queue":
             reset_admin_queue_command(tg, actor)
+        elif command == "/return_missing_dates":
+            return_missing_dates_command(tg, actor)
         elif command == "/add_person":
             add_person_command(tg, actor, rest)
         elif command == "/activate_person":
@@ -371,6 +382,9 @@ def handle_callback(callback: dict[str, Any]) -> None:
         return
     if data.startswith("admq:"):
         handle_admin_queue_callback(tg, actor, data, message_id, callback_id)
+        return
+    if data.startswith("missingdate:"):
+        handle_missing_date_callback(tg, actor, data, callback_id)
         return
     if data.startswith("adm:"):
         handle_stale_admin_callback(tg, actor, callback_id)
@@ -425,6 +439,11 @@ def handle_callback(callback: dict[str, Any]) -> None:
     elif data.startswith("proj:"):
         _, project_code = data.split(":", 1)
         handle_project_pick(tg, actor, project_code)
+    elif data == "newdate:manual":
+        start_new_manual_date(tg, actor)
+    elif data.startswith("newdate:"):
+        _, preset = data.split(":", 1)
+        handle_new_date(tg, actor, NEW_DATE_PRESETS.get(preset, ""))
     elif data == "znambo:date:manual":
         start_add_znambo_manual_date(tg, actor)
     elif data.startswith("znambo:date:"):
@@ -464,6 +483,8 @@ def handle_callback(callback: dict[str, Any]) -> None:
     elif data.startswith("revise:"):
         _, raw_video_id = data.split(":", 1)
         start_revision(tg, actor, int(raw_video_id))
+    elif data.startswith("revdate:"):
+        handle_missing_date_revision_callback(tg, actor, data)
     elif data.startswith("adm:open:"):
         _, _, raw_batch_id, raw_index = data.split(":", 3)
         show_queue_item(tg, actor, int(raw_batch_id), int(raw_index), message_id)
@@ -522,6 +543,7 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
         "/new_video — добавить Reels",
         "/new_bigrecap — добавить большой рекап",
         "/my_requests — мои заявки и дополнение ссылок",
+        "Дата публикации обязательна при добавлении заявки.",
         "/chatid — показать ID текущего Telegram-чата",
         "/admin — очередь проверки",
         "/queue_status — статус очереди",
@@ -533,6 +555,7 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
         "/daily_report [YYYY-MM-DD] — ежедневный отчёт",
         "/sync_sheets — повторная синхронизация Google Sheets",
         "/resend_pending — восстановить текущую FIFO-карточку",
+        "/return_missing_dates — вернуть авторам заявки без даты",
         "/sync_youtube_metrics — обновить YouTube-метрики",
         "/metrics_youtube_today — YouTube сегодня",
         "/metrics_youtube_all — YouTube всего",
@@ -633,6 +656,63 @@ def _continue_after_project(
         data["step"] = "awaiting_znambo_publish_date"
         ask_add_znambo_date(tg, actor, data)
         return
+    ask_submission_date(tg, actor, data)
+
+
+def ask_submission_date(tg: TelegramClient, actor: Actor, data: dict[str, Any]) -> None:
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state=NEW_DATE_SESSION,
+        data=data,
+    )
+    tg.send_message(
+        actor.chat_id,
+        NEW_DATE_PROMPT,
+        inline_keyboard(
+            [
+                [("Сегодня", "newdate:today"), ("Вчера", "newdate:yesterday")],
+                [("Ввести вручную", "newdate:manual")],
+            ]
+        ),
+    )
+
+
+def start_new_manual_date(tg: TelegramClient, actor: Actor) -> None:
+    session = db.get_session(actor.tg_id)
+    if not session or session.get("state") != NEW_DATE_SESSION:
+        tg.send_message(actor.chat_id, "Начни заявку заново: /new_video.")
+        return
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state=NEW_DATE_MANUAL_SESSION,
+        data=session.get("data") or {},
+    )
+    tg.send_message(actor.chat_id, NEW_DATE_MANUAL_PROMPT)
+
+
+def parse_new_submission_date(raw: str) -> date:
+    try:
+        return parse_publish_date(raw)
+    except ValueError as exc:
+        raise ValueError(NEW_DATE_INVALID_MESSAGE) from exc
+
+
+def handle_new_date(tg: TelegramClient, actor: Actor, text: str) -> None:
+    session = db.get_session(actor.tg_id)
+    if not session or session.get("state") not in {NEW_DATE_SESSION, NEW_DATE_MANUAL_SESSION}:
+        tg.send_message(actor.chat_id, "Начни заявку заново: /new_video.")
+        return
+    data = session.get("data") or {}
+    try:
+        publish_date = parse_new_submission_date(text)
+    except ValueError:
+        tg.send_message(actor.chat_id, NEW_DATE_INVALID_MESSAGE)
+        return
+    data["publish_date"] = publish_date.isoformat()
     db.set_session(
         tg_id=actor.tg_id,
         chat_id=actor.chat_id,
@@ -1214,6 +1294,8 @@ def handle_session_message(
         tg.send_message(actor.chat_id, PROJECT_PROMPT, project_picker_keyboard())
     elif state in {"new:project_other", ADD_ZNAMBO_SESSION_PROJECT_OTHER}:
         handle_project_other_message(tg, actor, state, data, text)
+    elif state in {NEW_DATE_SESSION, NEW_DATE_MANUAL_SESSION}:
+        handle_new_date(tg, actor, text)
     elif state == ADD_ZNAMBO_SESSION_DATE:
         handle_add_znambo_date(tg, actor, text)
     elif state == "admin:date":
@@ -1248,6 +1330,8 @@ def handle_session_message(
         handle_add_links_message(tg, actor, data, "tiktok", text)
     elif state == "links:vk":
         handle_add_links_message(tg, actor, data, "vk", text)
+    elif state == "revision:missing_date":
+        handle_missing_date_revision_message(tg, actor, data, text)
     else:
         db.clear_session(actor.tg_id)
         tg.send_message(actor.chat_id, "Состояние формы устарело. Начните заново: /new_video.")
@@ -1654,6 +1738,7 @@ def handle_preview_edit(tg: TelegramClient, actor: Actor) -> None:
         "project_id": data.get("project_id"),
         "project_code": data.get("project_code"),
         "project_name": data.get("project_name"),
+        "publish_date": data.get("publish_date"),
     }
     if video_type == VIDEO_TYPE_BIGRECAP:
         keep.update(
@@ -1756,6 +1841,8 @@ def normalized_submission_data(data: dict[str, Any]) -> dict[str, Any]:
     normalized["video_type"] = video_type
     if not normalized.get("project_code") or not normalized.get("project_name"):
         raise ValueError("project is required")
+    if not normalized.get("publish_date"):
+        raise ValueError("publish_date is required")
     if video_type == VIDEO_TYPE_BIGRECAP:
         if not normalized.get("youtube_url") or not normalized.get("youtube_id"):
             raise ValueError("bigrecap requires youtube_url")
@@ -3716,6 +3803,384 @@ def reset_admin_queue_command(tg: TelegramClient, actor: Actor) -> None:
         tg.send_message(actor.chat_id, "Очередь пуста. Pending-заявок: 0.")
 
 
+def return_missing_dates_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_admin(tg, actor):
+        return
+    row = db.fetch_one(
+        "SELECT count(*) AS count FROM videos WHERE status = 'pending' AND publish_date IS NULL"
+    ) or {}
+    count = int(row.get("count") or 0)
+    tg.send_message(
+        actor.chat_id,
+        f"Найдено заявок без даты: {count}\n\nВернуть их авторам на заполнение даты?",
+        inline_keyboard(
+            [
+                [("Да, вернуть", "missingdate:return")],
+                [("Отмена", "missingdate:cancel")],
+            ]
+        ),
+    )
+
+
+def handle_missing_date_callback(
+    tg: TelegramClient,
+    actor: Actor,
+    data: str,
+    callback_id: str,
+) -> None:
+    if not is_admin(actor.tg_id):
+        _answer_queue_callback(tg, callback_id, "Это действие доступно только админам.", show_alert=True)
+        return
+    if data == "missingdate:cancel":
+        _answer_queue_callback(tg, callback_id)
+        tg.send_message(actor.chat_id, "Возврат заявок без даты отменён.")
+        return
+    if data != "missingdate:return":
+        _answer_queue_callback(tg, callback_id, "Действие устарело.", show_alert=True)
+        return
+    _answer_queue_callback(tg, callback_id)
+    bulk_return_missing_dates(tg, actor)
+
+
+def _missing_date_notification_text(video: dict[str, Any]) -> str:
+    link_label = "Instagram"
+    link = video.get("instagram_url")
+    if not link:
+        link_label = "YouTube"
+        link = video.get("youtube_url")
+    return (
+        f"Заявка #{video['id']} возвращена на заполнение даты.\n\n"
+        f"Проект: {video.get('project_name') or 'не указан'}\n"
+        f"{link_label}: {link or 'не указан'}\n\n"
+        "Нажми кнопку ниже и укажи дату публикации."
+    )
+
+
+def bulk_return_missing_dates(tg: TelegramClient, actor: Actor) -> dict[str, Any]:
+    old_active_card: tuple[int, int, int] | None = None
+    with db.transaction() as conn:
+        state = _queue_state_for_update(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, batch_id, added_by_tg_id, added_by_username,
+                       project_name, instagram_url, youtube_url
+                FROM videos
+                WHERE status = 'pending' AND publish_date IS NULL
+                ORDER BY created_at ASC, id ASC
+                FOR UPDATE
+                """
+            )
+            rows = list(cur.fetchall())
+            video_ids = [int(row["id"]) for row in rows]
+            if video_ids:
+                cur.execute(
+                    """
+                    UPDATE videos
+                    SET status = 'needs_revision',
+                        checked_by_tg_id = %s,
+                        checked_by_username = %s,
+                        checked_at = now(),
+                        updated_at = now()
+                    WHERE id = ANY(%s)
+                      AND status = 'pending'
+                      AND publish_date IS NULL
+                    """,
+                    (actor.tg_id, actor.username, video_ids),
+                )
+
+        for row in rows:
+            db.log_event(
+                conn,
+                entity_type="video",
+                entity_id=int(row["id"]),
+                action="missing_date_returned",
+                actor_tg_id=actor.tg_id,
+                actor_username=actor.username,
+                before_data={"status": "pending", "publish_date": None},
+                after_data={"status": "needs_revision"},
+            )
+        for batch_id in sorted({int(row["batch_id"]) for row in rows if row.get("batch_id")}):
+            recalculate_batch(conn, batch_id)
+
+        active_id = int(state["active_video_id"]) if state.get("active_video_id") else None
+        if active_id and active_id in video_ids:
+            if state.get("active_chat_id") and state.get("active_message_id"):
+                old_active_card = (
+                    int(state["active_chat_id"]),
+                    int(state["active_message_id"]),
+                    active_id,
+                )
+            _clear_queue_state(conn)
+        db.log_event(
+            conn,
+            entity_type="admin_queue",
+            entity_id=None,
+            action="missing_dates_bulk_returned",
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+            after_data={"returned_count": len(rows), "active_video_returned": bool(old_active_card)},
+        )
+
+    if old_active_card:
+        _archive_queue_message(
+            tg,
+            old_active_card[0],
+            old_active_card[1],
+            f"Заявка #{old_active_card[2]} возвращена автору на заполнение даты.",
+            actor,
+        )
+
+    notified = 0
+    failed = 0
+    for row in rows:
+        chat_id = row.get("added_by_tg_id")
+        if not chat_id:
+            failed += 1
+            record_system_log(
+                "missing_date_notification_failed",
+                "video",
+                int(row["id"]),
+                {"reason": "submitter_chat_id_missing"},
+                actor,
+            )
+            continue
+        try:
+            tg.send_message(
+                int(chat_id),
+                _missing_date_notification_text(row),
+                inline_keyboard([[("Указать дату", f"revdate:{row['id']}")]]),
+            )
+            notified += 1
+        except Exception as exc:
+            failed += 1
+            record_system_log(
+                "missing_date_notification_failed",
+                "video",
+                int(row["id"]),
+                telegram_failure_payload(exc, int(chat_id), "notify_missing_date"),
+                actor,
+            )
+
+    _safe_refresh_admin_dashboard(tg, actor)
+    try:
+        queue_result = pump_admin_queue(tg, actor)
+    except Exception as exc:
+        record_system_log(
+            "admin_queue_pump_failed",
+            "admin_queue",
+            None,
+            telegram_failure_payload(exc, get_settings().admin_chat_id, "pump_after_missing_dates"),
+            actor,
+        )
+        pending_row = db.fetch_one("SELECT count(*) AS count FROM videos WHERE status = 'pending'") or {}
+        queue_result = {"global_pending_count": int(pending_row.get("count") or 0)}
+    _safe_refresh_admin_dashboard(tg, actor)
+    pending_count = int(queue_result.get("global_pending_count", queue_result.get("pending_count", 0)) or 0)
+    tg.send_message(
+        actor.chat_id,
+        "Готово.\n\n"
+        f"Возвращено авторам: {notified}\n"
+        f"Не удалось уведомить: {failed}\n"
+        f"Осталось pending в очереди: {pending_count}",
+    )
+    return {
+        "returned_count": len(rows),
+        "notified_count": notified,
+        "failed_count": failed,
+        "pending_count": pending_count,
+    }
+
+
+def _missing_date_revision_error(video: dict[str, Any] | None, actor: Actor) -> str | None:
+    if not video:
+        return "Заявка не найдена."
+    if video.get("added_by_tg_id") != actor.tg_id and not is_admin(actor.tg_id):
+        return "Можно указывать дату только в своей заявке."
+    if video.get("status") != "needs_revision":
+        return "Эта заявка сейчас не ожидает правку."
+    if video.get("publish_date"):
+        return "В этой заявке дата уже указана."
+    return None
+
+
+def _missing_date_revision_keyboard(video_id: int) -> dict[str, Any]:
+    return inline_keyboard(
+        [
+            [
+                ("Сегодня", f"revdate:set:{video_id}:today"),
+                ("Вчера", f"revdate:set:{video_id}:yesterday"),
+            ],
+            [("Ввести вручную", f"revdate:manual:{video_id}")],
+        ]
+    )
+
+
+def start_missing_date_revision(tg: TelegramClient, actor: Actor, video_id: int) -> None:
+    video = get_video_by_id_outside(video_id)
+    error = _missing_date_revision_error(video, actor)
+    if error:
+        tg.send_message(actor.chat_id, error)
+        return
+    tg.send_message(
+        actor.chat_id,
+        f"Заявка #{video_id} — укажи дату публикации",
+        _missing_date_revision_keyboard(video_id),
+    )
+
+
+def start_missing_date_revision_manual(tg: TelegramClient, actor: Actor, video_id: int) -> None:
+    video = get_video_by_id_outside(video_id)
+    error = _missing_date_revision_error(video, actor)
+    if error:
+        tg.send_message(actor.chat_id, error)
+        return
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state="revision:missing_date",
+        data={"video_id": video_id, "flow": "revision_missing_date"},
+    )
+    tg.send_message(actor.chat_id, NEW_DATE_MANUAL_PROMPT)
+
+
+def handle_missing_date_revision_callback(
+    tg: TelegramClient,
+    actor: Actor,
+    data: str,
+) -> None:
+    parts = data.split(":")
+    try:
+        if len(parts) == 2:
+            start_missing_date_revision(tg, actor, int(parts[1]))
+            return
+        if len(parts) == 3 and parts[1] == "manual":
+            start_missing_date_revision_manual(tg, actor, int(parts[2]))
+            return
+        if len(parts) == 4 and parts[1] == "set":
+            preset = NEW_DATE_PRESETS.get(parts[3], "")
+            publish_date = parse_new_submission_date(preset)
+            restore_missing_date(tg, actor, int(parts[2]), publish_date)
+            return
+    except (TypeError, ValueError):
+        pass
+    tg.send_message(actor.chat_id, "Действие устарело. Открой /my_requests.")
+
+
+def handle_missing_date_revision_message(
+    tg: TelegramClient,
+    actor: Actor,
+    data: dict[str, Any],
+    text: str,
+) -> None:
+    try:
+        publish_date = parse_new_submission_date(text)
+    except ValueError:
+        tg.send_message(actor.chat_id, NEW_DATE_INVALID_MESSAGE)
+        return
+    restore_missing_date(tg, actor, int(data.get("video_id") or 0), publish_date)
+
+
+def restore_missing_date(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    publish_date: date,
+) -> dict[str, Any] | None:
+    actor_is_admin = is_admin(actor.tg_id)
+    old_active_card: tuple[int, int, int] | None = None
+    with db.transaction() as conn:
+        state = _queue_state_for_update(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, status, publish_date, added_by_tg_id, batch_id
+                FROM videos
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (video_id,),
+            )
+            locked = cur.fetchone()
+            if not locked:
+                tg.send_message(actor.chat_id, "Заявка не найдена.")
+                return None
+            if locked.get("added_by_tg_id") != actor.tg_id and not actor_is_admin:
+                tg.send_message(actor.chat_id, "Можно указывать дату только в своей заявке.")
+                return None
+            if locked.get("status") != "needs_revision" or locked.get("publish_date"):
+                tg.send_message(actor.chat_id, "Эта заявка уже не ожидает заполнение даты.")
+                return None
+            cur.execute(
+                """
+                UPDATE videos
+                SET publish_date = %s,
+                    status = 'pending',
+                    checked_by_tg_id = NULL,
+                    checked_by_username = NULL,
+                    checked_at = NULL,
+                    publish_date_set_by_tg_id = %s,
+                    publish_date_set_by_username = %s,
+                    publish_date_set_at = now(),
+                    updated_at = now()
+                WHERE id = %s
+                """,
+                (publish_date, actor.tg_id, actor.username, video_id),
+            )
+        if locked.get("batch_id"):
+            recalculate_batch(conn, int(locked["batch_id"]))
+        db.log_event(
+            conn,
+            entity_type="video",
+            entity_id=video_id,
+            action="missing_date_revision_submitted",
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+            before_data={"status": "needs_revision", "publish_date": None},
+            after_data={"status": "pending", "publish_date": publish_date.isoformat()},
+        )
+        active_id = int(state["active_video_id"]) if state.get("active_video_id") else None
+        oldest = _oldest_pending_video(conn, state)
+        if active_id and oldest and active_id != int(oldest["id"]):
+            if state.get("active_chat_id") and state.get("active_message_id"):
+                old_active_card = (
+                    int(state["active_chat_id"]),
+                    int(state["active_message_id"]),
+                    active_id,
+                )
+            _clear_queue_state(conn)
+        video = get_video_by_id(conn, video_id)
+
+    db.clear_session(actor.tg_id)
+    if old_active_card:
+        _archive_queue_message(
+            tg,
+            old_active_card[0],
+            old_active_card[1],
+            f"FIFO обновлена после возврата заявки #{video_id} в очередь.",
+            actor,
+        )
+    tg.send_message(
+        actor.chat_id,
+        f"✅ Дата добавлена. Заявка #{video_id} снова отправлена на проверку.\n"
+        f"Дата: {_format_ddmmyyyy(publish_date)}",
+    )
+    _safe_refresh_admin_dashboard(tg, actor)
+    try:
+        pump_admin_queue(tg, actor)
+    except Exception as exc:
+        record_system_log(
+            "admin_queue_pump_failed",
+            "video",
+            video_id,
+            telegram_failure_payload(exc, get_settings().admin_chat_id, "pump_after_date_revision"),
+            actor,
+        )
+    _safe_refresh_admin_dashboard(tg, actor)
+    return video
+
+
 def show_my_requests(tg: TelegramClient, actor: Actor) -> None:
     rows = db.fetch_all(
         VIDEO_SELECT
@@ -3733,7 +4198,10 @@ def show_my_requests(tg: TelegramClient, actor: Actor) -> None:
     for row in rows:
         buttons = [[("Дополнить ссылки", f"links:{row['id']}")]]
         if row.get("status") == "needs_revision":
-            buttons.insert(0, [("Исправить", f"revise:{row['id']}")])
+            if not row.get("publish_date"):
+                buttons.insert(0, [("Указать дату", f"revdate:{row['id']}")])
+            else:
+                buttons.insert(0, [("Исправить", f"revise:{row['id']}")])
         tg.send_message(
             actor.chat_id,
             format_video_card(row, title="Моя заявка"),
@@ -3752,6 +4220,9 @@ def start_revision(tg: TelegramClient, actor: Actor, video_id: int) -> None:
     if video.get("status") != "needs_revision":
         tg.send_message(actor.chat_id, "Эта заявка сейчас не ожидает правку.")
         return
+    if not video.get("publish_date"):
+        start_missing_date_revision(tg, actor, video_id)
+        return
     video_type = normalize_video_type(video.get("video_type"))
     data = {
         "edit_video_id": video_id,
@@ -3760,6 +4231,7 @@ def start_revision(tg: TelegramClient, actor: Actor, video_id: int) -> None:
         "project_id": video.get("project_id"),
         "project_code": video.get("project_code"),
         "project_name": video.get("project_name"),
+        "publish_date": _date_iso(video.get("publish_date")),
         "instagram_url": None if video_type == VIDEO_TYPE_BIGRECAP else video.get("instagram_url"),
         "instagram_id": None if video_type == VIDEO_TYPE_BIGRECAP else video.get("instagram_id"),
         "youtube_url": video.get("youtube_url") if video_type == VIDEO_TYPE_BIGRECAP else None,

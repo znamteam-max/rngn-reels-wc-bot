@@ -81,6 +81,49 @@ def _daily_report_debug() -> dict[str, object]:
     }
 
 
+def _missing_publish_date_debug() -> dict[str, int]:
+    row = db.fetch_one(
+        """
+        SELECT
+            count(*) FILTER (WHERE status = 'pending') AS pending,
+            count(*) FILTER (WHERE status = 'needs_revision') AS needs_revision
+        FROM videos
+        WHERE publish_date IS NULL
+          AND status IN ('pending', 'needs_revision')
+        """
+    ) or {}
+    return {
+        "pending": int(row.get("pending") or 0),
+        "needs_revision": int(row.get("needs_revision") or 0),
+    }
+
+
+def _egor_montage_debug() -> dict[str, int]:
+    row = db.fetch_one(
+        """
+        SELECT
+            (
+                SELECT count(*)
+                FROM people
+                WHERE role = 'montage'
+                  AND name = 'Егор Петрушков'
+                  AND username = 'RayBallPro'
+                  AND is_active = true
+            ) AS active_rows,
+            (
+                SELECT count(*)
+                FROM videos
+                WHERE montage_name = 'Егор Петрушков'
+                  AND montage_username = 'RayBallPro'
+            ) AS backfilled_videos
+        """
+    ) or {}
+    return {
+        "active_rows": int(row.get("active_rows") or 0),
+        "backfilled_videos": int(row.get("backfilled_videos") or 0),
+    }
+
+
 class handler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         self.do_GET()
@@ -99,6 +142,8 @@ class handler(BaseHTTPRequestHandler):
             "projects": _projects_debug(),
             "admin_queue": _admin_queue_debug(),
             "daily_report": _daily_report_debug(),
+            "missing_publish_date": _missing_publish_date_debug(),
+            "egor_montage": _egor_montage_debug(),
         }
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_response(200)

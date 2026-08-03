@@ -126,7 +126,7 @@ class ProjectsV1013Tests(unittest.TestCase):
         callbacks = [button["callback_data"] for row in keyboard for button in row]
         self.assertEqual(callbacks, [f"proj:{project['code']}" for project in PROJECTS])
 
-    def test_project_pick_continues_regular_flow_to_author(self) -> None:
+    def test_project_pick_continues_regular_flow_to_date(self) -> None:
         actor = Actor(tg_id=1, chat_id=1, username="user")
         tg = FakeTelegram()
         data = {"video_type": "regular", "instagram_id": "ABC"}
@@ -137,12 +137,11 @@ class ProjectsV1013Tests(unittest.TestCase):
                 return_value={"id": 2, "code": "bolshe", "name": "Больше"},
             ),
             patch("bot.handlers.db.set_session") as set_session,
-            patch("bot.handlers.ask_people") as ask_people,
         ):
             handle_project_pick(tg, actor, "bolshe")
-        self.assertEqual(set_session.call_args.kwargs["state"], "new:author")
+        self.assertEqual(set_session.call_args.kwargs["state"], "new:date")
         self.assertEqual(set_session.call_args.kwargs["data"]["project_name"], "Больше")
-        ask_people.assert_called_once_with(tg, actor, "author")
+        self.assertEqual(tg.sent[-1][1], "Укажи дату публикации ролика")
 
     def test_project_pick_continues_znambo_flow_to_date(self) -> None:
         actor = Actor(tg_id=1, chat_id=1, username="znambo")
