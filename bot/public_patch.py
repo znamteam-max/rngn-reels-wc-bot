@@ -96,7 +96,8 @@ def _send_main_menu(tg: TelegramClient, actor: h.Actor, text: str) -> None:
         rows.append([("⚡ Добавить мой ролик", "cmd:add_znambo")])
     if h.is_admin(actor.tg_id):
         rows.insert(3, [("Админка", "cmd:admin"), ("Сводка", "cmd:summary")])
-        rows.insert(4, [("Восстановить очередь", "cmd:resend_pending"), ("Тест админ-чата", "cmd:test_admin_chat")])
+        rows.insert(4, [("Статус очереди", "cmd:queue_status"), ("Восстановить очередь", "cmd:resend_pending")])
+        rows.insert(5, [("Тест админ-чата", "cmd:test_admin_chat")])
     if h.is_superadmin(actor.tg_id):
         rows.append([("Сбросить FIFO-очередь", "cmd:reset_admin_queue")])
         status = "вкл" if _hearing_mode_enabled() else "выкл"
@@ -198,6 +199,9 @@ def insert_pending_video(actor: h.Actor, data: dict[str, Any]) -> dict[str, Any]
                 UPDATE videos
                 SET status = 'pending',
                     video_type = %s,
+                    project_id = %s,
+                    project_code = %s,
+                    project_name = %s,
                     publish_date = %s,
                     instagram_url = %s,
                     instagram_id = %s,
@@ -236,6 +240,9 @@ def insert_pending_video(actor: h.Actor, data: dict[str, Any]) -> dict[str, Any]
                 """,
                 (
                     h.normalize_video_type(data.get("video_type")),
+                    data.get("project_id"),
+                    data.get("project_code"),
+                    data.get("project_name"),
                     data.get("publish_date"),
                     data.get("instagram_url"),
                     data.get("instagram_id"),
@@ -277,6 +284,7 @@ def insert_pending_video(actor: h.Actor, data: dict[str, Any]) -> dict[str, Any]
                 "status": "pending",
                 "batch_id": batch_id,
                 "video_type": h.normalize_video_type(data.get("video_type")),
+                "project_code": data.get("project_code"),
             },
         )
         return h.get_video_by_id(conn, int(deleted["id"]))

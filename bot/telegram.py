@@ -90,6 +90,21 @@ class TelegramClient:
     def delete_message(self, chat_id: int | str, message_id: int) -> dict[str, Any]:
         return self._request("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
 
+    def pin_chat_message(
+        self,
+        chat_id: int | str,
+        message_id: int,
+        disable_notification: bool = True,
+    ) -> dict[str, Any]:
+        return self._request(
+            "pinChatMessage",
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "disable_notification": disable_notification,
+            },
+        )
+
     def answer_callback_query(
         self,
         callback_query_id: str,

@@ -5,6 +5,8 @@ import sys
 
 import psycopg
 
+from bot.projects import seed_projects
+
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS people (
@@ -31,10 +33,24 @@ CREATE TABLE IF NOT EXISTS batches (
     updated_at timestamptz DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+    id bigserial PRIMARY KEY,
+    code text NOT NULL UNIQUE,
+    name text NOT NULL,
+    emoji text,
+    is_active boolean NOT NULL DEFAULT true,
+    sort_order integer NOT NULL DEFAULT 100,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS videos (
     id bigserial PRIMARY KEY,
     status text NOT NULL DEFAULT 'draft',
     video_type text NOT NULL DEFAULT 'regular',
+    project_id bigint NULL REFERENCES projects(id),
+    project_code text,
+    project_name text,
     publish_date date,
     instagram_url text,
     instagram_id text UNIQUE,
@@ -86,6 +102,9 @@ CREATE TABLE IF NOT EXISTS admin_queue_state (
     claimed_by_tg_id bigint,
     claimed_by_username text,
     claimed_at timestamptz,
+    dashboard_chat_id bigint,
+    dashboard_message_id bigint,
+    dashboard_updated_at timestamptz,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -133,6 +152,8 @@ CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
 CREATE INDEX IF NOT EXISTS idx_videos_publish_date ON videos(publish_date);
 CREATE INDEX IF NOT EXISTS idx_videos_batch_id ON videos(batch_id);
 CREATE INDEX IF NOT EXISTS idx_videos_pending_fifo ON videos(status, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_videos_project_id ON videos(project_id);
+CREATE INDEX IF NOT EXISTS idx_videos_status_project ON videos(status, project_id);
 CREATE INDEX IF NOT EXISTS idx_people_role_active ON people(role, is_active);
 CREATE INDEX IF NOT EXISTS idx_logs_entity ON logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_metrics_video_platform_time
@@ -157,6 +178,13 @@ ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_views bigint NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_likes bigint NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_comments bigint NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_last_sync_at timestamptz NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS project_id bigint NULL REFERENCES projects(id);
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS project_code text NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS project_name text NULL;
+
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS dashboard_chat_id bigint NULL;
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS dashboard_message_id bigint NULL;
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS dashboard_updated_at timestamptz NULL;
 
 UPDATE videos
 SET video_type = 'regular'
@@ -167,6 +195,8 @@ ALTER TABLE videos ALTER COLUMN video_type SET NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_videos_video_type ON videos(video_type);
 CREATE INDEX IF NOT EXISTS idx_videos_youtube_id ON videos(youtube_id);
+CREATE INDEX IF NOT EXISTS idx_videos_project_id ON videos(project_id);
+CREATE INDEX IF NOT EXISTS idx_videos_status_project ON videos(status, project_id);
 
 INSERT INTO admin_queue_state (queue_name)
 VALUES ('main')
@@ -215,6 +245,12 @@ CREATE TRIGGER trg_user_sessions_updated_at
 BEFORE UPDATE ON user_sessions
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_projects_updated_at ON projects;
+CREATE TRIGGER trg_projects_updated_at
+BEFORE UPDATE ON projects
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
 """
 
 
@@ -228,6 +264,7 @@ def main() -> int:
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
+        seed_projects(conn)
         conn.commit()
     print("Database schema is ready.")
     return 0

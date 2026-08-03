@@ -65,6 +65,10 @@ def video_type_label(value: Any) -> str:
     return "большой рекап" if value == "bigrecap" else "ролик"
 
 
+def project_value(row: dict[str, Any]) -> str:
+    return str(row.get("project_name") or "не указан")
+
+
 def _insert_video_type(lines: list[str], row: dict[str, Any]) -> None:
     if row.get("video_type") == "bigrecap":
         lines.insert(2, f"Тип: {video_type_label(row.get('video_type'))}")
@@ -93,6 +97,7 @@ def format_video_card(
     lines = [
         header,
         f"ID: {row.get('id', 'новая')}",
+        f"Проект: {project_value(row)}",
         "",
         *_platform_lines(row),
         "",
@@ -115,6 +120,7 @@ def format_final_card(row: dict[str, Any]) -> str:
     lines = [
         "Видео одобрено и добавлено в отчёт",
         f"ID: {row.get('id', 'не указано')}",
+        f"Проект: {project_value(row)}",
         "",
         f"Дата публикации: {_format_publish_date(row.get('publish_date'))}",
         "",

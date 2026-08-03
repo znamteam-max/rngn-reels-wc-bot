@@ -200,13 +200,15 @@ Roles: `author`, `montage`, `voice`, `admin`, `superadmin`.
 
 ## Main Flow
 
-`/new_video` creates a regular Reels request and keeps the Instagram-first flow: Instagram/Reels URL, author, whether the video had another author's voice, one editor, and optional YouTube/TikTok/VK links.
+`/new_video` creates a regular Reels request and keeps the Instagram-first flow: Instagram/Reels URL, required project, author, whether the video had another author's voice, one editor, and optional YouTube/TikTok/VK links.
 
-`/new_bigrecap` creates a request with `video_type = bigrecap` and starts from a required YouTube link. It does not ask for Instagram or TikTok. After author, voice, and montage selection, it asks whether to add VK. Big recap duplicates are detected by `youtube_id`; regular Reels duplicates are still detected by Instagram shortcode from `/reel/{id}`, `/p/{id}`, or `/tv/{id}`.
+`/new_bigrecap` creates a request with `video_type = bigrecap` and starts from a required YouTube link. It asks for the required project before people, and does not ask for Instagram or TikTok. After author, voice, and montage selection, it asks whether to add VK. Big recap duplicates are detected by `youtube_id`; regular Reels duplicates are still detected by Instagram shortcode from `/reel/{id}`, `/p/{id}`, or `/tv/{id}`.
 
 Both commands work only in a private chat with the bot. In groups, the bot asks the user to open a private chat. The montage step includes `Смонтировал сам автор`. Participants do not set the publication date.
 
-After preview, the user sends the request to review. The video becomes `pending` and remains available in the global FIFO queue ordered by `created_at, id`. The bot keeps exactly one actionable card in `ADMIN_CHAT_ID`; later submissions stay pending without flooding the chat. `/admin` moves the current card to the bottom, while `/resend_pending` repairs the pointer and reposts only that one card. Batches remain only for reporting and never hide pending videos from the admin queue.
+After preview, the user sends the request to review. The video becomes `pending` and remains available in the global FIFO queue ordered by `created_at, id`. The bot keeps exactly one actionable card in `ADMIN_CHAT_ID`; later submissions stay pending without flooding the chat. A persistent pinned dashboard is edited in place with the total pending count, current video, oldest age, and project breakdown. `/admin` refreshes the dashboard and moves the current card to the bottom, `/queue_status` shows compact diagnostics, and `/resend_pending` repairs the pointer and reposts only that one card. Batches remain only for reporting and never hide pending videos from the admin queue.
+
+The permanent project catalog contains nine choices, including `Другой проект`. Permanent selections store project ID/code/name snapshots. A custom project stores `project_id = NULL`, `project_code = other`, and the entered name. Existing videos are not guessed or backfilled; an old pending video must receive a project from its active admin card before approval.
 
 Admin date controls and `/add_znambo` use the same deterministic parser. It accepts today, yesterday, the day before yesterday, `YYYY-MM-DD`, `DD.MM`, and `D.M`; `DD.MM` always means day-month and uses the current year from `TIMEZONE`. Past, current, and future publication dates are allowed.
 
@@ -214,11 +216,13 @@ After approval:
 
 1. `videos.status` becomes `approved`.
 2. `checked_by_*` and `checked_at` are set.
-3. The `Videos` sheet row is inserted or updated by `id`.
+3. The `Videos` sheet row and its project sheet are inserted or updated by `id`.
 4. The active card is edited to a compact final result without buttons.
 5. The next oldest pending video is sent as the only new actionable card.
 
 If Google Sheets is temporarily unavailable, the video remains `approved`; the failure is recorded in `logs` as `sync_sheets_failed`. Run `/sync_sheets` later to upsert approved videos again.
+
+Project reporting also maintains `Project Stats` and `People × Projects`. Project-sheet synchronization removes a video ID from its previous project sheet before upserting it into the current one.
 
 Use `/chatid` in the target admin group or supergroup to get the real `chat_id`, then update `ADMIN_CHAT_ID` in Vercel and run `/resend_pending`.
 

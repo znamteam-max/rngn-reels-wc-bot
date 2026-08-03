@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import json
 import re
+from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any
 
 from google.oauth2 import service_account
@@ -10,14 +12,20 @@ from googleapiclient.discovery import build
 
 from bot.config import get_settings
 from bot.messages import person_value
+from bot.projects import PROJECTS, PROJECT_SHEET_TITLES, project_sheet_title
 
 
 SHEET_NAME = "Videos"
 METRICS_SHEET_NAME = "MetricsRaw"
+PROJECT_STATS_SHEET_NAME = "Project Stats"
+PEOPLE_PROJECTS_SHEET_NAME = "People × Projects"
 SHEET_COLUMNS = [
     "id",
     "status",
     "video_type",
+    "project_id",
+    "project_code",
+    "project_name",
     "publish_date",
     "instagram_url",
     "instagram_id",
@@ -37,6 +45,28 @@ SHEET_COLUMNS = [
     "checked_at",
     "batch_id",
     "comment",
+]
+PROJECT_STATS_COLUMNS = [
+    "project_code",
+    "project_name",
+    "approved_videos",
+    "pending_videos",
+    "duplicate_videos",
+    "needs_revision_videos",
+    "authors_count",
+    "montage_count",
+    "voice_count",
+    "updated_at",
+]
+PEOPLE_PROJECTS_COLUMNS = [
+    "person_name",
+    "person_username",
+    "project_code",
+    "project_name",
+    "author_count",
+    "montage_count",
+    "voice_count",
+    "approved_total",
 ]
 METRICS_COLUMNS = [
     "captured_at",
@@ -101,6 +131,9 @@ def video_to_row(video: dict[str, Any], columns: list[str] | None = None) -> lis
         "id": video.get("id"),
         "status": video.get("status"),
         "video_type": _video_type_cell(video.get("video_type")),
+        "project_id": video.get("project_id"),
+        "project_code": video.get("project_code"),
+        "project_name": video.get("project_name"),
         "publish_date": video.get("publish_date"),
         "instagram_url": video.get("instagram_url"),
         "instagram_id": video.get("instagram_id"),
@@ -223,17 +256,226 @@ def _ensure_video_sheet_columns(service, spreadsheet_id: str) -> list[str]:
     return columns
 
 
-def _find_row_by_id(service, spreadsheet_id: str, video_id: int) -> int | None:
+def _sheet_range(sheet_name: str, cells: str) -> str:
+    return f"'{sheet_name.replace(chr(39), chr(39) * 2)}'!{cells}"
+
+
+def _find_row_by_id(
+    service,
+    spreadsheet_id: str,
+    video_id: int,
+    sheet_name: str = SHEET_NAME,
+) -> int | None:
     result = (
         service.spreadsheets()
         .values()
-        .get(spreadsheetId=spreadsheet_id, range=f"{SHEET_NAME}!A2:A")
+        .get(spreadsheetId=spreadsheet_id, range=_sheet_range(sheet_name, "A2:A"))
         .execute()
     )
     for index, row in enumerate(result.get("values", []), start=2):
         if row and str(row[0]) == str(video_id):
             return index
     return None
+
+
+def _write_named_sheet_header(
+    service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    columns: list[str],
+) -> None:
+    end_column = _column_letter(len(columns))
+    (
+        service.spreadsheets()
+        .values()
+        .update(
+            spreadsheetId=spreadsheet_id,
+            range=_sheet_range(sheet_name, f"A1:{end_column}1"),
+            valueInputOption="USER_ENTERED",
+            body={"values": [columns]},
+        )
+        .execute()
+    )
+
+
+def _ensure_named_sheets(
+    service,
+    spreadsheet_id: str,
+    sheets_with_columns: dict[str, list[str]],
+) -> None:
+    properties = _sheet_properties(service, spreadsheet_id)
+    missing = [title for title in sheets_with_columns if title not in properties]
+    if missing:
+        (
+            service.spreadsheets()
+            .batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={
+                    "requests": [
+                        {"addSheet": {"properties": {"title": title}}}
+                        for title in missing
+                    ]
+                },
+            )
+            .execute()
+        )
+    for title in missing:
+        _write_named_sheet_header(service, spreadsheet_id, title, sheets_with_columns[title])
+
+
+def _clear_video_from_named_sheet(
+    service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    video_id: int,
+    column_count: int,
+) -> None:
+    row_number = _find_row_by_id(service, spreadsheet_id, video_id, sheet_name)
+    if not row_number:
+        return
+    end_column = _column_letter(column_count)
+    (
+        service.spreadsheets()
+        .values()
+        .clear(
+            spreadsheetId=spreadsheet_id,
+            range=_sheet_range(sheet_name, f"A{row_number}:{end_column}{row_number}"),
+            body={},
+        )
+        .execute()
+    )
+
+
+def _upsert_video_in_named_sheet(
+    service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    video: dict[str, Any],
+    columns: list[str],
+) -> int:
+    row_number = _find_row_by_id(service, spreadsheet_id, int(video["id"]), sheet_name)
+    return _write_video_to_named_sheet(
+        service,
+        spreadsheet_id,
+        sheet_name,
+        video,
+        columns,
+        row_number=row_number,
+    )
+
+
+def _write_video_to_named_sheet(
+    service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    video: dict[str, Any],
+    columns: list[str],
+    *,
+    row_number: int | None,
+) -> int:
+    end_column = _column_letter(len(columns))
+    row_values = [video_to_row(video, columns)]
+    if row_number:
+        (
+            service.spreadsheets()
+            .values()
+            .update(
+                spreadsheetId=spreadsheet_id,
+                range=_sheet_range(sheet_name, f"A{row_number}:{end_column}{row_number}"),
+                valueInputOption="USER_ENTERED",
+                body={"values": row_values},
+            )
+            .execute()
+        )
+        return int(row_number)
+    response = (
+        service.spreadsheets()
+        .values()
+        .append(
+            spreadsheetId=spreadsheet_id,
+            range=_sheet_range(sheet_name, f"A:{end_column}"),
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body={"values": row_values},
+        )
+        .execute()
+    )
+    updated_range = response.get("updates", {}).get("updatedRange", "")
+    match = re.search(r"!A(\d+):", updated_range)
+    return int(match.group(1)) if match else 0
+
+
+def _project_sheet_rows_by_id(
+    service,
+    spreadsheet_id: str,
+    project_sheets: list[str],
+    video_id: int,
+) -> dict[str, int]:
+    response = (
+        service.spreadsheets()
+        .values()
+        .batchGet(
+            spreadsheetId=spreadsheet_id,
+            ranges=[_sheet_range(title, "A2:A") for title in project_sheets],
+            majorDimension="ROWS",
+        )
+        .execute()
+    )
+    value_ranges = response.get("valueRanges", [])
+    found: dict[str, int] = {}
+    for sheet_index, title in enumerate(project_sheets):
+        rows = value_ranges[sheet_index].get("values", []) if sheet_index < len(value_ranges) else []
+        for row_index, row in enumerate(rows, start=2):
+            if row and str(row[0]) == str(video_id):
+                found[title] = row_index
+                break
+    return found
+
+
+def _sync_video_project_sheet(
+    service,
+    spreadsheet_id: str,
+    video: dict[str, Any],
+    columns: list[str],
+) -> None:
+    project_sheets = list(PROJECT_SHEET_TITLES.values())
+    _ensure_named_sheets(
+        service,
+        spreadsheet_id,
+        {title: columns for title in project_sheets},
+    )
+    target_title = project_sheet_title(str(video.get("project_code") or ""))
+    existing_rows = _project_sheet_rows_by_id(
+        service,
+        spreadsheet_id,
+        project_sheets,
+        int(video["id"]),
+    )
+    end_column = _column_letter(len(columns))
+    clear_ranges = [
+        _sheet_range(title, f"A{row_number}:{end_column}{row_number}")
+        for title, row_number in existing_rows.items()
+        if title != target_title
+    ]
+    if clear_ranges:
+        (
+            service.spreadsheets()
+            .values()
+            .batchClear(
+                spreadsheetId=spreadsheet_id,
+                body={"ranges": clear_ranges},
+            )
+            .execute()
+        )
+    if target_title:
+        _write_video_to_named_sheet(
+            service,
+            spreadsheet_id,
+            target_title,
+            video,
+            columns,
+            row_number=existing_rows.get(target_title),
+        )
 
 
 def upsert_video(video: dict[str, Any]) -> int:
@@ -260,6 +502,7 @@ def upsert_video(video: dict[str, Any]) -> int:
             )
             .execute()
         )
+        _sync_video_project_sheet(service, spreadsheet_id, video, columns)
         return int(row_number)
 
     response = (
@@ -277,9 +520,188 @@ def upsert_video(video: dict[str, Any]) -> int:
     updated_range = response.get("updates", {}).get("updatedRange", "")
     match = re.search(r"!A(\d+):", updated_range)
     if match:
-        return int(match.group(1))
+        row_number = int(match.group(1))
+        _sync_video_project_sheet(service, spreadsheet_id, video, columns)
+        return row_number
     found = _find_row_by_id(service, spreadsheet_id, int(video["id"]))
+    _sync_video_project_sheet(service, spreadsheet_id, video, columns)
     return int(found or 0)
+
+
+def _report_project(video: dict[str, Any]) -> tuple[str, str]:
+    code = str(video.get("project_code") or "unassigned")
+    if code == "other":
+        return code, "Другие проекты"
+    if code == "unassigned":
+        return code, "Без проекта"
+    project = next((item for item in PROJECTS if item["code"] == code), None)
+    return code, str(video.get("project_name") or (project or {}).get("name") or code)
+
+
+def _person_key(video: dict[str, Any], role: str) -> tuple[str, str] | None:
+    name = str(video.get(f"{role}_name") or "").strip()
+    if not name:
+        return None
+    username = str(video.get(f"{role}_username") or "").strip().lstrip("@")
+    return name, username
+
+
+def build_project_stats_rows(
+    videos: list[dict[str, Any]],
+    *,
+    updated_at: datetime | None = None,
+) -> list[list[str]]:
+    current = updated_at or datetime.now(timezone.utc)
+    stats: dict[str, dict[str, Any]] = {
+        str(project["code"]): {
+            "name": "Другие проекты" if project["code"] == "other" else project["name"],
+            "sort_order": int(project["sort_order"]),
+            "approved": 0,
+            "pending": 0,
+            "duplicate": 0,
+            "needs_revision": 0,
+            "author": set(),
+            "montage": set(),
+            "voice": set(),
+        }
+        for project in PROJECTS
+    }
+    for video in videos:
+        code, name = _report_project(video)
+        item = stats.setdefault(
+            code,
+            {
+                "name": name,
+                "sort_order": 1000,
+                "approved": 0,
+                "pending": 0,
+                "duplicate": 0,
+                "needs_revision": 0,
+                "author": set(),
+                "montage": set(),
+                "voice": set(),
+            },
+        )
+        status = str(video.get("status") or "")
+        if status in {"approved", "pending", "duplicate", "needs_revision"}:
+            item[status] += 1
+        if status == "approved":
+            for role in ("author", "montage", "voice"):
+                person = _person_key(video, role)
+                if person:
+                    item[role].add(person)
+    rows: list[list[str]] = []
+    for code, item in sorted(stats.items(), key=lambda pair: (pair[1]["sort_order"], pair[1]["name"])):
+        rows.append(
+            [
+                code,
+                str(item["name"]),
+                str(item["approved"]),
+                str(item["pending"]),
+                str(item["duplicate"]),
+                str(item["needs_revision"]),
+                str(len(item["author"])),
+                str(len(item["montage"])),
+                str(len(item["voice"])),
+                current.isoformat(),
+            ]
+        )
+    return rows
+
+
+def build_people_projects_rows(videos: list[dict[str, Any]]) -> list[list[str]]:
+    counts: dict[tuple[str, str, str, str], dict[str, Any]] = defaultdict(
+        lambda: {"author": 0, "montage": 0, "voice": 0, "video_ids": set()}
+    )
+    for video in videos:
+        if video.get("status") != "approved":
+            continue
+        project_code, project_name = _report_project(video)
+        video_id = str(video.get("id") or "")
+        for role in ("author", "montage", "voice"):
+            person = _person_key(video, role)
+            if not person:
+                continue
+            name, username = person
+            item = counts[(name, username, project_code, project_name)]
+            item[role] += 1
+            item["video_ids"].add(video_id)
+    rows = []
+    for (name, username, project_code, project_name), item in sorted(counts.items()):
+        rows.append(
+            [
+                name,
+                f"@{username}" if username else "",
+                project_code,
+                project_name,
+                str(item["author"]),
+                str(item["montage"]),
+                str(item["voice"]),
+                str(len(item["video_ids"])),
+            ]
+        )
+    return rows
+
+
+def _replace_named_sheet(
+    service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    columns: list[str],
+    rows: list[list[str]],
+) -> None:
+    end_column = _column_letter(len(columns))
+    (
+        service.spreadsheets()
+        .values()
+        .clear(
+            spreadsheetId=spreadsheet_id,
+            range=_sheet_range(sheet_name, f"A:{end_column}"),
+            body={},
+        )
+        .execute()
+    )
+    (
+        service.spreadsheets()
+        .values()
+        .update(
+            spreadsheetId=spreadsheet_id,
+            range=_sheet_range(sheet_name, f"A1:{end_column}{len(rows) + 1}"),
+            valueInputOption="USER_ENTERED",
+            body={"values": [columns, *rows]},
+        )
+        .execute()
+    )
+
+
+def sync_project_reports(videos: list[dict[str, Any]]) -> None:
+    settings = get_settings()
+    if not settings.google_sheets_spreadsheet_id:
+        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured")
+    service = _service()
+    spreadsheet_id = settings.google_sheets_spreadsheet_id
+    _ensure_named_sheets(
+        service,
+        spreadsheet_id,
+        {
+            PROJECT_STATS_SHEET_NAME: PROJECT_STATS_COLUMNS,
+            PEOPLE_PROJECTS_SHEET_NAME: PEOPLE_PROJECTS_COLUMNS,
+        },
+    )
+    _replace_named_sheet(
+        service,
+        spreadsheet_id,
+        PROJECT_STATS_SHEET_NAME,
+        PROJECT_STATS_COLUMNS,
+        build_project_stats_rows(videos),
+    )
+    _replace_named_sheet(
+        service,
+        spreadsheet_id,
+        PEOPLE_PROJECTS_SHEET_NAME,
+        PEOPLE_PROJECTS_COLUMNS,
+        build_people_projects_rows(videos),
+    )
 
 
 def _sheet_titles(service, spreadsheet_id: str) -> set[str]:

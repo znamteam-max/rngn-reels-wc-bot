@@ -49,6 +49,8 @@ class AdminQueuePresentationV1011Tests(unittest.TestCase):
             "id": 52,
             "status": "pending",
             "video_type": "regular",
+            "project_code": "bolshe",
+            "project_name": "Больше",
             "publish_date": date(2026, 7, 12),
             "instagram_url": "https://www.instagram.com/reel/ABC/",
             "youtube_url": None,
@@ -84,6 +86,7 @@ class AdminQueuePresentationV1011Tests(unittest.TestCase):
         self.assertEqual(
             callbacks,
             [
+                "admq:project:52",
                 "admq:date:52",
                 "admq:approve:52",
                 "admq:revision:52",
@@ -99,7 +102,7 @@ class AdminQueuePresentationV1011Tests(unittest.TestCase):
         text = _format_processed_queue_card(self.video, "approved", actor)
         self.assertEqual(
             text,
-            "✅ Заявка #52 одобрена\nДата публикации: 12.07.2026\nПроверил: @znambo",
+            "✅ Заявка #52 одобрена\nПроект: Больше\nДата публикации: 12.07.2026\nПроверил: @znambo",
         )
 
     def test_pending_query_is_global_fifo(self) -> None:

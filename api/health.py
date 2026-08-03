@@ -18,6 +18,8 @@ def _admin_queue_debug() -> dict[str, object]:
             (SELECT count(*) FROM videos WHERE status = 'pending') AS pending_video_count,
             q.active_video_id AS active_queue_video_id,
             q.active_message_id AS active_queue_message_id,
+            q.dashboard_message_id,
+            q.dashboard_updated_at,
             v.status AS active_queue_video_status
         FROM admin_queue_state q
         LEFT JOIN videos v ON v.id = q.active_video_id
@@ -29,6 +31,26 @@ def _admin_queue_debug() -> dict[str, object]:
         "active_queue_video_id": row.get("active_queue_video_id"),
         "active_queue_message_id": row.get("active_queue_message_id"),
         "active_queue_video_status": row.get("active_queue_video_status"),
+        "dashboard_message_id": row.get("dashboard_message_id"),
+        "dashboard_updated_at": row["dashboard_updated_at"].isoformat() if row.get("dashboard_updated_at") else None,
+    }
+
+
+def _projects_debug() -> dict[str, int]:
+    row = db.fetch_one(
+        """
+        SELECT
+            (SELECT count(*) FROM projects WHERE is_active = true) AS active_count,
+            (
+                SELECT count(*)
+                FROM videos
+                WHERE COALESCE(project_code, '') = '' OR COALESCE(project_name, '') = ''
+            ) AS videos_without_project
+        """
+    ) or {}
+    return {
+        "active_count": int(row.get("active_count") or 0),
+        "videos_without_project": int(row.get("videos_without_project") or 0),
     }
 
 
@@ -47,6 +69,7 @@ class handler(BaseHTTPRequestHandler):
             "missing_env": missing_env_names(),
             "optional_missing_env": optional_missing_env_names(),
             "runtime_migration": runtime_migration,
+            "projects": _projects_debug(),
             "admin_queue": _admin_queue_debug(),
         }
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

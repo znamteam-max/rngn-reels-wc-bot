@@ -23,6 +23,7 @@ from bot.messages import (
     person_value,
     user_label,
 )
+from bot.projects import PROJECTS, normalize_custom_project_name
 from bot.telegram import TelegramAPIError, TelegramClient, inline_keyboard
 
 
@@ -45,6 +46,8 @@ BIGRECAP_YOUTUBE_INVALID_MESSAGE = (
 )
 ADD_ZNAMBO_SESSION_INSTAGRAM = "znambo:instagram"
 ADD_ZNAMBO_SESSION_DATE = "znambo:date"
+ADD_ZNAMBO_SESSION_PROJECT = "znambo:project"
+ADD_ZNAMBO_SESSION_PROJECT_OTHER = "znambo:project_other"
 ADD_ZNAMBO_UNAUTHORIZED_MESSAGE = "Команда доступна только суперадмину."
 ADD_ZNAMBO_LINK_PROMPT = "Пришли ссылку на Instagram/Reels"
 ADD_ZNAMBO_INVALID_LINK_MESSAGE = "Это не похоже на ссылку Instagram/Reels. Пришли корректную ссылку."
@@ -61,6 +64,9 @@ ADD_ZNAMBO_DATE_PRESETS = {
     "today": "Сегодня",
     "yesterday": "Вчера",
 }
+PROJECT_PROMPT = "Для какого проекта сделан ролик?"
+PROJECT_OTHER_PROMPT = "Напиши название проекта"
+PROJECT_OTHER_INVALID_MESSAGE = "Название проекта должно содержать от 2 до 60 символов."
 ADMIN_QUEUE_NAME = "main"
 ADMIN_DATE_CLAIM_SECONDS = 300
 ADMIN_RESET_ARCHIVE_LIMIT = 8
@@ -254,7 +260,7 @@ def _send_main_menu(tg: TelegramClient, actor: Actor, text: str) -> None:
         rows.append([("⚡ Добавить мой ролик", "cmd:add_znambo")])
     if is_admin(actor.tg_id):
         rows.insert(3, [("Админка", "cmd:admin"), ("Сводка", "cmd:summary")])
-        rows.insert(4, [("Восстановить очередь", "cmd:resend_pending")])
+        rows.insert(4, [("Статус очереди", "cmd:queue_status"), ("Восстановить очередь", "cmd:resend_pending")])
     if is_superadmin(actor.tg_id):
         rows.append([("Сбросить FIFO-очередь", "cmd:reset_admin_queue")])
     tg.send_message(actor.chat_id, text, inline_keyboard(rows))
@@ -292,6 +298,8 @@ def handle_message(message: dict[str, Any]) -> None:
             show_my_requests(tg, actor)
         elif command == "/admin":
             show_admin(tg, actor)
+        elif command == "/queue_status":
+            queue_status_command(tg, actor)
         elif command == "/summary":
             show_summary(tg, actor)
         elif command == "/calendar":
@@ -343,6 +351,9 @@ def handle_callback(callback: dict[str, Any]) -> None:
     tg = TelegramClient()
 
     callback_id = str(callback.get("id") or "")
+    if data.startswith("dash:"):
+        handle_dashboard_callback(tg, actor, data, callback_id)
+        return
     if data.startswith("admq:"):
         handle_admin_queue_callback(tg, actor, data, message_id, callback_id)
         return
@@ -365,6 +376,8 @@ def handle_callback(callback: dict[str, Any]) -> None:
         show_my_requests(tg, actor)
     elif data == "cmd:admin":
         show_admin(tg, actor)
+    elif data == "cmd:queue_status":
+        queue_status_command(tg, actor)
     elif data == "cmd:summary":
         show_summary(tg, actor)
     elif data == "cmd:resend_pending":
@@ -394,6 +407,9 @@ def handle_callback(callback: dict[str, Any]) -> None:
     elif data.startswith("adm:manualdate:"):
         _, _, raw_video_id, raw_batch_id, raw_index = data.split(":", 4)
         start_admin_manual_date(tg, actor, int(raw_video_id), int(raw_batch_id), int(raw_index))
+    elif data.startswith("proj:"):
+        _, project_code = data.split(":", 1)
+        handle_project_pick(tg, actor, project_code)
     elif data == "znambo:date:manual":
         start_add_znambo_manual_date(tg, actor)
     elif data.startswith("znambo:date:"):
@@ -493,6 +509,7 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
         "/my_requests — мои заявки и дополнение ссылок",
         "/chatid — показать ID текущего Telegram-чата",
         "/admin — очередь проверки",
+        "/queue_status — статус очереди",
         "/summary — сводка для админов",
         "/calendar — календарь публикаций",
         "/people — участники",
@@ -552,6 +569,115 @@ def start_add_znambo(tg: TelegramClient, actor: Actor) -> None:
     tg.send_message(actor.chat_id, ADD_ZNAMBO_LINK_PROMPT)
 
 
+def project_picker_keyboard() -> dict[str, Any]:
+    buttons = [
+        (f"{project['emoji']} {project['name']}", f"proj:{project['code']}")
+        for project in PROJECTS
+    ]
+    rows = [buttons[index : index + 2] for index in range(0, len(buttons) - 1, 2)]
+    rows.append([buttons[-1]])
+    return inline_keyboard(rows)
+
+
+def get_active_project(code: str) -> dict[str, Any] | None:
+    return db.fetch_one(
+        "SELECT id, code, name, emoji FROM projects WHERE code = %s AND is_active = true",
+        (code,),
+    )
+
+
+def ask_submission_project(
+    tg: TelegramClient,
+    actor: Actor,
+    data: dict[str, Any],
+    *,
+    znambo_flow: bool = False,
+) -> None:
+    state = ADD_ZNAMBO_SESSION_PROJECT if znambo_flow else "new:project"
+    data["project_flow"] = "znambo" if znambo_flow else "new"
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state=state,
+        data=data,
+    )
+    tg.send_message(actor.chat_id, PROJECT_PROMPT, project_picker_keyboard())
+
+
+def _continue_after_project(
+    tg: TelegramClient,
+    actor: Actor,
+    data: dict[str, Any],
+    *,
+    znambo_flow: bool,
+) -> None:
+    if znambo_flow:
+        data["step"] = "awaiting_znambo_publish_date"
+        ask_add_znambo_date(tg, actor, data)
+        return
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state="new:author",
+        data=data,
+    )
+    ask_people(tg, actor, "author")
+
+
+def handle_project_pick(tg: TelegramClient, actor: Actor, project_code: str) -> None:
+    session = db.get_session(actor.tg_id)
+    state = session.get("state") if session else None
+    if state not in {"new:project", ADD_ZNAMBO_SESSION_PROJECT}:
+        tg.send_message(actor.chat_id, "Начни заявку заново.")
+        return
+    data = session.get("data") or {}
+    znambo_flow = state == ADD_ZNAMBO_SESSION_PROJECT
+    if project_code == "other":
+        db.set_session(
+            tg_id=actor.tg_id,
+            chat_id=actor.chat_id,
+            username=actor.username,
+            state=ADD_ZNAMBO_SESSION_PROJECT_OTHER if znambo_flow else "new:project_other",
+            data=data,
+        )
+        tg.send_message(actor.chat_id, PROJECT_OTHER_PROMPT)
+        return
+    project = get_active_project(project_code)
+    if not project:
+        tg.send_message(actor.chat_id, "Проект недоступен. Выбери другой.", project_picker_keyboard())
+        return
+    data.update(
+        {
+            "project_id": int(project["id"]),
+            "project_code": str(project["code"]),
+            "project_name": str(project["name"]),
+        }
+    )
+    _continue_after_project(tg, actor, data, znambo_flow=znambo_flow)
+
+
+def handle_project_other_message(
+    tg: TelegramClient,
+    actor: Actor,
+    state: str,
+    data: dict[str, Any],
+    text: str,
+) -> None:
+    project_name = normalize_custom_project_name(text)
+    if not project_name:
+        tg.send_message(actor.chat_id, PROJECT_OTHER_INVALID_MESSAGE)
+        return
+    data.update({"project_id": None, "project_code": "other", "project_name": project_name})
+    _continue_after_project(
+        tg,
+        actor,
+        data,
+        znambo_flow=state == ADD_ZNAMBO_SESSION_PROJECT_OTHER,
+    )
+
+
 def handle_add_znambo_instagram(
     tg: TelegramClient,
     actor: Actor,
@@ -577,13 +703,13 @@ def handle_add_znambo_instagram(
     data.update(
         {
             "flow": "add_znambo",
-            "step": "awaiting_znambo_publish_date",
+            "step": "awaiting_znambo_project",
             "video_type": VIDEO_TYPE_REGULAR,
             "instagram_url": link.url,
             "instagram_id": link.external_id,
         }
     )
-    ask_add_znambo_date(tg, actor, data)
+    ask_submission_project(tg, actor, data, znambo_flow=True)
 
 
 def ask_add_znambo_date(tg: TelegramClient, actor: Actor, data: dict[str, Any]) -> None:
@@ -713,6 +839,7 @@ def format_add_znambo_success(video: dict[str, Any]) -> str:
         [
             "✅ Ролик Знамбо добавлен",
             "",
+            f"Проект: {video.get('project_name') or 'не указан'}",
             f"Дата: {_format_ddmmyyyy(video.get('publish_date'))}",
             f"Instagram: {video.get('instagram_url') or ''}",
             f"Автор: {person_display(ADD_ZNAMBO_NAME, ADD_ZNAMBO_USERNAME)}",
@@ -803,6 +930,8 @@ def upsert_znambo_quick_video(
     instagram_url = data.get("instagram_url")
     if not instagram_id or not instagram_url:
         raise ValueError("add_znambo requires instagram_url and instagram_id")
+    if not data.get("project_code") or not data.get("project_name"):
+        raise ValueError("project is required")
 
     with db.transaction() as conn:
         active = _find_instagram_video_for_quick(conn, instagram_id, deleted=False)
@@ -824,6 +953,9 @@ def upsert_znambo_quick_video(
                     UPDATE videos
                     SET status = 'approved',
                         video_type = %s,
+                        project_id = %s,
+                        project_code = %s,
+                        project_name = %s,
                         publish_date = %s,
                         instagram_url = %s,
                         instagram_id = %s,
@@ -867,6 +999,9 @@ def upsert_znambo_quick_video(
                     """,
                     (
                         VIDEO_TYPE_REGULAR,
+                        data.get("project_id"),
+                        data.get("project_code"),
+                        data.get("project_name"),
                         publish_date,
                         instagram_url,
                         instagram_id,
@@ -901,7 +1036,7 @@ def upsert_znambo_quick_video(
                 cur.execute(
                     """
                     INSERT INTO videos (
-                        status, video_type, publish_date,
+                        status, video_type, project_id, project_code, project_name, publish_date,
                         instagram_url, instagram_id,
                         youtube_url, youtube_id, tiktok_url, tiktok_id, vk_url, vk_id,
                         author_id, author_name, author_username,
@@ -913,7 +1048,7 @@ def upsert_znambo_quick_video(
                         batch_id, comment
                     )
                     VALUES (
-                        'approved', %s, %s,
+                        'approved', %s, %s, %s, %s, %s,
                         %s, %s,
                         NULL, NULL, NULL, NULL, NULL, NULL,
                         %s, %s, %s,
@@ -928,6 +1063,9 @@ def upsert_znambo_quick_video(
                     """,
                     (
                         VIDEO_TYPE_REGULAR,
+                        data.get("project_id"),
+                        data.get("project_code"),
+                        data.get("project_name"),
                         publish_date,
                         instagram_url,
                         instagram_id,
@@ -971,6 +1109,7 @@ def upsert_znambo_quick_video(
                 "video_type": VIDEO_TYPE_REGULAR,
                 "publish_date": publish_date.isoformat(),
                 "instagram_id": instagram_id,
+                "project_code": data.get("project_code"),
             },
         )
         return {"duplicate": None, "video": video, "restored": bool(deleted)}
@@ -982,6 +1121,7 @@ def sync_znambo_quick_to_sheets(video: dict[str, Any], actor: Actor) -> tuple[bo
         if row_number:
             db.execute("UPDATE videos SET sheet_row = %s, updated_at = now() WHERE id = %s", (row_number, video["id"]))
             video["sheet_row"] = row_number
+        sheets.sync_project_reports(db.fetch_all(VIDEO_SELECT + " WHERE v.status <> 'deleted'"))
         record_system_log(
             "sync_sheets_ok",
             "video",
@@ -1053,10 +1193,16 @@ def handle_session_message(
         handle_new_bigrecap_youtube(tg, actor, data, text)
     elif state == ADD_ZNAMBO_SESSION_INSTAGRAM:
         handle_add_znambo_instagram(tg, actor, data, text)
+    elif state in {"new:project", ADD_ZNAMBO_SESSION_PROJECT}:
+        tg.send_message(actor.chat_id, PROJECT_PROMPT, project_picker_keyboard())
+    elif state in {"new:project_other", ADD_ZNAMBO_SESSION_PROJECT_OTHER}:
+        handle_project_other_message(tg, actor, state, data, text)
     elif state == ADD_ZNAMBO_SESSION_DATE:
         handle_add_znambo_date(tg, actor, text)
     elif state == "admin:date":
         handle_admin_date_message(tg, actor, data, text)
+    elif state == "admin:project_other":
+        handle_admin_project_other_message(tg, actor, data, text)
     elif state == "new:author_manual":
         handle_manual_person_value(tg, actor, "a", text)
     elif state == "new:voice_manual":
@@ -1109,14 +1255,7 @@ def handle_new_instagram(
         return
 
     data.update({"instagram_url": link.url, "instagram_id": link.external_id})
-    db.set_session(
-        tg_id=actor.tg_id,
-        chat_id=actor.chat_id,
-        username=actor.username,
-        state="new:author",
-        data=data,
-    )
-    ask_people(tg, actor, "author")
+    ask_submission_project(tg, actor, data)
 
 
 def handle_new_bigrecap_youtube(
@@ -1153,14 +1292,7 @@ def handle_new_bigrecap_youtube(
             "tiktok_id": None,
         }
     )
-    db.set_session(
-        tg_id=actor.tg_id,
-        chat_id=actor.chat_id,
-        username=actor.username,
-        state="new:author",
-        data=data,
-    )
-    ask_people(tg, actor, "author")
+    ask_submission_project(tg, actor, data)
 
 
 def ask_people(
@@ -1499,6 +1631,9 @@ def handle_preview_edit(tg: TelegramClient, actor: Actor) -> None:
         "edit_video_id": data.get("edit_video_id"),
         "video_type": video_type,
         "platform_flow": PLATFORM_FLOW_BIGRECAP if video_type == VIDEO_TYPE_BIGRECAP else PLATFORM_FLOW_REGULAR,
+        "project_id": data.get("project_id"),
+        "project_code": data.get("project_code"),
+        "project_name": data.get("project_name"),
     }
     if video_type == VIDEO_TYPE_BIGRECAP:
         keep.update(
@@ -1599,6 +1734,8 @@ def normalized_submission_data(data: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(data)
     video_type = normalize_video_type(normalized.get("video_type"))
     normalized["video_type"] = video_type
+    if not normalized.get("project_code") or not normalized.get("project_name"):
+        raise ValueError("project is required")
     if video_type == VIDEO_TYPE_BIGRECAP:
         if not normalized.get("youtube_url") or not normalized.get("youtube_id"):
             raise ValueError("bigrecap requires youtube_url")
@@ -1627,6 +1764,9 @@ def update_revision_video(actor: Actor, video_id: int, data: dict[str, Any]) -> 
                 UPDATE videos
                 SET status = 'pending',
                     video_type = %s,
+                    project_id = %s,
+                    project_code = %s,
+                    project_name = %s,
                     publish_date = COALESCE(%s, publish_date),
                     instagram_url = %s,
                     instagram_id = %s,
@@ -1656,6 +1796,9 @@ def update_revision_video(actor: Actor, video_id: int, data: dict[str, Any]) -> 
                 """,
                 (
                     normalize_video_type(data.get("video_type")),
+                    data.get("project_id"),
+                    data.get("project_code"),
+                    data.get("project_name"),
                     data.get("publish_date"),
                     data.get("instagram_url"),
                     data.get("instagram_id"),
@@ -1695,6 +1838,7 @@ def update_revision_video(actor: Actor, video_id: int, data: dict[str, Any]) -> 
                 "status": "pending",
                 "batch_id": batch_id,
                 "video_type": normalize_video_type(data.get("video_type")),
+                "project_code": data.get("project_code"),
             },
         )
         return get_video_by_id(conn, video_id)
@@ -1708,7 +1852,8 @@ def insert_pending_video(actor: Actor, data: dict[str, Any]) -> dict[str, Any]:
             cur.execute(
                 """
                 INSERT INTO videos (
-                    status, video_type, publish_date, instagram_url, instagram_id,
+                    status, video_type, project_id, project_code, project_name,
+                    publish_date, instagram_url, instagram_id,
                     youtube_url, youtube_id, tiktok_url, tiktok_id, vk_url, vk_id,
                     author_id, author_name, author_username,
                     montage_id, montage_name, montage_username, montage_same_as_author,
@@ -1717,6 +1862,7 @@ def insert_pending_video(actor: Actor, data: dict[str, Any]) -> dict[str, Any]:
                 )
                 VALUES (
                     'pending', %s, %s, %s, %s,
+                    %s, %s, %s,
                     %s, %s, %s, %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s, %s,
@@ -1727,6 +1873,9 @@ def insert_pending_video(actor: Actor, data: dict[str, Any]) -> dict[str, Any]:
                 """,
                 (
                     normalize_video_type(data.get("video_type")),
+                    data.get("project_id"),
+                    data.get("project_code"),
+                    data.get("project_name"),
                     data.get("publish_date"),
                     data.get("instagram_url"),
                     data.get("instagram_id"),
@@ -1763,6 +1912,7 @@ def insert_pending_video(actor: Actor, data: dict[str, Any]) -> dict[str, Any]:
             after_data={
                 "batch_id": batch_id,
                 "video_type": normalize_video_type(data.get("video_type")),
+                "project_code": data.get("project_code"),
             },
         )
         return get_video_by_id(conn, video_id)
@@ -1807,6 +1957,8 @@ def recalculate_batch(conn, batch_id: int) -> dict[str, Any]:
                 count(*) FILTER (
                     WHERE status = 'pending'
                       AND publish_date IS NOT NULL
+                      AND COALESCE(project_code, '') <> ''
+                      AND COALESCE(project_name, '') <> ''
                       AND (
                         (COALESCE(video_type, 'regular') = 'regular' AND instagram_id IS NOT NULL)
                         OR (COALESCE(video_type, 'regular') = 'bigrecap' AND youtube_id IS NOT NULL)
@@ -1819,6 +1971,8 @@ def recalculate_batch(conn, batch_id: int) -> dict[str, Any]:
                     WHERE status = 'pending'
                       AND (
                         publish_date IS NULL
+                        OR COALESCE(project_code, '') = ''
+                        OR COALESCE(project_name, '') = ''
                         OR (
                           COALESCE(video_type, 'regular') = 'regular'
                           AND instagram_id IS NULL
@@ -1864,12 +2018,21 @@ def notify_admin_queue(
     video: dict[str, Any],
     actor: Actor | None = None,
 ) -> bool:
+    _safe_refresh_admin_dashboard(tg, actor)
     try:
-        pump_admin_queue(tg, actor)
+        result = pump_admin_queue(tg, actor)
+        record_system_log(
+            "admin_queue_pumped",
+            "admin_queue",
+            result.get("active_video_id"),
+            {"source": "submission", **result},
+            actor,
+        )
+        _safe_refresh_admin_dashboard(tg, actor)
         return True
     except Exception as exc:
         record_system_log(
-            "admin_queue_pump_failed",
+            "admin_queue_notify_failed",
             "video",
             int(video["id"]),
             telegram_failure_payload(exc, get_settings().admin_chat_id, "pump_after_submission"),
@@ -1884,26 +2047,81 @@ def send_admin_review_card(
     title: str = "Заявка",
     actor: Actor | None = None,
 ) -> bool:
-    try:
-        pump_admin_queue(tg, actor)
-        return True
-    except Exception as exc:
-        record_system_log(
-            "admin_notify_failed",
-            "video",
-            int(video["id"]),
-            telegram_failure_payload(exc, int(get_settings().admin_chat_id), "send_review_card"),
-            actor,
-        )
-        return False
+    return notify_admin_queue(tg, video, actor)
 
 
 def resend_pending_command(tg: TelegramClient, actor: Actor) -> None:
     if not require_admin(tg, actor):
         return
+    _safe_refresh_admin_dashboard(tg, actor)
     result = pump_admin_queue(tg, actor, force_repost=True)
+    record_system_log(
+        "admin_queue_pumped",
+        "admin_queue",
+        result.get("active_video_id"),
+        {"source": "resend_pending", **result},
+        actor,
+    )
+    _safe_refresh_admin_dashboard(tg, actor)
     if result["pending_count"] == 0:
         tg.send_message(actor.chat_id, "Очередь пуста. Pending-заявок: 0.")
+
+
+def queue_status_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_admin(tg, actor):
+        return
+    with db.transaction() as conn:
+        state = _queue_state_for_update(conn)
+        snapshot = _admin_dashboard_snapshot(conn, state)
+        dashboard_message_id = state.get("dashboard_message_id")
+    tg.send_message(
+        actor.chat_id,
+        "\n".join(
+            [
+                f"Pending: {snapshot['pending_count']}",
+                f"Active: #{snapshot['active_video_id']}" if snapshot.get("active_video_id") else "Active: —",
+                f"Dashboard message: {dashboard_message_id or '—'}",
+                f"Oldest: {_format_pending_age(snapshot.get('oldest_created_at'))}",
+            ]
+        ),
+    )
+
+
+def handle_dashboard_callback(
+    tg: TelegramClient,
+    actor: Actor,
+    data: str,
+    callback_id: str,
+) -> None:
+    if not is_admin(actor.tg_id):
+        _answer_queue_callback(tg, callback_id, "Это действие доступно только админам.", show_alert=True)
+        return
+    action = data.split(":", 1)[1] if ":" in data else ""
+    try:
+        _safe_refresh_admin_dashboard(tg, actor)
+        if action == "open":
+            result = pump_admin_queue(tg, actor, force_repost=True)
+            record_system_log(
+                "admin_queue_pumped",
+                "admin_queue",
+                result.get("active_video_id"),
+                {"source": "dashboard_open", **result},
+                actor,
+            )
+            _safe_refresh_admin_dashboard(tg, actor)
+        elif action not in {"refresh", "projects"}:
+            _answer_queue_callback(tg, callback_id, "Действие устарело.", show_alert=True)
+            return
+        _answer_queue_callback(tg, callback_id)
+    except Exception as exc:
+        record_system_log(
+            "admin_queue_notify_failed",
+            "admin_dashboard",
+            None,
+            {"source": f"dashboard_{action}", "error": _safe_error(exc)},
+            actor,
+        )
+        _answer_queue_callback(tg, callback_id, "Не удалось обновить очередь.", show_alert=True)
 
 
 def find_video_by_instagram_id(instagram_id: str) -> dict[str, Any] | None:
@@ -2039,6 +2257,225 @@ def _pending_video_count(conn) -> int:
         return int(cur.fetchone()["count"])
 
 
+def _format_pending_age(value: Any, now: datetime | None = None) -> str:
+    if not isinstance(value, datetime):
+        return "—"
+    current = now or datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    seconds = max(0, int((current - value.astimezone(timezone.utc)).total_seconds()))
+    days, remainder = divmod(seconds, 86400)
+    hours = remainder // 3600
+    return f"{days} дн. {hours} ч." if days else f"{hours} ч."
+
+
+def _admin_dashboard_snapshot(conn, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    queue_state = state or _queue_state_for_update(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*) AS pending_count, min(created_at) AS oldest_created_at
+            FROM videos
+            WHERE status = 'pending'
+            """
+        )
+        totals = cur.fetchone()
+        cur.execute(
+            """
+            SELECT p.code, p.name, p.emoji, p.sort_order, count(v.id) AS count
+            FROM projects p
+            LEFT JOIN videos v
+              ON v.project_code = p.code
+             AND v.status = 'pending'
+            WHERE p.is_active = true
+              AND p.code <> 'other'
+            GROUP BY p.code, p.name, p.emoji, p.sort_order
+            ORDER BY p.sort_order, p.name
+            """
+        )
+        permanent = list(cur.fetchall())
+        cur.execute(
+            """
+            SELECT project_name AS name, count(*) AS count
+            FROM videos
+            WHERE status = 'pending'
+              AND project_code = 'other'
+              AND COALESCE(project_name, '') <> ''
+            GROUP BY project_name
+            ORDER BY project_name
+            """
+        )
+        custom = list(cur.fetchall())
+        cur.execute(
+            """
+            SELECT count(*) AS count
+            FROM videos
+            WHERE status = 'pending'
+              AND (COALESCE(project_code, '') = '' OR COALESCE(project_name, '') = '')
+            """
+        )
+        unassigned = int(cur.fetchone()["count"])
+    project_counts = [
+        {
+            "code": row["code"],
+            "name": row["name"],
+            "emoji": row.get("emoji") or "📂",
+            "count": int(row["count"]),
+        }
+        for row in permanent
+    ]
+    project_counts.extend(
+        {"code": "other", "name": row["name"], "emoji": "➕", "count": int(row["count"])}
+        for row in custom
+    )
+    project_counts.append({"code": "unassigned", "name": "Без проекта", "emoji": "❓", "count": unassigned})
+    return {
+        "pending_count": int(totals["pending_count"]),
+        "active_video_id": queue_state.get("active_video_id"),
+        "oldest_created_at": totals.get("oldest_created_at"),
+        "project_counts": project_counts,
+        "updated_at": datetime.now(get_settings().tz),
+    }
+
+
+def format_admin_dashboard(snapshot: dict[str, Any]) -> str:
+    pending_count = int(snapshot.get("pending_count") or 0)
+    active_id = snapshot.get("active_video_id")
+    lines = ["📊 ОЧЕРЕДЬ РИЛЗОВ", "", f"Неразобрано: {pending_count}"]
+    if pending_count == 0:
+        lines.append("Очередь разобрана")
+    else:
+        lines.extend(
+            [
+                f"Текущая заявка: #{active_id}" if active_id else "Текущая заявка: не назначена",
+                f"Самая старая: {_format_pending_age(snapshot.get('oldest_created_at'))}",
+                "",
+                "По проектам:",
+            ]
+        )
+        lines.extend(
+            f"{row.get('emoji') or '📂'} {row['name']} — {int(row.get('count') or 0)}"
+            for row in snapshot.get("project_counts") or []
+        )
+    updated_at = snapshot.get("updated_at")
+    updated_text = updated_at.strftime("%H:%M") if isinstance(updated_at, datetime) else "—"
+    lines.extend(["", f"Обновлено: {updated_text}"])
+    return "\n".join(lines)
+
+
+def admin_dashboard_keyboard() -> dict[str, Any]:
+    return inline_keyboard(
+        [
+            [("▶️ Открыть текущую заявку", "dash:open")],
+            [("🔄 Обновить", "dash:refresh"), ("📂 По проектам", "dash:projects")],
+        ]
+    )
+
+
+def _dashboard_message_missing(exc: TelegramAPIError) -> bool:
+    description = exc.description.lower()
+    return any(
+        marker in description
+        for marker in ("message to edit not found", "message can't be edited", "message not found")
+    )
+
+
+def refresh_admin_dashboard(
+    tg: TelegramClient,
+    actor: Actor | None = None,
+) -> dict[str, Any]:
+    created = False
+    chat_id = int(get_settings().admin_chat_id)
+    message_id: int | None = None
+    with db.transaction() as conn:
+        state = _queue_state_for_update(conn)
+        snapshot = _admin_dashboard_snapshot(conn, state)
+        text = format_admin_dashboard(snapshot)
+        stored_message_id = int(state["dashboard_message_id"]) if state.get("dashboard_message_id") else None
+        stored_chat_id = int(state["dashboard_chat_id"]) if state.get("dashboard_chat_id") else None
+        if stored_message_id and stored_chat_id == chat_id:
+            try:
+                _edit_message_text_idempotent(
+                    tg,
+                    chat_id,
+                    stored_message_id,
+                    text,
+                    admin_dashboard_keyboard(),
+                )
+                message_id = stored_message_id
+            except TelegramAPIError as exc:
+                if not _dashboard_message_missing(exc):
+                    raise
+        if message_id is None:
+            response = tg.send_message(chat_id, text, admin_dashboard_keyboard())
+            message_id = _message_id(response)
+            if not message_id:
+                raise RuntimeError("Telegram did not return a message_id for the admin dashboard")
+            created = True
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE admin_queue_state
+                SET dashboard_chat_id = %s,
+                    dashboard_message_id = %s,
+                    dashboard_updated_at = now(),
+                    updated_at = now()
+                WHERE queue_name = %s
+                """,
+                (chat_id, message_id, ADMIN_QUEUE_NAME),
+            )
+        db.log_event(
+            conn,
+            entity_type="admin_dashboard",
+            entity_id=message_id,
+            action="admin_dashboard_refreshed",
+            actor_tg_id=actor.tg_id if actor else None,
+            actor_username=actor.username if actor else None,
+            after_data={
+                "pending_count": snapshot["pending_count"],
+                "active_video_id": snapshot.get("active_video_id"),
+                "created": created,
+            },
+        )
+    pin_ok: bool | None = None
+    if created:
+        try:
+            tg.pin_chat_message(chat_id, message_id, disable_notification=True)
+            pin_ok = True
+        except Exception as exc:
+            pin_ok = False
+            record_system_log(
+                "admin_dashboard_pin_failed",
+                "telegram_message",
+                message_id,
+                telegram_failure_payload(exc, chat_id, "pin_dashboard"),
+                actor,
+            )
+    return {
+        "message_id": message_id,
+        "created": created,
+        "pin_ok": pin_ok,
+        **snapshot,
+    }
+
+
+def _safe_refresh_admin_dashboard(
+    tg: TelegramClient,
+    actor: Actor | None = None,
+) -> dict[str, Any] | None:
+    try:
+        return refresh_admin_dashboard(tg, actor)
+    except Exception as exc:
+        record_system_log(
+            "admin_dashboard_refresh_failed",
+            "admin_dashboard",
+            None,
+            telegram_failure_payload(exc, get_settings().admin_chat_id, "refresh_dashboard"),
+            actor,
+        )
+        return None
+
+
 def _oldest_pending_video(conn) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
@@ -2100,6 +2537,7 @@ def format_admin_queue_card(video: dict[str, Any], total: int, position: int = 1
     lines = [
         f"Заявка #{video['id']}",
         f"Очередь: {position} из {total}",
+        f"Проект: {video.get('project_name') or 'не указан'}",
         f"Тип: {video_type}",
         "Статус: ожидает проверки",
         "",
@@ -2121,6 +2559,7 @@ def format_admin_queue_card(video: dict[str, Any], total: int, position: int = 1
 def admin_queue_keyboard(video_id: int) -> dict[str, Any]:
     return inline_keyboard(
         [
+            [("Сменить проект", f"admq:project:{video_id}")],
             [("Указать дату", f"admq:date:{video_id}")],
             [("Одобрить", f"admq:approve:{video_id}"), ("Правка", f"admq:revision:{video_id}")],
             [("Дубль", f"admq:duplicate:{video_id}"), ("Удалить", f"admq:delete:{video_id}")],
@@ -2383,6 +2822,143 @@ def _show_admin_queue_date_options(
     return None
 
 
+def admin_project_keyboard(video_id: int) -> dict[str, Any]:
+    buttons = [
+        (f"{project['emoji']} {project['name']}", f"admq:setproject:{video_id}:{project['code']}")
+        for project in PROJECTS
+        if project["code"] != "other"
+    ]
+    rows = [buttons[index : index + 2] for index in range(0, len(buttons), 2)]
+    rows.append([("➕ Другой проект", f"admq:projectother:{video_id}")])
+    rows.append([("Назад", f"admq:refresh:{video_id}")])
+    return inline_keyboard(rows)
+
+
+def _show_admin_queue_project_options(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    message_id: int | None,
+) -> str | None:
+    with db.transaction() as conn:
+        _, _, error = _lock_current_queue_item(conn, video_id, actor.chat_id, message_id)
+        if error:
+            return error
+        _edit_message_text_idempotent(
+            tg,
+            actor.chat_id,
+            int(message_id),
+            f"Заявка #{video_id}\n{PROJECT_PROMPT}",
+            admin_project_keyboard(video_id),
+        )
+    return None
+
+
+def _set_active_queue_project(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    active_message_id: int,
+    *,
+    project_id: int | None,
+    project_code: str,
+    project_name: str,
+) -> str | None:
+    with db.transaction() as conn:
+        _, locked, error = _lock_current_queue_item(
+            conn,
+            video_id,
+            actor.chat_id,
+            active_message_id,
+        )
+        if error:
+            return error
+        before = get_video_by_id(conn, video_id)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE videos
+                SET project_id = %s,
+                    project_code = %s,
+                    project_name = %s,
+                    updated_at = now()
+                WHERE id = %s AND status = 'pending'
+                """,
+                (project_id, project_code, project_name, video_id),
+            )
+        if locked and locked.get("batch_id"):
+            recalculate_batch(conn, int(locked["batch_id"]))
+        db.log_event(
+            conn,
+            entity_type="video",
+            entity_id=video_id,
+            action="project_changed",
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+            before_data={"project_code": before.get("project_code"), "project_name": before.get("project_name")},
+            after_data={"project_code": project_code, "project_name": project_name},
+        )
+        video, total, position = _active_queue_card(conn, video_id)
+        _edit_message_text_idempotent(
+            tg,
+            actor.chat_id,
+            active_message_id,
+            format_admin_queue_card(video, total, position),
+            admin_queue_keyboard(video_id),
+        )
+    _safe_refresh_admin_dashboard(tg, actor)
+    return None
+
+
+def _start_admin_queue_project_other(
+    tg: TelegramClient,
+    actor: Actor,
+    video_id: int,
+    message_id: int | None,
+) -> str | None:
+    with db.transaction() as conn:
+        _, _, error = _lock_current_queue_item(conn, video_id, actor.chat_id, message_id)
+        if error:
+            return error
+    db.set_session(
+        tg_id=actor.tg_id,
+        chat_id=actor.chat_id,
+        username=actor.username,
+        state="admin:project_other",
+        data={"video_id": video_id, "active_message_id": int(message_id or 0)},
+    )
+    tg.send_message(actor.chat_id, PROJECT_OTHER_PROMPT)
+    return None
+
+
+def handle_admin_project_other_message(
+    tg: TelegramClient,
+    actor: Actor,
+    data: dict[str, Any],
+    text: str,
+) -> None:
+    if not require_admin(tg, actor):
+        db.clear_session(actor.tg_id)
+        return
+    project_name = normalize_custom_project_name(text)
+    if not project_name:
+        tg.send_message(actor.chat_id, PROJECT_OTHER_INVALID_MESSAGE)
+        return
+    error = _set_active_queue_project(
+        tg,
+        actor,
+        int(data.get("video_id") or 0),
+        int(data.get("active_message_id") or 0),
+        project_id=None,
+        project_code="other",
+        project_name=project_name,
+    )
+    if error:
+        tg.send_message(actor.chat_id, error)
+        return
+    db.clear_session(actor.tg_id)
+
+
 def _start_admin_queue_manual_date(
     tg: TelegramClient,
     actor: Actor,
@@ -2523,7 +3099,7 @@ def _format_processed_queue_card(
         "duplicate": f"♻️ Заявка #{video['id']} отмечена как дубль",
         "deleted": f"🗑 Заявка #{video['id']} удалена",
     }
-    lines = [labels[status]]
+    lines = [labels[status], f"Проект: {video.get('project_name') or 'не указан'}"]
     if status == "approved":
         lines.append(f"Дата публикации: {_format_ddmmyyyy(video.get('publish_date'))}")
         if not sheet_ok:
@@ -2564,8 +3140,10 @@ def _process_admin_queue_action(
         if error:
             return error
         before = get_video_by_id(conn, video_id)
-        if status == "approved" and not before.get("publish_date"):
-            return "Сначала укажи дату публикации."
+        if status == "approved":
+            approval_error = admin_approval_error(before)
+            if approval_error:
+                return approval_error
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -2612,8 +3190,16 @@ def _process_admin_queue_action(
             actor,
         )
     _notify_submitter_of_queue_result(tg, video, status)
+    _safe_refresh_admin_dashboard(tg, actor)
     try:
-        pump_admin_queue(tg, actor)
+        result = pump_admin_queue(tg, actor)
+        record_system_log(
+            "admin_queue_pumped",
+            "admin_queue",
+            result.get("active_video_id"),
+            {"source": f"after_{status}", **result},
+            actor,
+        )
     except Exception as exc:
         record_system_log(
             "admin_queue_pump_failed",
@@ -2622,6 +3208,15 @@ def _process_admin_queue_action(
             telegram_failure_payload(exc, get_settings().admin_chat_id, "pump_after_action"),
             actor,
         )
+    _safe_refresh_admin_dashboard(tg, actor)
+    return None
+
+
+def admin_approval_error(video: dict[str, Any]) -> str | None:
+    if not video.get("project_code") or not video.get("project_name"):
+        return "Сначала укажи проект."
+    if not video.get("publish_date"):
+        return "Сначала укажи дату публикации."
     return None
 
 
@@ -2642,6 +3237,24 @@ def handle_admin_queue_callback(
         error: str | None
         if action == "date":
             error = _show_admin_queue_date_options(tg, actor, video_id, message_id)
+        elif action == "project":
+            error = _show_admin_queue_project_options(tg, actor, video_id, message_id)
+        elif action == "projectother":
+            error = _start_admin_queue_project_other(tg, actor, video_id, message_id)
+        elif action == "setproject" and len(parts) == 4:
+            project = get_active_project(parts[3])
+            if not project or project["code"] == "other":
+                error = "Проект недоступен."
+            else:
+                error = _set_active_queue_project(
+                    tg,
+                    actor,
+                    video_id,
+                    int(message_id or 0),
+                    project_id=int(project["id"]),
+                    project_code=str(project["code"]),
+                    project_name=str(project["name"]),
+                )
         elif action == "manualdate":
             error = _start_admin_queue_manual_date(tg, actor, video_id, message_id)
         elif action == "setdate" and len(parts) == 4:
@@ -2705,7 +3318,7 @@ def reset_admin_queue_command(tg: TelegramClient, actor: Actor) -> None:
         _queue_state_for_update(conn)
         _clear_queue_state(conn)
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM user_sessions WHERE state = 'admin:date'")
+            cur.execute("DELETE FROM user_sessions WHERE state IN ('admin:date', 'admin:project_other')")
             cur.execute(
                 """
                 UPDATE videos
@@ -2729,6 +3342,14 @@ def reset_admin_queue_command(tg: TelegramClient, actor: Actor) -> None:
             },
         )
     result = pump_admin_queue(tg, actor)
+    record_system_log(
+        "admin_queue_pumped",
+        "admin_queue",
+        result.get("active_video_id"),
+        {"source": "reset_admin_queue", **result},
+        actor,
+    )
+    _safe_refresh_admin_dashboard(tg, actor)
     for row in old_cards[:ADMIN_RESET_ARCHIVE_LIMIT]:
         _archive_queue_message(
             tg,
@@ -2782,6 +3403,9 @@ def start_revision(tg: TelegramClient, actor: Actor, video_id: int) -> None:
         "edit_video_id": video_id,
         "video_type": video_type,
         "platform_flow": PLATFORM_FLOW_BIGRECAP if video_type == VIDEO_TYPE_BIGRECAP else PLATFORM_FLOW_REGULAR,
+        "project_id": video.get("project_id"),
+        "project_code": video.get("project_code"),
+        "project_name": video.get("project_name"),
         "instagram_url": None if video_type == VIDEO_TYPE_BIGRECAP else video.get("instagram_url"),
         "instagram_id": None if video_type == VIDEO_TYPE_BIGRECAP else video.get("instagram_id"),
         "youtube_url": video.get("youtube_url") if video_type == VIDEO_TYPE_BIGRECAP else None,
@@ -2789,21 +3413,33 @@ def start_revision(tg: TelegramClient, actor: Actor, video_id: int) -> None:
         "tiktok_url": None if video_type == VIDEO_TYPE_BIGRECAP else video.get("tiktok_url"),
         "tiktok_id": None if video_type == VIDEO_TYPE_BIGRECAP else video.get("tiktok_id"),
     }
-    db.set_session(
-        tg_id=actor.tg_id,
-        chat_id=actor.chat_id,
-        username=actor.username,
-        state="new:author",
-        data=data,
-    )
     tg.send_message(actor.chat_id, "Ок, исправим заявку и вернём её в очередь.")
-    ask_people(tg, actor, "author")
+    if data.get("project_code") and data.get("project_name"):
+        db.set_session(
+            tg_id=actor.tg_id,
+            chat_id=actor.chat_id,
+            username=actor.username,
+            state="new:author",
+            data=data,
+        )
+        ask_people(tg, actor, "author")
+    else:
+        ask_submission_project(tg, actor, data)
 
 
 def show_admin(tg: TelegramClient, actor: Actor) -> None:
     if not require_admin(tg, actor):
         return
+    _safe_refresh_admin_dashboard(tg, actor)
     result = pump_admin_queue(tg, actor, force_repost=True)
+    record_system_log(
+        "admin_queue_pumped",
+        "admin_queue",
+        result.get("active_video_id"),
+        {"source": "admin", **result},
+        actor,
+    )
+    _safe_refresh_admin_dashboard(tg, actor)
     if result["pending_count"] == 0:
         tg.send_message(actor.chat_id, "Очередь пуста. Pending-заявок: 0.")
 
@@ -3173,6 +3809,7 @@ def sync_video_after_approval(video: dict[str, Any], actor: Actor) -> bool:
         if row_number:
             db.execute("UPDATE videos SET sheet_row = %s, updated_at = now() WHERE id = %s", (row_number, video["id"]))
             video["sheet_row"] = row_number
+        sheets.sync_project_reports(db.fetch_all(VIDEO_SELECT + " WHERE v.status <> 'deleted'"))
         record_system_log(
             "sync_sheets_ok",
             "video",
@@ -3523,6 +4160,17 @@ def sync_sheets_command(tg: TelegramClient, actor: Actor) -> None:
                 {"error": _safe_error(exc)},
                 actor,
             )
+    try:
+        sheets.sync_project_reports(db.fetch_all(VIDEO_SELECT + " WHERE v.status <> 'deleted'"))
+    except Exception as exc:
+        failed += 1
+        record_system_log(
+            "sync_project_reports_failed",
+            "spreadsheet",
+            None,
+            {"error": _safe_error(exc)},
+            actor,
+        )
     tg.send_message(actor.chat_id, f"Синхронизация завершена. Успешно: {ok}, ошибок: {failed}.")
 
 

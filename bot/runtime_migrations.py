@@ -5,6 +5,7 @@ from typing import Any
 import psycopg
 
 from bot.config import get_settings
+from bot.projects import seed_projects
 from scripts.init_db import SCHEMA_SQL
 from scripts.seed_people import upsert_person
 
@@ -36,6 +37,7 @@ def ensure_runtime_migrations() -> dict[str, Any]:
                 "is_active": "true",
             },
         )
+        active_project_count = seed_projects(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -63,6 +65,30 @@ def ensure_runtime_migrations() -> dict[str, Any]:
             pending_fifo_index_exists = bool(cur.fetchone()[0])
             cur.execute("SELECT count(*) FROM admin_queue_state WHERE queue_name = 'main'")
             admin_queue_main_rows = int(cur.fetchone()[0])
+            cur.execute("SELECT to_regclass('projects') IS NOT NULL")
+            projects_table_exists = bool(cur.fetchone()[0])
+            cur.execute("SELECT to_regclass('idx_videos_project_id') IS NOT NULL")
+            project_index_exists = bool(cur.fetchone()[0])
+            cur.execute("SELECT to_regclass('idx_videos_status_project') IS NOT NULL")
+            status_project_index_exists = bool(cur.fetchone()[0])
+            cur.execute(
+                """
+                SELECT count(*)
+                FROM information_schema.columns
+                WHERE table_name = 'videos'
+                  AND column_name IN ('project_id', 'project_code', 'project_name')
+                """
+            )
+            video_project_columns = int(cur.fetchone()[0])
+            cur.execute(
+                """
+                SELECT count(*)
+                FROM information_schema.columns
+                WHERE table_name = 'admin_queue_state'
+                  AND column_name IN ('dashboard_chat_id', 'dashboard_message_id', 'dashboard_updated_at')
+                """
+            )
+            dashboard_columns = int(cur.fetchone()[0])
             cur.execute(
                 """
                 SELECT count(*)
@@ -89,11 +115,17 @@ def ensure_runtime_migrations() -> dict[str, Any]:
             "admin_queue_state": admin_queue_state_exists,
             "idx_videos_pending_fifo": pending_fifo_index_exists,
             "admin_queue_main_rows": admin_queue_main_rows,
+            "projects_table": projects_table_exists,
+            "video_project_columns": video_project_columns,
+            "idx_videos_project_id": project_index_exists,
+            "idx_videos_status_project": status_project_index_exists,
+            "admin_dashboard_columns": dashboard_columns,
         },
         "seed": {
             "prokudin_action": seed_action,
             "prokudin_id": person_id,
             "prokudin_active_rows": prokudin_active_rows,
+            "active_project_count": active_project_count,
         },
     }
     _DONE = True

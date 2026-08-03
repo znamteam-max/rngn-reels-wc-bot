@@ -283,7 +283,7 @@ class BotV108Tests(unittest.TestCase):
         set_session.assert_not_called()
         self.assertEqual(tg.messages[0]["text"], BIGRECAP_YOUTUBE_INVALID_MESSAGE)
 
-    def test_bigrecap_youtube_step_sets_people_flow_without_instagram(self) -> None:
+    def test_bigrecap_youtube_step_sets_project_flow_without_instagram(self) -> None:
         tg = FakeTelegram()
         actor = Actor(tg_id=1, chat_id=1, username="user")
         with (
@@ -293,13 +293,13 @@ class BotV108Tests(unittest.TestCase):
         ):
             handle_new_bigrecap_youtube(tg, actor, {"video_type": "bigrecap"}, "https://youtu.be/big123")
         data = set_session.call_args.kwargs["data"]
-        self.assertEqual(set_session.call_args.kwargs["state"], "new:author")
+        self.assertEqual(set_session.call_args.kwargs["state"], "new:project")
         self.assertEqual(data["youtube_id"], "big123")
         self.assertIsNone(data["instagram_url"])
         self.assertIsNone(data["instagram_id"])
         self.assertIsNone(data["tiktok_url"])
         self.assertIsNone(data["tiktok_id"])
-        ask_people_mock.assert_called_once_with(tg, actor, "author")
+        ask_people_mock.assert_not_called()
 
     def test_bigrecap_submission_data_clears_instagram_and_tiktok(self) -> None:
         data = normalized_submission_data(
@@ -309,6 +309,8 @@ class BotV108Tests(unittest.TestCase):
                 "instagram_id": "OLD",
                 "youtube_url": "https://youtu.be/big123",
                 "youtube_id": "big123",
+                "project_code": "bolshe",
+                "project_name": "Больше",
                 "tiktok_url": "https://www.tiktok.com/@x/video/1",
                 "tiktok_id": "1",
             }
@@ -387,7 +389,7 @@ class BotV1010Tests(unittest.TestCase):
         clear_session.assert_not_called()
         self.assertEqual(tg.messages[0]["text"], ADD_ZNAMBO_INVALID_LINK_MESSAGE)
 
-    def test_add_znambo_instagram_asks_publish_date(self) -> None:
+    def test_add_znambo_instagram_asks_project(self) -> None:
         tg = FakeTelegram()
         actor = Actor(tg_id=1, chat_id=1, username="znambo")
         with (
@@ -396,17 +398,16 @@ class BotV1010Tests(unittest.TestCase):
             patch("bot.handlers.db.set_session") as set_session,
         ):
             handle_add_znambo_instagram(tg, actor, {"flow": "add_znambo"}, "instagram.com/reel/ABC123/?utm_source=x")
-        self.assertEqual(set_session.call_args.kwargs["state"], ADD_ZNAMBO_SESSION_DATE)
+        self.assertEqual(set_session.call_args.kwargs["state"], "znambo:project")
         data = set_session.call_args.kwargs["data"]
-        self.assertEqual(data["step"], "awaiting_znambo_publish_date")
+        self.assertEqual(data["step"], "awaiting_znambo_project")
         self.assertEqual(data["instagram_id"], "ABC123")
-        self.assertEqual(tg.messages[0]["text"], ADD_ZNAMBO_DATE_PROMPT)
+        self.assertEqual(tg.messages[0]["text"], "Для какого проекта сделан ролик?")
         keyboard = tg.messages[0]["reply_markup"]["inline_keyboard"]  # type: ignore[index]
-        self.assertEqual(
-            [[button["text"] for button in row] for row in keyboard],
-            [["Сегодня", "Вчера"], ["Ввести вручную"]],
-        )
-        self.assertEqual(keyboard[1][0]["callback_data"], "znambo:date:manual")
+        callbacks = [button["callback_data"] for row in keyboard for button in row]
+        self.assertEqual(len(callbacks), 9)
+        self.assertIn("proj:vzyal_myach", callbacks)
+        self.assertIn("proj:other", callbacks)
 
     def test_add_znambo_manual_callback_bypasses_preset_parser(self) -> None:
         callback = {
