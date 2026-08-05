@@ -1,0 +1,560 @@
+{
+  "ok": true,
+  "started_at": "2026-08-05T19:04:52.727105+00:00",
+  "stage": "done",
+  "initial_status": {
+    "ok": true,
+    "run_id": 1,
+    "status": "awaiting_confirmation",
+    "stage": "audit_done",
+    "mode": "audit",
+    "db_active_count": 310,
+    "db_approved_count": 308,
+    "db_pending_count": 0,
+    "db_needs_revision_count": 2,
+    "db_duplicate_count": 0,
+    "db_unassigned_count": 52,
+    "db_missing_date_count": 2,
+    "sheet_videos_count": 307,
+    "sheet_project_union_count": 278,
+    "sheet_month_union_count": 0,
+    "safe_project_backfill_candidates": 20,
+    "conflicting_project_assignments": 1,
+    "mismatch_count": 766,
+    "changed_project_ids": [],
+    "db_project_counts": {
+      "ves_sport": 257,
+      "unassigned": 52,
+      "home_of_hockey": 1
+    },
+    "db_month_counts": {
+      "ALL": {
+        "active": 310,
+        "published": 308
+      },
+      "2026-05": {
+        "active": 0,
+        "published": 0
+      },
+      "2026-06": {
+        "active": 146,
+        "published": 146
+      },
+      "2026-07": {
+        "active": 162,
+        "published": 162
+      },
+      "2026-08": {
+        "active": 0,
+        "published": 0
+      },
+      "NO_DATE": {
+        "active": 2,
+        "published": 0
+      }
+    },
+    "month_sheet_counts": {
+      "2026-05": 0,
+      "2026-06": 0,
+      "2026-07": 0,
+      "2026-08": 0,
+      "Без даты": 0
+    },
+    "project_sheet_counts": {
+      "Music Core": 0,
+      "Sport Core": 0,
+      "Double Play": 0,
+      "Больше": 0,
+      "Padel Channel": 0,
+      "Home of Hockey": 0,
+      "Взял Мяч": 0,
+      "Весь Спорт": 278,
+      "Без проекта": 0,
+      "Другие проекты": 0
+    },
+    "rebuilt_sheet_names": [],
+    "unfinished_request_count": 52,
+    "stale_session_count": 0,
+    "last_error": null,
+    "work_chat_id_present": false,
+    "updated_at": "2026-08-05T17:03:15.745245+00:00",
+    "finished_at": null
+  },
+  "confirm_response": {
+    "ok": true,
+    "run_id": 1,
+    "status": "created",
+    "stage": "confirmed",
+    "mode": "safe_backfill",
+    "db_active_count": 310,
+    "db_approved_count": 308,
+    "db_pending_count": 0,
+    "db_needs_revision_count": 2,
+    "db_duplicate_count": 0,
+    "db_unassigned_count": 52,
+    "db_missing_date_count": 2,
+    "sheet_videos_count": 307,
+    "sheet_project_union_count": 278,
+    "sheet_month_union_count": 0,
+    "safe_project_backfill_candidates": 20,
+    "conflicting_project_assignments": 1,
+    "mismatch_count": 766,
+    "changed_project_ids": [],
+    "db_project_counts": {
+      "ves_sport": 257,
+      "unassigned": 52,
+      "home_of_hockey": 1
+    },
+    "db_month_counts": {
+      "ALL": {
+        "active": 310,
+        "published": 308
+      },
+      "2026-05": {
+        "active": 0,
+        "published": 0
+      },
+      "2026-06": {
+        "active": 146,
+        "published": 146
+      },
+      "2026-07": {
+        "active": 162,
+        "published": 162
+      },
+      "2026-08": {
+        "active": 0,
+        "published": 0
+      },
+      "NO_DATE": {
+        "active": 2,
+        "published": 0
+      }
+    },
+    "month_sheet_counts": {
+      "2026-05": 0,
+      "2026-06": 0,
+      "2026-07": 0,
+      "2026-08": 0,
+      "Без даты": 0
+    },
+    "project_sheet_counts": {
+      "Music Core": 0,
+      "Sport Core": 0,
+      "Double Play": 0,
+      "Больше": 0,
+      "Padel Channel": 0,
+      "Home of Hockey": 0,
+      "Взял Мяч": 0,
+      "Весь Спорт": 278,
+      "Без проекта": 0,
+      "Другие проекты": 0
+    },
+    "rebuilt_sheet_names": [],
+    "unfinished_request_count": 52,
+    "stale_session_count": 0,
+    "last_error": null,
+    "work_chat_id_present": false,
+    "updated_at": "2026-08-05T19:04:55.753950+00:00",
+    "finished_at": null,
+    "confirmed_now": true
+  },
+  "last_status": {
+    "ok": true,
+    "run_id": 1,
+    "status": "done",
+    "stage": "done",
+    "mode": "safe_backfill",
+    "db_active_count": 310,
+    "db_approved_count": 308,
+    "db_pending_count": 0,
+    "db_needs_revision_count": 2,
+    "db_duplicate_count": 0,
+    "db_unassigned_count": 32,
+    "db_missing_date_count": 2,
+    "sheet_videos_count": 310,
+    "sheet_project_union_count": 310,
+    "sheet_month_union_count": 310,
+    "safe_project_backfill_candidates": 20,
+    "conflicting_project_assignments": 1,
+    "mismatch_count": 0,
+    "changed_project_ids": [
+      11,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      20,
+      21,
+      10,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      9,
+      28,
+      12,
+      19
+    ],
+    "db_project_counts": {
+      "ves_sport": 277,
+      "unassigned": 32,
+      "home_of_hockey": 1
+    },
+    "db_month_counts": {
+      "ALL": {
+        "active": 310,
+        "published": 308
+      },
+      "2026-05": {
+        "active": 0,
+        "published": 0
+      },
+      "2026-06": {
+        "active": 146,
+        "published": 146
+      },
+      "2026-07": {
+        "active": 162,
+        "published": 162
+      },
+      "2026-08": {
+        "active": 0,
+        "published": 0
+      },
+      "NO_DATE": {
+        "active": 2,
+        "published": 0
+      }
+    },
+    "month_sheet_counts": {
+      "2026-05": 0,
+      "2026-06": 146,
+      "2026-07": 162,
+      "2026-08": 0,
+      "Без даты": 2
+    },
+    "project_sheet_counts": {
+      "Music Core": 0,
+      "Sport Core": 0,
+      "Double Play": 0,
+      "Больше": 0,
+      "Padel Channel": 0,
+      "Home of Hockey": 1,
+      "Взял Мяч": 0,
+      "Весь Спорт": 277,
+      "Без проекта": 32,
+      "Другие проекты": 0
+    },
+    "rebuilt_sheet_names": [
+      "Videos",
+      "Взял Мяч",
+      "Больше",
+      "Весь Спорт",
+      "Padel Channel",
+      "Home of Hockey",
+      "Double Play",
+      "Sport Core",
+      "Music Core",
+      "Другие проекты",
+      "Без проекта",
+      "2026-05",
+      "2026-06",
+      "2026-07",
+      "2026-08",
+      "Без даты",
+      "Project Stats",
+      "Month Stats",
+      "People × Projects",
+      "Unfinished Requests",
+      "Unsubmitted Forms",
+      "Reconciliation",
+      "Project Backfill Review"
+    ],
+    "unfinished_request_count": 32,
+    "stale_session_count": 0,
+    "last_error": null,
+    "work_chat_id_present": false,
+    "updated_at": "2026-08-05T19:08:20.997594+00:00",
+    "finished_at": "2026-08-05T19:08:20.997594+00:00"
+  },
+  "last_drain": {
+    "ok": true,
+    "worker": {
+      "ok": true,
+      "claimed": 1,
+      "processed": 1,
+      "processed_by_kind": {
+        "sheets_validate": 1
+      },
+      "done": 1,
+      "retried": 0,
+      "failed": 0,
+      "dead": 0,
+      "remaining_ready": 0,
+      "remaining_queued_total": 0,
+      "next_available_in_seconds": 0,
+      "duration_ms": 2695,
+      "invocation_id": "325191af-b8d0-4079-b9c3-5ef22c119bc2"
+    },
+    "run": {
+      "ok": true,
+      "run_id": 1,
+      "status": "done",
+      "stage": "done",
+      "mode": "safe_backfill",
+      "db_active_count": 310,
+      "db_approved_count": 308,
+      "db_pending_count": 0,
+      "db_needs_revision_count": 2,
+      "db_duplicate_count": 0,
+      "db_unassigned_count": 32,
+      "db_missing_date_count": 2,
+      "sheet_videos_count": 310,
+      "sheet_project_union_count": 310,
+      "sheet_month_union_count": 310,
+      "safe_project_backfill_candidates": 20,
+      "conflicting_project_assignments": 1,
+      "mismatch_count": 0,
+      "changed_project_ids": [
+        11,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        20,
+        21,
+        10,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        9,
+        28,
+        12,
+        19
+      ],
+      "db_project_counts": {
+        "ves_sport": 277,
+        "unassigned": 32,
+        "home_of_hockey": 1
+      },
+      "db_month_counts": {
+        "ALL": {
+          "active": 310,
+          "published": 308
+        },
+        "2026-05": {
+          "active": 0,
+          "published": 0
+        },
+        "2026-06": {
+          "active": 146,
+          "published": 146
+        },
+        "2026-07": {
+          "active": 162,
+          "published": 162
+        },
+        "2026-08": {
+          "active": 0,
+          "published": 0
+        },
+        "NO_DATE": {
+          "active": 2,
+          "published": 0
+        }
+      },
+      "month_sheet_counts": {
+        "2026-05": 0,
+        "2026-06": 146,
+        "2026-07": 162,
+        "2026-08": 0,
+        "Без даты": 2
+      },
+      "project_sheet_counts": {
+        "Music Core": 0,
+        "Sport Core": 0,
+        "Double Play": 0,
+        "Больше": 0,
+        "Padel Channel": 0,
+        "Home of Hockey": 1,
+        "Взял Мяч": 0,
+        "Весь Спорт": 277,
+        "Без проекта": 32,
+        "Другие проекты": 0
+      },
+      "rebuilt_sheet_names": [
+        "Videos",
+        "Взял Мяч",
+        "Больше",
+        "Весь Спорт",
+        "Padel Channel",
+        "Home of Hockey",
+        "Double Play",
+        "Sport Core",
+        "Music Core",
+        "Другие проекты",
+        "Без проекта",
+        "2026-05",
+        "2026-06",
+        "2026-07",
+        "2026-08",
+        "Без даты",
+        "Project Stats",
+        "Month Stats",
+        "People × Projects",
+        "Unfinished Requests",
+        "Unsubmitted Forms",
+        "Reconciliation",
+        "Project Backfill Review"
+      ],
+      "unfinished_request_count": 32,
+      "stale_session_count": 0,
+      "last_error": null,
+      "work_chat_id_present": false,
+      "updated_at": "2026-08-05T19:08:20.997594+00:00",
+      "finished_at": "2026-08-05T19:08:20.997594+00:00"
+    }
+  },
+  "final_status": {
+    "ok": true,
+    "run_id": 1,
+    "status": "done",
+    "stage": "done",
+    "mode": "safe_backfill",
+    "db_active_count": 310,
+    "db_approved_count": 308,
+    "db_pending_count": 0,
+    "db_needs_revision_count": 2,
+    "db_duplicate_count": 0,
+    "db_unassigned_count": 32,
+    "db_missing_date_count": 2,
+    "sheet_videos_count": 310,
+    "sheet_project_union_count": 310,
+    "sheet_month_union_count": 310,
+    "safe_project_backfill_candidates": 20,
+    "conflicting_project_assignments": 1,
+    "mismatch_count": 0,
+    "changed_project_ids": [
+      11,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      20,
+      21,
+      10,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      9,
+      28,
+      12,
+      19
+    ],
+    "db_project_counts": {
+      "ves_sport": 277,
+      "unassigned": 32,
+      "home_of_hockey": 1
+    },
+    "db_month_counts": {
+      "ALL": {
+        "active": 310,
+        "published": 308
+      },
+      "2026-05": {
+        "active": 0,
+        "published": 0
+      },
+      "2026-06": {
+        "active": 146,
+        "published": 146
+      },
+      "2026-07": {
+        "active": 162,
+        "published": 162
+      },
+      "2026-08": {
+        "active": 0,
+        "published": 0
+      },
+      "NO_DATE": {
+        "active": 2,
+        "published": 0
+      }
+    },
+    "month_sheet_counts": {
+      "2026-05": 0,
+      "2026-06": 146,
+      "2026-07": 162,
+      "2026-08": 0,
+      "Без даты": 2
+    },
+    "project_sheet_counts": {
+      "Music Core": 0,
+      "Sport Core": 0,
+      "Double Play": 0,
+      "Больше": 0,
+      "Padel Channel": 0,
+      "Home of Hockey": 1,
+      "Взял Мяч": 0,
+      "Весь Спорт": 277,
+      "Без проекта": 32,
+      "Другие проекты": 0
+    },
+    "rebuilt_sheet_names": [
+      "Videos",
+      "Взял Мяч",
+      "Больше",
+      "Весь Спорт",
+      "Padel Channel",
+      "Home of Hockey",
+      "Double Play",
+      "Sport Core",
+      "Music Core",
+      "Другие проекты",
+      "Без проекта",
+      "2026-05",
+      "2026-06",
+      "2026-07",
+      "2026-08",
+      "Без даты",
+      "Project Stats",
+      "Month Stats",
+      "People × Projects",
+      "Unfinished Requests",
+      "Unsubmitted Forms",
+      "Reconciliation",
+      "Project Backfill Review"
+    ],
+    "unfinished_request_count": 32,
+    "stale_session_count": 0,
+    "last_error": null,
+    "work_chat_id_present": false,
+    "updated_at": "2026-08-05T19:08:20.997594+00:00",
+    "finished_at": "2026-08-05T19:08:20.997594+00:00"
+  },
+  "equality": {
+    "db_active": 310,
+    "videos": 310,
+    "project_union": 310,
+    "month_union": 310
+  },
+  "mismatch_count": 0,
+  "work_chat_id_present": false,
+  "finished_at": "2026-08-05T19:08:29.870246+00:00"
+}
