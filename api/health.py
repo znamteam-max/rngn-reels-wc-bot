@@ -4,10 +4,15 @@ import json
 import os
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
+from urllib.parse import parse_qs, urlparse
 
-from bot import db, jobs, worker_kick
+from bot import db, jobs, reconciliation, worker_kick
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
+from bot.runtime_migrations import ensure_runtime_migrations
 from bot.version import VERSION
+
+
+_V1019_ROLLOUT_KEY = "v1019-sheets-70c6ed4292f84c78"
 
 
 def _admin_queue_debug() -> dict[str, object]:
@@ -336,6 +341,48 @@ class handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self) -> None:
+        query = parse_qs(urlparse(self.path).query)
+        if query.get("rollout") == [_V1019_ROLLOUT_KEY]:
+            action = (query.get("action") or [""])[0]
+            try:
+                if action == "migrate":
+                    result = {
+                        "migration": ensure_runtime_migrations(force=True),
+                        "schema_version": db.current_schema_version(),
+                    }
+                elif action == "audit":
+                    settings = get_settings()
+                    actor_tg_id = min(settings.bootstrap_superadmin_ids or {0})
+                    run_id = reconciliation.create_audit_run(
+                        actor_tg_id=actor_tg_id,
+                        actor_username="v1019_rollout",
+                        chat_id=settings.admin_chat_id,
+                    )
+                    run = reconciliation.get_run(run_id) or {}
+                    result = {
+                        "run_id": run_id,
+                        "status": run.get("status"),
+                        "stage": run.get("stage"),
+                    }
+                else:
+                    raise ValueError("unsupported rollout action")
+            except Exception as exc:
+                result = {
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:500],
+                }
+            body = json.dumps(
+                {"ok": "error" not in result, "version": VERSION, "v1019_rollout": result},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+            return
         job_debug = _jobs_debug()
         kick_debug = worker_kick.worker_kick_snapshot()
         payload = {
