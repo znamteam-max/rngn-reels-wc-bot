@@ -299,6 +299,15 @@ def _rollout_snapshot() -> dict[str, object]:
 
 
 class handler(BaseHTTPRequestHandler):
+    def _send_json(self, status: int, payload: dict[str, object]) -> None:
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
     def do_HEAD(self) -> None:
         self.do_GET()
 
@@ -306,10 +315,27 @@ class handler(BaseHTTPRequestHandler):
         query = parse_qs(urlparse(self.path).query)
         rollout: dict[str, object] | None = None
         if query.get("rollout") == [_V1018_ROLLOUT_KEY]:
-            migration = ensure_runtime_migrations(force=True)
-            before_acceptance = _rollout_snapshot()
-            acceptance = admin_queue.run_isolated_acceptance(actions=10)
-            after_acceptance = _rollout_snapshot()
+            stage = "migration"
+            try:
+                migration = ensure_runtime_migrations(force=True)
+                stage = "before_acceptance"
+                before_acceptance = _rollout_snapshot()
+                stage = "acceptance"
+                acceptance = admin_queue.run_isolated_acceptance(actions=10)
+                stage = "after_acceptance"
+                after_acceptance = _rollout_snapshot()
+            except Exception as exc:
+                self._send_json(
+                    200,
+                    {
+                        "ok": False,
+                        "version": VERSION,
+                        "stage": stage,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:1000],
+                    },
+                )
+                return
             rollout = {
                 "migration": migration,
                 "before_acceptance": before_acceptance,
@@ -318,6 +344,16 @@ class handler(BaseHTTPRequestHandler):
                 "mass_return_missing_dates_launched": False,
                 "work_chat_id_present": bool(os.environ.get("WORK_CHAT_ID")),
             }
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "version": VERSION,
+                    "schema_version": db.current_schema_version(),
+                    "v1018_rollout": rollout,
+                },
+            )
+            return
         job_debug = _jobs_debug()
         kick_debug = worker_kick.worker_kick_snapshot()
         payload = {
@@ -345,10 +381,4 @@ class handler(BaseHTTPRequestHandler):
         }
         if rollout is not None:
             payload["v1018_rollout"] = rollout
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
+        self._send_json(200, payload)
