@@ -302,7 +302,7 @@ def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
                         admin_notified_at = NULL,
                         updated_at = now()
                     WHERE status = 'pending'
-                      AND (%s IS NULL OR id <> %s)
+                      AND (%s::bigint IS NULL OR id <> %s)
                       AND admin_message_id IS NOT NULL
                     """,
                     (active_video_id, active_video_id),

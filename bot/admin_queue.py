@@ -286,7 +286,7 @@ def _clear_active_fields(
                 claimed_at = NULL,
                 active_last_error = CASE WHEN %s THEN NULL ELSE active_last_error END,
                 active_last_error_at = CASE WHEN %s THEN NULL ELSE active_last_error_at END,
-                last_repaired_at = CASE WHEN %s IS NOT NULL THEN now() ELSE last_repaired_at END,
+                last_repaired_at = CASE WHEN %s::text IS NOT NULL THEN now() ELSE last_repaired_at END,
                 last_repair_reason = COALESCE(%s, last_repair_reason),
                 updated_at = now()
             WHERE queue_name = %s
@@ -967,7 +967,7 @@ def _clear_stale_pending_metadata(
                 admin_notified_at = NULL,
                 updated_at = now()
             WHERE status = 'pending'
-              AND (%s IS NULL OR id <> %s)
+              AND (%s::bigint IS NULL OR id <> %s)
               AND admin_message_id IS NOT NULL
             RETURNING id
             """,
@@ -1427,7 +1427,7 @@ def get_queue_diagnostics(queue_name: str = ADMIN_QUEUE_NAME) -> dict[str, Any]:
                 SELECT count(*) AS count
                 FROM videos
                 WHERE status = 'pending'
-                  AND (%s IS NULL OR id <> %s)
+                  AND (%s::bigint IS NULL OR id <> %s)
                   AND admin_message_id IS NOT NULL
                 """,
                 (state.get("active_video_id"), state.get("active_video_id")),

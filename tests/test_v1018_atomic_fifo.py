@@ -423,6 +423,15 @@ class AtomicQueueV1018Tests(TestCase):
         source = (Path(__file__).resolve().parents[1] / "bot" / "runtime_migrations.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("AND (%s IS NULL OR id <> %s)", source)
+        self.assertIn("AND (%s::bigint IS NULL OR id <> %s)", source)
         self.assertIn("AND admin_message_id IS NOT NULL", source)
         self.assertNotIn("/return_missing_dates", source)
+
+    def test_nullable_sql_parameters_have_explicit_postgres_types(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = "\n".join(
+            (root / path).read_text(encoding="utf-8")
+            for path in ("bot/admin_queue.py", "bot/runtime_migrations.py")
+        )
+        self.assertNotIn("%s IS NULL", source)
+        self.assertNotIn("%s IS NOT NULL", source)
