@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 
-from bot import db, jobs
+from bot import db, jobs, worker_kick
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
 from bot.version import VERSION
 
@@ -128,11 +128,17 @@ def _jobs_debug() -> dict[str, object]:
         """
         SELECT
             count(*) FILTER (WHERE status = 'queued') AS queued,
+            count(*) FILTER (WHERE status = 'queued' AND available_at <= now()) AS ready,
+            count(*) FILTER (WHERE status = 'queued' AND available_at > now()) AS future,
             count(*) FILTER (WHERE status = 'processing') AS processing,
             count(*) FILTER (WHERE status = 'failed') AS failed,
             count(*) FILTER (WHERE status = 'dead') AS dead,
             EXTRACT(EPOCH FROM now() - min(created_at) FILTER (WHERE status = 'queued'))::bigint
                 AS oldest_queued_age_seconds,
+            EXTRACT(
+                EPOCH FROM now() - min(available_at)
+                FILTER (WHERE status = 'queued' AND available_at <= now())
+            )::bigint AS oldest_ready_age_seconds,
             count(*) FILTER (
                 WHERE status = 'processing' AND locked_at < now() - interval '5 minutes'
             ) AS stale_processing,
@@ -143,11 +149,16 @@ def _jobs_debug() -> dict[str, object]:
     return {
         "enabled": get_settings().background_jobs_enabled,
         "queued": int(row.get("queued") or 0),
+        "ready": int(row.get("ready") or 0),
+        "future": int(row.get("future") or 0),
         "processing": int(row.get("processing") or 0),
         "failed": int(row.get("failed") or 0),
         "dead": int(row.get("dead") or 0),
         "oldest_queued_age_seconds": max(0, int(row["oldest_queued_age_seconds"]))
         if row.get("oldest_queued_age_seconds") is not None
+        else None,
+        "oldest_ready_age_seconds": max(0, int(row["oldest_ready_age_seconds"]))
+        if row.get("oldest_ready_age_seconds") is not None
         else None,
         "stale_processing": int(row.get("stale_processing") or 0),
         "last_done_at": row["last_done_at"].isoformat() if row.get("last_done_at") else None,
@@ -228,6 +239,7 @@ class handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         job_debug = _jobs_debug()
+        kick_debug = worker_kick.worker_kick_snapshot()
         payload = {
             "ok": True,
             "service": "rngn-reels-wc-bot",
@@ -239,7 +251,8 @@ class handler(BaseHTTPRequestHandler):
             "schema_version": db.current_schema_version(),
             "database": db.pool_diagnostics(),
             "jobs": job_debug,
-            "worker": jobs.worker_health_snapshot(job_debug),
+            "worker": jobs.worker_health_snapshot(job_debug, kick_debug),
+            "worker_kick": kick_debug,
             "sheets": _sheets_debug(),
             "telegram_updates": _telegram_updates_debug(),
             "bulk_operations": _bulk_operations_debug(),

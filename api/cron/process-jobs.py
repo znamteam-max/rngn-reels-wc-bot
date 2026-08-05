@@ -34,6 +34,9 @@ class handler(BaseHTTPRequestHandler):
             return None
         if settings.cron_secret and hmac.compare_digest(token, settings.cron_secret):
             user_agent = (self.headers.get("User-Agent") or "").lower()
+            requested_source = (self.headers.get("X-Worker-Source") or "").lower()
+            if requested_source == "event_kick" and user_agent.startswith("rngn-event-kick/1.0"):
+                return "event_kick"
             return "vercel_cron" if "vercel-cron" in user_agent else "manual"
         if token.count(".") != 2:
             return None

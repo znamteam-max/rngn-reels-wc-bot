@@ -877,8 +877,19 @@ def process_jobs(*, source: str = "manual") -> dict[str, Any]:
                 failed += int(status == "failed")
             index += 1
 
-        ready = db.fetch_one(
-            "SELECT count(*) AS count FROM background_jobs WHERE status = 'queued' AND available_at <= now()"
+        queue = db.fetch_one(
+            """
+            SELECT
+                count(*) FILTER (WHERE status = 'queued' AND available_at <= now()) AS ready,
+                count(*) FILTER (WHERE status = 'queued') AS queued_total,
+                GREATEST(
+                    0,
+                    CEIL(EXTRACT(EPOCH FROM min(available_at) FILTER (
+                        WHERE status = 'queued' AND available_at > now()
+                    ) - now()))
+                )::integer AS next_available_in_seconds
+            FROM background_jobs
+            """
         ) or {}
         result = {
             "ok": True,
@@ -889,7 +900,13 @@ def process_jobs(*, source: str = "manual") -> dict[str, Any]:
             "retried": retried,
             "failed": failed,
             "dead": dead,
-            "remaining_ready": int(ready.get("count") or 0),
+            "remaining_ready": int(queue.get("ready", queue.get("count")) or 0),
+            "remaining_queued_total": int(
+                queue.get("queued_total", queue.get("count")) or 0
+            ),
+            "next_available_in_seconds": int(queue["next_available_in_seconds"])
+            if queue.get("next_available_in_seconds") is not None
+            else None,
             "duration_ms": int((time.monotonic() - started) * 1000),
             "invocation_id": invocation_id,
         }

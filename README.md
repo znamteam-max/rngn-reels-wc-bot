@@ -4,7 +4,7 @@ Production-ready Telegram bot for Reels монтаж reporting during ЧМ-2026.
 
 Bot: `@rngn_reels_wc_bot`  
 Admin chat: `-5520370963`  
-Runtime: Python 3.12 on Vercel Serverless Functions  
+Runtime: Python 3.12 and Node.js on Vercel Functions
 Database: Neon Postgres via `DATABASE_URL`  
 Report: Google Sheets tab `Videos`
 
@@ -13,6 +13,7 @@ Report: Google Sheets tab `Videos`
 ```text
 api/webhook.py          Telegram webhook and GET health
 api/health.py           Separate health endpoint
+api/internal/           Event-driven Node kicker and Python completion endpoint
 bot/                   Bot modules
 scripts/init_db.py      Neon schema bootstrap
 scripts/seed_people.py  People/admin seed loader
@@ -36,6 +37,7 @@ GOOGLE_SERVICE_ACCOUNT_JSON_B64=base64 encoded service account JSON
 GOOGLE_SHEETS_SPREADSHEET_ID=Google Spreadsheet ID
 YOUTUBE_API_KEY=optional YouTube Data API v3 key for metrics
 CRON_SECRET=optional secret for protected /api/cron/* endpoints
+PUBLIC_BASE_URL=https://project-dcd2y.vercel.app
 TZ=Europe/Helsinki
 BOOTSTRAP_SUPERADMIN_IDS=comma-separated Telegram IDs for first setup
 BACKGROUND_JOBS_ENABLED=true
@@ -122,7 +124,7 @@ captured_at,video_id,platform,platform_video_id,views,likes,comments,shares,sour
 
 ## Vercel Deploy
 
-The project uses Python Vercel Functions for the webhook, read-only health, protected migration, and cron endpoints. `vercel.json` schedules YouTube metrics at `0 3 * * *` and the previous-day admin report at `0 6 * * *` (09:00 for production UTC+3). Call the protected background-worker endpoint every minute. Vercel Pro can add it directly to `vercel.json`; the Hobby plan must use an external scheduler with the same `Authorization` header.
+The project deploys Python functions for the bot, worker, health, migration, and completion endpoint plus a Node.js function at `/api/internal/kick-worker`. The Node function returns HTTP 202 immediately and uses Vercel `context.waitUntil()` to drain the Python worker in a separate invocation. `vercel.json` schedules YouTube metrics at `0 3 * * *` and the previous-day admin report at `0 6 * * *` (09:00 for production UTC+3).
 
 The webhook never runs DDL. Apply schema changes separately before enabling a new webhook version:
 
@@ -170,6 +172,15 @@ Authorization: Bearer <CRON_SECRET>
 ```
 
 One invocation claims at most 20 jobs with `FOR UPDATE SKIP LOCKED`, runs for at most 20 seconds, sends at most 10 Telegram messages, and synchronizes at most 10 Sheets videos. Stale jobs are recovered after five minutes and transient failures use delayed retries.
+
+Internal event kicker:
+
+```text
+POST /api/internal/kick-worker
+Authorization: Bearer <CRON_SECRET>
+```
+
+Every committed ready job attempts a short authenticated kick. An eight-second PostgreSQL lease coalesces bursts. The Node drain performs at most six worker calls in 50 seconds, waits for short delayed retries, performs one settle pass, and completes the lease through `/api/internal/complete-worker-kick`. Kick failures never roll back a Telegram business action; the durable job remains queued. `PUBLIC_BASE_URL` is fixed server-side and request payloads cannot choose a target URL or command.
 
 If `CRON_SECRET` is missing, the endpoint returns `500` with `CRON_SECRET not configured`. If the authorization header is wrong, it returns `401`.
 
@@ -231,6 +242,7 @@ Superadmin commands:
 /deactivate_person id
 /reset_admin_queue
 /retry_failed_jobs
+/kick_worker
 /run_jobs_now
 ```
 
@@ -266,9 +278,9 @@ If Google Sheets is temporarily unavailable, the video remains `approved`. `shee
 
 Dashboard refreshes, project statistics, non-critical Telegram notifications, daily reports, YouTube metrics, and `/return_missing_dates` are durable background jobs. Dashboard and queue-pump jobs coalesce by dedupe key. Bulk missing-date returns process at most 10 videos per chunk and expose progress through `/jobs_status`.
 
-The production worker is called by `.github/workflows/process-background-jobs.yml` every five minutes and through `workflow_dispatch`. GitHub Actions obtains a short-lived OIDC token with audience `rngn-reels-wc-worker`; production verifies the official GitHub issuer and JWKS plus the exact repository, owner, `main` ref, event, and audience. `CRON_SECRET` remains supported for protected manual or Vercel cron calls, but is not copied to GitHub Secrets. Each workflow drains up to 12 bounded worker batches and records aggregate counts without logging JWTs or job payloads.
+The primary production wake-up path is the event-driven internal kicker. `.github/workflows/process-background-jobs.yml` remains enabled as backup/manual recovery on the offset schedule `2-57/5 * * * *` and through `workflow_dispatch`. GitHub Actions obtains a short-lived OIDC token with audience `rngn-reels-wc-worker`; production verifies the official GitHub issuer and JWKS plus the exact repository, owner, `main` ref, event, and audience. `CRON_SECRET` remains supported for protected event, manual, or Vercel cron calls, but is not copied to GitHub Secrets.
 
-FIFO pumping and dashboard refresh use a short live attempt after queue-changing actions. A valid active card is left untouched, dashboard events within three seconds debounce to one durable repair job, and a PostgreSQL advisory lock prevents concurrent Telegram edits. Network or lock failures never roll back the user's action; they enqueue coalesced `admin_queue_pump` or `dashboard_refresh` repairs. `/worker_status` reports heartbeat and queue counts. `/run_jobs_now` deliberately provides the GitHub Actions manual-run path instead of storing a GitHub PAT in Vercel.
+FIFO pumping and dashboard refresh use a short live attempt after queue-changing actions. A valid active card is left untouched, dashboard events within three seconds debounce to one durable repair job, and a PostgreSQL advisory lock prevents concurrent Telegram edits. Network or lock failures never roll back the user's action; they enqueue coalesced `admin_queue_pump` or `dashboard_refresh` repairs. `/worker_status` reports ready/future jobs, event-kick state, heartbeat source, and GitHub backup status. `/kick_worker` is superadmin-only and only wakes the separate worker invocation. `/run_jobs_now` keeps the GitHub Actions manual-backup path instead of storing a GitHub PAT in Vercel.
 
 Project reporting also maintains `Project Stats` and `People × Projects`. Project-sheet synchronization removes a video ID from its previous project sheet before upserting it into the current one.
 

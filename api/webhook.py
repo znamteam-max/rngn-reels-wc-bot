@@ -10,6 +10,7 @@ from bot.config import get_settings, missing_env_names, optional_missing_env_nam
 from bot import db, jobs
 from bot.public_patch import handle_update, record_system_log
 from bot.version import VERSION
+from bot.worker_kick import kick_worker_if_ready
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
@@ -22,6 +23,13 @@ def _safe_exception_detail(exc: Exception) -> str:
     if token:
         detail = detail.replace(token, "[token]")
     return detail[:500]
+
+
+def _kick_worker_safely(reason: str) -> None:
+    try:
+        kick_worker_if_ready(reason=reason)
+    except Exception:
+        pass
 
 
 class handler(BaseHTTPRequestHandler):
@@ -102,6 +110,7 @@ class handler(BaseHTTPRequestHandler):
             pass
 
         if claim.startswith("duplicate"):
+            _kick_worker_safely("webhook_duplicate_tail")
             duration_ms = int((time.monotonic() - started) * 1000)
             try:
                 record_system_log(
@@ -118,6 +127,7 @@ class handler(BaseHTTPRequestHandler):
         try:
             handle_update(update)
             jobs.finish_telegram_update(int(update_id))
+            _kick_worker_safely("webhook_tail")
         except Exception as exc:
             detail = _safe_exception_detail(exc)
             try:

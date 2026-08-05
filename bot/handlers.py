@@ -6,7 +6,7 @@ from typing import Any
 
 import psycopg
 
-from bot import db, jobs, metrics
+from bot import db, jobs, metrics, worker_kick
 from bot.config import get_settings
 from bot.daily_reports import preview_daily_report, previous_report_date
 from bot.links import (
@@ -347,6 +347,8 @@ def handle_message(message: dict[str, Any]) -> None:
             jobs_status_command(tg, actor)
         elif command == "/worker_status":
             worker_status_command(tg, actor)
+        elif command == "/kick_worker":
+            kick_worker_command(tg, actor)
         elif command == "/run_jobs_now":
             run_jobs_now_command(tg, actor)
         elif command == "/retry_failed_jobs":
@@ -575,6 +577,8 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
         "/metrics_video id — метрики одного видео",
     ]
     lines.append("/worker_status — состояние worker")
+    if is_superadmin(actor.tg_id):
+        lines.append("/kick_worker — разбудить event worker")
     if is_superadmin(actor.tg_id):
         lines.append("/run_jobs_now — инструкция ручного запуска worker")
     if is_superadmin(actor.tg_id):
@@ -4001,8 +4005,27 @@ def worker_status_command(tg: TelegramClient, actor: Actor) -> None:
     if not require_admin(tg, actor):
         return
     job_snapshot = jobs.jobs_status_snapshot()
-    worker = jobs.worker_health_snapshot(job_snapshot)
-    tg.send_message(actor.chat_id, jobs.format_worker_status(worker, job_snapshot))
+    kick_snapshot = worker_kick.worker_kick_snapshot()
+    worker = jobs.worker_health_snapshot(job_snapshot, kick_snapshot)
+    tg.send_message(
+        actor.chat_id,
+        jobs.format_worker_status(worker, job_snapshot, kick_snapshot),
+    )
+
+
+def kick_worker_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_superadmin(tg, actor):
+        return
+    result = worker_kick.kick_worker_if_ready(reason="admin_manual", force=True)
+    if result.get("kicked"):
+        text = "Event worker: kick принят. Задания выполняются в отдельном worker invocation."
+    elif result.get("reason") == "no_ready_jobs":
+        text = "Event worker: готовых заданий сейчас нет."
+    elif result.get("reason") == "lease_active":
+        text = "Event worker: kick уже выполняется."
+    else:
+        text = "Event worker: kick не принят, durable jobs сохранены. Проверь /worker_status."
+    tg.send_message(actor.chat_id, text)
 
 
 def run_jobs_now_command(tg: TelegramClient, actor: Actor) -> None:

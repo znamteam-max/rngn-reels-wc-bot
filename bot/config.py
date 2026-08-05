@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 DEFAULT_ADMIN_CHAT_ID = -5520370963
 DEFAULT_TIMEZONE = "Europe/Helsinki"
+DEFAULT_PUBLIC_BASE_URL = "https://project-dcd2y.vercel.app"
 
 
 def _env(name: str, *aliases: str, default: str | None = None) -> str | None:
@@ -59,6 +60,7 @@ class Settings:
     google_sheets_spreadsheet_id: str | None
     youtube_api_key: str | None
     cron_secret: str | None
+    public_base_url: str
     admin_chat_id: int
     timezone: str
     bootstrap_superadmin_ids: set[int]
@@ -85,6 +87,8 @@ def get_settings() -> Settings:
         google_sheets_spreadsheet_id=_env("GOOGLE_SHEETS_SPREADSHEET_ID"),
         youtube_api_key=_env("YOUTUBE_API_KEY"),
         cron_secret=_env("CRON_SECRET"),
+        public_base_url=_env("PUBLIC_BASE_URL", default=DEFAULT_PUBLIC_BASE_URL)
+        or DEFAULT_PUBLIC_BASE_URL,
         admin_chat_id=_int_env("ADMIN_CHAT_ID", DEFAULT_ADMIN_CHAT_ID),
         timezone=_env("TIMEZONE", "TZ", "DEFAULT_TIMEZONE", default=DEFAULT_TIMEZONE) or DEFAULT_TIMEZONE,
         bootstrap_superadmin_ids=_int_list_env("BOOTSTRAP_SUPERADMIN_IDS", "ALLOWED_TELEGRAM_USER_IDS"),

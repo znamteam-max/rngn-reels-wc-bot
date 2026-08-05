@@ -45,7 +45,7 @@ def enqueue_job(
         return None
     if conn is None:
         with db.transaction() as owned_conn:
-            return enqueue_job(
+            job_id = enqueue_job(
                 kind,
                 payload,
                 dedupe_key=dedupe_key,
@@ -54,6 +54,11 @@ def enqueue_job(
                 max_attempts=max_attempts,
                 conn=owned_conn,
             )
+        if job_id is not None:
+            from bot.worker_kick import kick_worker_if_ready
+
+            kick_worker_if_ready(reason=f"enqueue:{kind}")
+        return job_id
 
     with conn.cursor() as cur:
         cur.execute(
@@ -263,11 +268,17 @@ def jobs_status_snapshot() -> dict[str, Any]:
         """
         SELECT
             count(*) FILTER (WHERE status = 'queued') AS queued,
+            count(*) FILTER (WHERE status = 'queued' AND available_at <= now()) AS ready,
+            count(*) FILTER (WHERE status = 'queued' AND available_at > now()) AS future,
             count(*) FILTER (WHERE status = 'processing') AS processing,
             count(*) FILTER (WHERE status = 'failed') AS failed,
             count(*) FILTER (WHERE status = 'dead') AS dead,
             EXTRACT(EPOCH FROM now() - min(created_at) FILTER (WHERE status = 'queued'))::bigint
                 AS oldest_queued_age_seconds,
+            EXTRACT(
+                EPOCH FROM now() - min(available_at)
+                FILTER (WHERE status = 'queued' AND available_at <= now())
+            )::bigint AS oldest_ready_age_seconds,
             count(*) FILTER (
                 WHERE status = 'processing' AND locked_at < now() - interval '5 minutes'
             ) AS stale_processing,
@@ -294,11 +305,16 @@ def jobs_status_snapshot() -> dict[str, Any]:
     ) or {}
     return {
         "queued": int(row.get("queued") or 0),
+        "ready": int(row.get("ready") or 0),
+        "future": int(row.get("future") or 0),
         "processing": int(row.get("processing") or 0),
         "failed": int(row.get("failed") or 0),
         "dead": int(row.get("dead") or 0),
         "oldest_queued_age_seconds": max(0, int(row["oldest_queued_age_seconds"]))
         if row.get("oldest_queued_age_seconds") is not None
+        else None,
+        "oldest_ready_age_seconds": max(0, int(row["oldest_ready_age_seconds"]))
+        if row.get("oldest_ready_age_seconds") is not None
         else None,
         "stale_processing": int(row.get("stale_processing") or 0),
         "last_done_at": row["last_done_at"].isoformat() if row.get("last_done_at") else None,
@@ -308,7 +324,10 @@ def jobs_status_snapshot() -> dict[str, Any]:
     }
 
 
-def worker_health_snapshot(job_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+def worker_health_snapshot(
+    job_snapshot: dict[str, Any] | None = None,
+    kick_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     counts = job_snapshot or jobs_status_snapshot()
     try:
         row = db.fetch_one(
@@ -338,9 +357,13 @@ def worker_health_snapshot(job_snapshot: dict[str, Any] | None = None) -> dict[s
         if last_success_at.tzinfo is None:
             last_success_at = last_success_at.replace(tzinfo=timezone.utc)
         seconds_since_last_success = max(0, int((current - last_success_at).total_seconds()))
-    queued = int(counts.get("queued") or 0)
-    recent = seconds_since_last_success is not None and seconds_since_last_success <= 600
-    healthy = bool(recent or queued == 0)
+    ready = int(counts.get("ready", counts.get("queued")) or 0)
+    oldest_ready_age = counts.get("oldest_ready_age_seconds")
+    kick_age = (kick_snapshot or {}).get("seconds_since_last_accepted")
+    recent_worker = seconds_since_last_success is not None and seconds_since_last_success <= 120
+    recent_kick = kick_age is not None and int(kick_age) <= 120
+    ready_is_new = oldest_ready_age is not None and int(oldest_ready_age) <= 120
+    healthy = bool(ready == 0 or recent_worker or recent_kick or ready_is_new)
     snapshot = {
         "last_started_at": row["last_started_at"].isoformat() if row.get("last_started_at") else None,
         "last_finished_at": row["last_finished_at"].isoformat() if row.get("last_finished_at") else None,
@@ -354,15 +377,21 @@ def worker_health_snapshot(job_snapshot: dict[str, Any] | None = None) -> dict[s
         "source": row.get("source"),
         "invocation_id": row.get("invocation_id"),
         "healthy": healthy,
+        "state": "idle" if ready == 0 else ("starting" if healthy else "stalled"),
     }
     if not healthy:
         snapshot["warning"] = "queued jobs are not being processed"
     return snapshot
 
 
-def format_worker_status(worker: dict[str, Any], job_snapshot: dict[str, Any]) -> str:
+def format_worker_status(
+    worker: dict[str, Any],
+    job_snapshot: dict[str, Any],
+    kick_snapshot: dict[str, Any] | None = None,
+) -> str:
     source_labels = {
         "github_actions": "GitHub Actions",
+        "event_kick": "event kick",
         "vercel_cron": "Vercel Cron",
         "manual": "ручной запуск",
     }
@@ -392,12 +421,20 @@ def format_worker_status(worker: dict[str, Any], job_snapshot: dict[str, Any]) -
         ]
     lines.extend(
         [
+            f"Ready jobs: {int(job_snapshot.get('ready') or 0)}",
+            f"Future jobs: {int(job_snapshot.get('future') or 0)}",
             f"Queued: {int(job_snapshot.get('queued') or 0)}",
             f"Processing: {int(job_snapshot.get('processing') or 0)}",
             f"Failed: {int(job_snapshot.get('failed') or 0)}",
             f"Dead: {int(job_snapshot.get('dead') or 0)}",
         ]
     )
+    kick = kick_snapshot or {}
+    if kick.get("last_accepted_at"):
+        kick_state = "принят" if not kick.get("last_error") else "ошибка"
+    else:
+        kick_state = "ещё не принимался"
+    lines.extend([f"Последний kick: {kick_state}", "GitHub Actions: резерв"])
     return "\n".join(lines)
 
 
@@ -454,4 +491,8 @@ def retry_failed_jobs() -> int:
                 action="job_retry",
                 after_data={"source": "manual_retry"},
             )
+    if rows:
+        from bot.worker_kick import kick_worker_if_ready
+
+        kick_worker_if_ready(reason="retry_failed_jobs")
     return len(rows)

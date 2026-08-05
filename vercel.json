@@ -7,6 +7,9 @@
     "api/**/*.py": {
       "maxDuration": 300,
       "excludeFiles": "{node_modules/**,.wrangler/**,public/**,releases/**,reference/**,src/**,test/**,tests/**,*.md,package-lock.json,wrangler.toml,wrangler.toml.example}"
+    },
+    "api/internal/kick-worker.js": {
+      "maxDuration": 60
     }
   },
   "crons": [

@@ -36,6 +36,7 @@ SUPERADMIN_COMMANDS = [
     ("add_znambo", "Быстро добавить мой ролик"),
     ("reset_admin_queue", "Сбросить и восстановить FIFO-очередь"),
     ("retry_failed_jobs", "Повторить временно упавшие задания"),
+    ("kick_worker", "Разбудить event worker"),
     ("run_jobs_now", "Запустить worker вручную"),
 ]
 

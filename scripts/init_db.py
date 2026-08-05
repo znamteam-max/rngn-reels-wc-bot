@@ -228,6 +228,20 @@ CREATE TABLE IF NOT EXISTS worker_heartbeats (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS worker_kick_state (
+    worker_name text PRIMARY KEY,
+    lease_until timestamptz,
+    last_requested_at timestamptz,
+    last_accepted_at timestamptz,
+    last_completed_at timestamptz,
+    last_error_at timestamptz,
+    last_error text,
+    request_count bigint NOT NULL DEFAULT 0,
+    accepted_count bigint NOT NULL DEFAULT 0,
+    skipped_lease_count bigint NOT NULL DEFAULT 0,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS schema_versions (
     version text PRIMARY KEY,
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -308,6 +322,10 @@ INSERT INTO admin_queue_state (queue_name)
 VALUES ('main')
 ON CONFLICT (queue_name) DO NOTHING;
 
+INSERT INTO worker_kick_state (worker_name)
+VALUES ('main')
+ON CONFLICT (worker_name) DO NOTHING;
+
 UPDATE videos v
 SET author_username = p.username
 FROM people p
@@ -376,6 +394,10 @@ ON CONFLICT (version) DO NOTHING;
 
 INSERT INTO schema_versions (version)
 VALUES ('1.0.16')
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO schema_versions (version)
+VALUES ('1.0.17')
 ON CONFLICT (version) DO NOTHING;
 """
 
