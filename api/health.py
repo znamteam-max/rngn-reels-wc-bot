@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 from bot import admin_queue, db, jobs, worker_kick
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
 from bot.runtime_migrations import ensure_runtime_migrations
+from bot.telegram import TelegramClient
 from bot.version import VERSION
 
 
@@ -298,6 +299,50 @@ def _rollout_snapshot() -> dict[str, object]:
     }
 
 
+def _cleanup_first_acceptance_fixture_card() -> dict[str, object]:
+    rows = db.fetch_all(
+        """
+        SELECT
+            id AS job_id,
+            (payload->'adopt_message'->>'video_id')::bigint AS video_id,
+            (payload->'adopt_message'->>'chat_id')::bigint AS chat_id,
+            (payload->'adopt_message'->>'message_id')::bigint AS message_id
+        FROM background_jobs
+        WHERE kind = 'admin_queue_pump'
+          AND payload ? 'adopt_message'
+          AND (payload->'adopt_message'->>'video_id')::bigint BETWEEN 182 AND 192
+          AND NOT EXISTS (
+              SELECT 1
+              FROM videos
+              WHERE id = (payload->'adopt_message'->>'video_id')::bigint
+          )
+        ORDER BY id ASC
+        LIMIT 3
+        """
+    )
+    results: list[dict[str, object]] = []
+    tg = TelegramClient()
+    for row in rows:
+        item: dict[str, object] = {
+            "job_id": int(row["job_id"]),
+            "video_id": int(row["video_id"]),
+            "message_id": int(row["message_id"]),
+            "archived": False,
+        }
+        try:
+            tg.edit_message_text(
+                int(row["chat_id"]),
+                int(row["message_id"]),
+                "Архивная тестовая карточка v1.0.18. Действия отключены.",
+                {"inline_keyboard": []},
+            )
+            item["archived"] = True
+        except Exception as exc:
+            item["error"] = f"{type(exc).__name__}: {exc}"[:300]
+        results.append(item)
+    return {"candidates": len(rows), "results": results}
+
+
 class handler(BaseHTTPRequestHandler):
     def _send_json(self, status: int, payload: dict[str, object]) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -327,6 +372,8 @@ class handler(BaseHTTPRequestHandler):
                 before_acceptance = _rollout_snapshot()
                 stage = "acceptance"
                 acceptance = admin_queue.run_isolated_acceptance(actions=10)
+                stage = "first_fixture_cleanup"
+                first_fixture_cleanup = _cleanup_first_acceptance_fixture_card()
                 stage = "after_acceptance"
                 after_acceptance = _rollout_snapshot()
             except Exception as exc:
@@ -353,6 +400,7 @@ class handler(BaseHTTPRequestHandler):
                 },
                 "before_acceptance": before_acceptance,
                 "acceptance": acceptance,
+                "first_fixture_cleanup": first_fixture_cleanup,
                 "after_acceptance": after_acceptance,
                 "mass_return_missing_dates_launched": False,
                 "work_chat_id_present": bool(os.environ.get("WORK_CHAT_ID")),
