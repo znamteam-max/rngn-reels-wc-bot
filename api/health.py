@@ -318,6 +318,11 @@ class handler(BaseHTTPRequestHandler):
             stage = "migration"
             try:
                 migration = ensure_runtime_migrations(force=True)
+                stage = "queue_repair"
+                repair = admin_queue.repair_queue_if_needed(
+                    reason="v1.0.18 rollout invariant repair",
+                    force=True,
+                )
                 stage = "before_acceptance"
                 before_acceptance = _rollout_snapshot()
                 stage = "acceptance"
@@ -338,6 +343,14 @@ class handler(BaseHTTPRequestHandler):
                 return
             rollout = {
                 "migration": migration,
+                "queue_repair": {
+                    "repaired": repair.repaired,
+                    "reason": repair.reason,
+                    "active_video_id": repair.active_video_id,
+                    "active_message_id": repair.active_message_id,
+                    "stale_metadata_cleared": repair.stale_metadata_cleared,
+                    "pump_needed": repair.pump_needed,
+                },
                 "before_acceptance": before_acceptance,
                 "acceptance": acceptance,
                 "after_acceptance": after_acceptance,

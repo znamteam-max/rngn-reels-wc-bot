@@ -320,6 +320,36 @@ class AtomicQueueV1018Tests(TestCase):
         pump.assert_called_once()
         self.assertEqual(cur.fetchall.call_count, 1)
 
+    def test_orphan_delivery_fields_are_cleared_on_empty_queue(self) -> None:
+        conn, cur = self._conn(
+            [
+                {
+                    "queue_name": "main",
+                    "active_video_id": None,
+                    "active_chat_id": -1001,
+                    "active_reservation_token": "orphan-token",
+                    "active_reserved_at": datetime.now(timezone.utc),
+                    "queue_filter_type": "global",
+                },
+                {"count": 0},
+                {"count": 0},
+            ]
+        )
+
+        @contextmanager
+        def transaction():
+            yield conn
+
+        with (
+            patch("bot.admin_queue.db.transaction", transaction),
+            patch("bot.admin_queue.db.log_event"),
+        ):
+            result = admin_queue.repair_queue_if_needed(reason="orphan")
+        self.assertTrue(result.repaired)
+        self.assertEqual(result.reason, "orphan active delivery fields cleared")
+        sql = "\n".join(str(call.args[0]) for call in cur.execute.call_args_list)
+        self.assertIn("active_reservation_token = NULL", sql)
+
     def test_dashboard_and_other_modules_cannot_write_active_fields(self) -> None:
         dashboard_source = inspect.getsource(handlers._refresh_admin_dashboard_with_conn)
         self.assertNotIn("SET active_", dashboard_source)

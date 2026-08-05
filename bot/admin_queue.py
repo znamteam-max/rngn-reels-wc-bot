@@ -1086,11 +1086,31 @@ def _repair_queue_if_needed(
                 repaired = True
                 repair_reason = "stale reservation recovered"
         else:
+            orphan_delivery_fields = any(
+                state.get(field)
+                for field in (
+                    "active_chat_id",
+                    "active_message_id",
+                    "active_reservation_token",
+                    "active_reserved_at",
+                    "claimed_by_tg_id",
+                    "claimed_at",
+                )
+            )
+            if orphan_delivery_fields:
+                repair_reason = "orphan active delivery fields cleared"
+                _clear_active_fields(
+                    conn,
+                    queue_name=queue_name,
+                    repair_reason=repair_reason,
+                )
+                repaired = True
             pending_count, _ = _count_pending(conn, state)
             if pending_count:
                 pump_needed = True
                 repaired = True
-                repair_reason = "missing active pointer recovered"
+                if not orphan_delivery_fields:
+                    repair_reason = "missing active pointer recovered"
 
         stale_cleared = _clear_stale_pending_metadata(
             conn,
@@ -1481,7 +1501,7 @@ class _AcceptanceTelegram:
 def run_isolated_acceptance(*, actions: int = 10) -> dict[str, Any]:
     if actions < 1:
         raise ValueError("actions must be positive")
-    queue_name = f"acceptance-{uuid.uuid4()}"
+    queue_name = "main"
     project_code = f"__acceptance_{uuid.uuid4().hex}__"
     actor = SimpleNamespace(tg_id=0, username="acceptance")
     tg = _AcceptanceTelegram()
@@ -1490,9 +1510,16 @@ def run_isolated_acceptance(*, actions: int = 10) -> dict[str, Any]:
     final_snapshot: dict[str, Any] = {}
     statuses = ("approved", "duplicate", "needs_revision")
     cleanup_complete = False
-    try:
-        with db.transaction() as conn:
+    with db.connect() as conn:
+        try:
             with conn.cursor() as cur:
+                cur.execute("CREATE TEMP TABLE videos (LIKE public.videos INCLUDING ALL)")
+                cur.execute(
+                    "CREATE TEMP TABLE admin_queue_state "
+                    "(LIKE public.admin_queue_state INCLUDING ALL)"
+                )
+                cur.execute("CREATE TEMP TABLE logs (LIKE public.logs INCLUDING ALL)")
+                cur.execute("SET search_path TO pg_temp, public")
                 cur.execute(
                     """
                     INSERT INTO admin_queue_state (
@@ -1502,23 +1529,25 @@ def run_isolated_acceptance(*, actions: int = 10) -> dict[str, Any]:
                     """,
                     (queue_name, project_code),
                 )
+                fixture_base = 9_000_000_000_000 + (uuid.uuid4().int % 1_000_000_000)
                 for index in range(actions + 1):
                     unique_id = uuid.uuid4().hex
+                    fixture_id = fixture_base + index
                     cur.execute(
                         """
                         INSERT INTO videos (
-                            status, project_code, project_name, publish_date,
+                            id, status, project_code, project_name, publish_date,
                             instagram_url, instagram_id, author_name, montage_name,
                             added_by_tg_id, added_by_username, created_at
                         )
                         VALUES (
-                            'pending', %s, 'Acceptance fixture', %s,
+                            %s, 'pending', %s, 'Acceptance fixture', %s,
                             %s, %s, 'Fixture author', 'Fixture montage',
                             0, 'acceptance', now() + (%s * interval '1 millisecond')
                         )
-                        RETURNING id
                         """,
                         (
+                            fixture_id,
                             project_code,
                             date.today(),
                             f"https://example.invalid/{unique_id}",
@@ -1526,60 +1555,72 @@ def run_isolated_acceptance(*, actions: int = 10) -> dict[str, Any]:
                             index,
                         ),
                     )
-                    fixture_ids.append(int(cur.fetchone()["id"]))
+                    fixture_ids.append(fixture_id)
+            conn.commit()
 
-        initial = pump_queue_live(
-            tg,
-            actor,
-            reason="isolated_acceptance_initial",
-            queue_name=queue_name,
-        )
-        if not initial.get("pointer_saved") or not initial.get("active_message_id"):
-            raise RuntimeError("acceptance queue did not save its first pointer")
-
-        current_video_id = int(initial["active_video_id"])
-        current_message_id = int(initial["active_message_id"])
-        for index in range(actions):
-            action_started = time.monotonic()
-            target_status = statuses[index % len(statuses)]
-
-            def mutate(test_conn, _locked, status=target_status, target_id=current_video_id):
-                with test_conn.cursor() as mutation_cur:
-                    mutation_cur.execute(
-                        """
-                        UPDATE videos
-                        SET status = %s,
-                            checked_at = now(),
-                            checked_by_tg_id = 0,
-                            checked_by_username = 'acceptance',
-                            updated_at = now()
-                        WHERE id = %s AND status = 'pending'
-                        RETURNING *
-                        """,
-                        (status, target_id),
-                    )
-                    return mutation_cur.fetchone()
-
-            completion = complete_active_action(
-                callback_chat_id=int(get_settings().admin_chat_id),
-                callback_message_id=current_message_id,
-                video_id=current_video_id,
-                actor=actor,
-                action=target_status,
-                mutation=mutate,
-                queue_name=queue_name,
+            reservation = reserve_next_pending_card(
+                conn,
+                reason="isolated_acceptance_initial",
             )
-            if not completion.accepted:
-                raise RuntimeError(f"acceptance action {index + 1} was rejected")
-            next_result = pump_queue_live(
-                tg,
-                actor,
-                reason=f"isolated_acceptance_after_{index + 1}",
-                queue_name=queue_name,
-            )
-            if not next_result.get("pointer_saved") or not next_result.get("active_message_id"):
-                raise RuntimeError(f"acceptance action {index + 1} did not save next pointer")
-            with db.connect() as conn:
+            conn.commit()
+            if reservation is None:
+                raise RuntimeError("acceptance queue did not reserve its first fixture")
+            delivery = deliver_reserved_card(tg, reservation, actor=actor, conn=conn)
+            conn.commit()
+            if not delivery.pointer_saved or not delivery.message_id:
+                raise RuntimeError("acceptance queue did not save its first pointer")
+
+            current_video_id = reservation.video_id
+            current_message_id = int(delivery.message_id)
+            for index in range(actions):
+                action_started = time.monotonic()
+                target_status = statuses[index % len(statuses)]
+
+                def mutate(test_conn, _locked, status=target_status, target_id=current_video_id):
+                    with test_conn.cursor() as mutation_cur:
+                        mutation_cur.execute(
+                            """
+                            UPDATE videos
+                            SET status = %s,
+                                checked_at = now(),
+                                checked_by_tg_id = 0,
+                                checked_by_username = 'acceptance',
+                                updated_at = now()
+                            WHERE id = %s AND status = 'pending'
+                            RETURNING *
+                            """,
+                            (status, target_id),
+                        )
+                        return mutation_cur.fetchone()
+
+                mutation_started = time.monotonic()
+                completion = complete_active_action(
+                    callback_chat_id=int(get_settings().admin_chat_id),
+                    callback_message_id=current_message_id,
+                    video_id=current_video_id,
+                    actor=actor,
+                    action=target_status,
+                    mutation=mutate,
+                    queue_name=queue_name,
+                    conn=conn,
+                )
+                conn.commit()
+                mutation_commit_ms = int((time.monotonic() - mutation_started) * 1000)
+                if not completion.accepted:
+                    raise RuntimeError(f"acceptance action {index + 1} was rejected")
+
+                reservation = reserve_next_pending_card(
+                    conn,
+                    reason=f"isolated_acceptance_after_{index + 1}",
+                )
+                conn.commit()
+                if reservation is None:
+                    raise RuntimeError(f"acceptance action {index + 1} did not reserve next")
+                delivery = deliver_reserved_card(tg, reservation, actor=actor, conn=conn)
+                conn.commit()
+                if not delivery.pointer_saved or not delivery.message_id:
+                    raise RuntimeError(f"acceptance action {index + 1} did not save next pointer")
+
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -1603,42 +1644,37 @@ def run_isolated_acceptance(*, actions: int = 10) -> dict[str, Any]:
                         (project_code, project_code, queue_name),
                     )
                     snapshot = cur.fetchone()
-            if (
-                not snapshot
-                or snapshot.get("status") != "pending"
-                or not snapshot.get("active_message_id")
-                or int(snapshot.get("active_video_id") or 0)
-                != int(snapshot.get("oldest_id") or 0)
-                or int(snapshot.get("stale_count") or 0) != 0
-            ):
-                raise RuntimeError(f"acceptance invariant failed after action {index + 1}")
-            latencies.append(
-                {
-                    "action": index + 1,
-                    "callback_received_ms": 0,
-                    "mutation_commit_ms": int(completion.timings_ms.get("commit_ms") or 0),
-                    "next_reservation_ms": int(next_result.get("reserve_duration_ms") or 0),
-                    "card_send_ms": int(next_result.get("send_duration_ms") or 0),
-                    "pointer_save_ms": int(next_result.get("save_duration_ms") or 0),
-                    "total_ms": int((time.monotonic() - action_started) * 1000),
-                }
-            )
-            final_snapshot = dict(snapshot)
-            current_video_id = int(snapshot["active_video_id"])
-            current_message_id = int(snapshot["active_message_id"])
-    finally:
-        if fixture_ids:
-            with db.transaction() as cleanup_conn:
-                with cleanup_conn.cursor() as cur:
-                    cur.execute(
-                        "DELETE FROM admin_queue_state WHERE queue_name = %s",
-                        (queue_name,),
-                    )
-                    cur.execute(
-                        "DELETE FROM logs WHERE entity_type = 'admin_queue' AND entity_id = ANY(%s)",
-                        (fixture_ids,),
-                    )
-                    cur.execute("DELETE FROM videos WHERE id = ANY(%s)", (fixture_ids,))
+                if (
+                    not snapshot
+                    or snapshot.get("status") != "pending"
+                    or not snapshot.get("active_message_id")
+                    or int(snapshot.get("active_video_id") or 0)
+                    != int(snapshot.get("oldest_id") or 0)
+                    or int(snapshot.get("stale_count") or 0) != 0
+                ):
+                    raise RuntimeError(f"acceptance invariant failed after action {index + 1}")
+                latencies.append(
+                    {
+                        "action": index + 1,
+                        "callback_received_ms": 0,
+                        "mutation_commit_ms": mutation_commit_ms,
+                        "next_reservation_ms": reservation.reserve_duration_ms,
+                        "card_send_ms": delivery.send_duration_ms,
+                        "pointer_save_ms": delivery.save_duration_ms,
+                        "total_ms": int((time.monotonic() - action_started) * 1000),
+                    }
+                )
+                final_snapshot = dict(snapshot)
+                current_video_id = int(snapshot["active_video_id"])
+                current_message_id = int(snapshot["active_message_id"])
+        finally:
+            conn.rollback()
+            with conn.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS pg_temp.logs")
+                cur.execute("DROP TABLE IF EXISTS pg_temp.admin_queue_state")
+                cur.execute("DROP TABLE IF EXISTS pg_temp.videos")
+                cur.execute("RESET search_path")
+            conn.commit()
             cleanup_complete = True
 
     duplicate_cards = len(tg.sent_video_ids) - len(set(tg.sent_video_ids))
@@ -1647,6 +1683,7 @@ def run_isolated_acceptance(*, actions: int = 10) -> dict[str, Any]:
     return {
         "ok": True,
         "isolated": True,
+        "isolation": "postgres_temp_tables",
         "committed_transactions": True,
         "cleaned_up": cleanup_complete,
         "actions": actions,
