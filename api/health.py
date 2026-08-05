@@ -7,7 +7,6 @@ from http.server import BaseHTTPRequestHandler
 
 from bot import db, jobs
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
-from bot.runtime_migrations import ensure_runtime_migrations
 from bot.version import VERSION
 
 
@@ -228,7 +227,6 @@ class handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self) -> None:
-        ensure_runtime_migrations(force=True)
         job_debug = _jobs_debug()
         payload = {
             "ok": True,
