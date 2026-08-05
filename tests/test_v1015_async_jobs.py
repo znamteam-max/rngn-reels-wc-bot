@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -9,7 +11,12 @@ from unittest.mock import MagicMock, patch
 
 from bot import jobs
 from bot.config import get_settings
-from bot.handlers import Actor, _safe_refresh_admin_dashboard, bulk_return_missing_dates
+from bot.handlers import (
+    Actor,
+    _safe_refresh_admin_dashboard,
+    bulk_return_missing_dates,
+    sync_video_after_approval,
+)
 from bot.job_worker import BULK_CHUNK_SIZE, claim_jobs, process_jobs
 from bot.projects import PROJECT_SHEET_TITLES, project_sheet_title
 from bot.sheets import SHEET_COLUMNS, SHEET_NAME, batch_upsert_videos
@@ -82,6 +89,65 @@ class AsyncJobsV1015Tests(unittest.TestCase):
                 },
             ]
             self.assertEqual(jobs.claim_telegram_update(update), "reclaimed")
+
+    def test_one_hundred_concurrent_updates_and_duplicates_are_idempotent(self) -> None:
+        state: dict[int, dict[str, object]] = {}
+        lock = threading.Lock()
+
+        class Cursor:
+            def __init__(self) -> None:
+                self.row = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, sql, params):
+                update_id = int(params[-1] if sql.lstrip().startswith("UPDATE") else params[0])
+                if "INSERT INTO telegram_updates" in sql:
+                    if update_id in state:
+                        self.row = None
+                    else:
+                        state[update_id] = {
+                            "status": "processing",
+                            "processing_started_at": datetime.now(timezone.utc),
+                        }
+                        self.row = {"update_id": update_id}
+                elif "SELECT status" in sql:
+                    self.row = state[update_id]
+                elif "UPDATE telegram_updates" in sql:
+                    state[update_id]["processing_started_at"] = datetime.now(timezone.utc)
+                    self.row = None
+
+            def fetchone(self):
+                return self.row
+
+        class Connection:
+            def cursor(self):
+                return Cursor()
+
+        @contextmanager
+        def transaction():
+            with lock:
+                yield Connection()
+
+        def claim(update_id: int) -> str:
+            return jobs.claim_telegram_update(
+                {
+                    "update_id": update_id,
+                    "message": {"from": {"id": 7}, "chat": {"id": 8}},
+                }
+            )
+
+        with patch("bot.jobs.db.transaction", transaction):
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                unique = list(executor.map(claim, range(1, 101)))
+                duplicates = list(executor.map(lambda _index: claim(500), range(100)))
+        self.assertEqual(unique, ["claimed"] * 100)
+        self.assertEqual(duplicates.count("claimed"), 1)
+        self.assertEqual(duplicates.count("duplicate_processing"), 99)
 
     def test_dashboard_burst_uses_one_dedupe_key(self) -> None:
         conn = MagicMock()
@@ -191,6 +257,18 @@ class AsyncJobsV1015Tests(unittest.TestCase):
                 client.send_message(1, "hello")
         self.assertEqual(caught.exception.status_code, 429)
         self.assertEqual(caught.exception.retry_after, 37)
+
+    def test_sheets_outage_does_not_escape_approval_side_effect(self) -> None:
+        actor = Actor(tg_id=1, chat_id=2, username="admin")
+        with (
+            patch("bot.handlers.db.execute") as update_status,
+            patch("bot.handlers.jobs.enqueue_sheet_sync", side_effect=RuntimeError("Sheets unavailable")),
+            patch("bot.handlers.record_system_log") as log,
+        ):
+            result = sync_video_after_approval({"id": 42, "updated_at": datetime.now(timezone.utc)}, actor)
+        self.assertFalse(result)
+        self.assertIn("sheet_sync_status = 'queued'", update_status.call_args.args[0])
+        self.assertEqual(log.call_args.args[0], "sheets_sync_queue_failed")
 
     def test_bulk_is_blocked_when_background_jobs_are_disabled(self) -> None:
         tg = FakeTelegram()
