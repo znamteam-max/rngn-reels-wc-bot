@@ -215,6 +215,7 @@ Admin commands:
 /resend_pending
 /return_missing_dates
 /jobs_status
+/worker_status
 /sync_youtube_metrics
 /metrics_youtube_today
 /metrics_youtube_all
@@ -230,6 +231,7 @@ Superadmin commands:
 /deactivate_person id
 /reset_admin_queue
 /retry_failed_jobs
+/run_jobs_now
 ```
 
 Roles: `author`, `montage`, `voice`, `admin`, `superadmin`.
@@ -263,6 +265,10 @@ After approval:
 If Google Sheets is temporarily unavailable, the video remains `approved`. `sheet_sync_status` moves through `queued`, `syncing`, `synced`, or `failed`, and retries happen in the worker. `/sync_sheets` queues a full approved-video resync without waiting for Google APIs.
 
 Dashboard refreshes, project statistics, non-critical Telegram notifications, daily reports, YouTube metrics, and `/return_missing_dates` are durable background jobs. Dashboard and queue-pump jobs coalesce by dedupe key. Bulk missing-date returns process at most 10 videos per chunk and expose progress through `/jobs_status`.
+
+The production worker is called by `.github/workflows/process-background-jobs.yml` every five minutes and through `workflow_dispatch`. GitHub Actions obtains a short-lived OIDC token with audience `rngn-reels-wc-worker`; production verifies the official GitHub issuer and JWKS plus the exact repository, owner, `main` ref, event, and audience. `CRON_SECRET` remains supported for protected manual or Vercel cron calls, but is not copied to GitHub Secrets. Each workflow drains up to 12 bounded worker batches and records aggregate counts without logging JWTs or job payloads.
+
+FIFO pumping and dashboard refresh use a short live attempt after queue-changing actions. A valid active card is left untouched, dashboard events within three seconds debounce to one durable repair job, and a PostgreSQL advisory lock prevents concurrent Telegram edits. Network or lock failures never roll back the user's action; they enqueue coalesced `admin_queue_pump` or `dashboard_refresh` repairs. `/worker_status` reports heartbeat and queue counts. `/run_jobs_now` deliberately provides the GitHub Actions manual-run path instead of storing a GitHub PAT in Vercel.
 
 Project reporting also maintains `Project Stats` and `People × Projects`. Project-sheet synchronization removes a video ID from its previous project sheet before upserting it into the current one.
 

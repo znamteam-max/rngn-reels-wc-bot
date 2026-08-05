@@ -198,8 +198,8 @@ class MissingDateReturnTests(unittest.TestCase):
             patch("bot.handlers.get_video_by_id", return_value=video),
             patch("bot.handlers.db.clear_session"),
             patch("bot.handlers._archive_queue_message") as archive,
-            patch("bot.handlers._safe_refresh_admin_dashboard"),
-            patch("bot.handlers.pump_admin_queue"),
+            patch("bot.handlers.refresh_dashboard_live_or_enqueue"),
+            patch("bot.handlers.pump_queue_live_or_enqueue"),
         ):
             restored = restore_missing_date(tg, actor, 42, date(2026, 8, 3))
 

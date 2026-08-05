@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import hmac
 import json
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from bot.config import get_settings
+from bot.github_oidc import GitHubOIDCError, validate_github_oidc_token
 from bot.job_worker import process_jobs
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
 
 
 class handler(BaseHTTPRequestHandler):
@@ -22,23 +26,46 @@ class handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def do_GET(self) -> None:
+    def _authenticate(self) -> str | None:
         settings = get_settings()
-        if not settings.cron_secret:
-            self._send_json(500, {"ok": False, "error": "CRON_SECRET not configured"})
-            return
-        if self.headers.get("Authorization") != f"Bearer {settings.cron_secret}":
+        authorization = self.headers.get("Authorization") or ""
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            return None
+        if settings.cron_secret and hmac.compare_digest(token, settings.cron_secret):
+            user_agent = (self.headers.get("User-Agent") or "").lower()
+            return "vercel_cron" if "vercel-cron" in user_agent else "manual"
+        if token.count(".") != 2:
+            return None
+        try:
+            validate_github_oidc_token(token)
+        except GitHubOIDCError:
+            return None
+        return "github_actions"
+
+    def _run(self) -> None:
+        settings = get_settings()
+        source = self._authenticate()
+        if not source:
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
         if not settings.background_jobs_enabled:
             self._send_json(503, {"ok": False, "error": "background jobs disabled"})
             return
         try:
-            result = process_jobs()
+            result = process_jobs(source=source)
         except Exception as exc:
-            self._send_json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]})
+            self._send_json(
+                500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+            )
             return
         self._send_json(200, result)
+
+    def do_GET(self) -> None:
+        self._run()
+
+    def do_POST(self) -> None:
+        self._run()
 
     def do_HEAD(self) -> None:
         self.do_GET()

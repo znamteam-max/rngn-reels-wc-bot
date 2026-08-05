@@ -70,8 +70,8 @@ def pool_diagnostics() -> dict[str, Any]:
 
 
 @contextmanager
-def connect() -> Iterator[psycopg.Connection]:
-    with _get_pool().connection() as conn:
+def connect(*, timeout: float | None = None) -> Iterator[psycopg.Connection]:
+    with _get_pool().connection(timeout=timeout) as conn:
         yield conn
 
 

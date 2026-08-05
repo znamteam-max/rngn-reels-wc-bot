@@ -37,7 +37,7 @@ class handler(BaseHTTPRequestHandler):
                 "youtube_metrics",
                 {},
                 dedupe_key=f"youtube-metrics:{date.today().isoformat()}",
-                priority=75,
+                priority=120,
             )
         except Exception as exc:
             self._send_json(500, {"ok": False, "error": str(exc)[:300]})

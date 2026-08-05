@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 
-from bot import db
+from bot import db, jobs
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
 from bot.version import VERSION
 
@@ -227,6 +227,7 @@ class handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self) -> None:
+        job_debug = _jobs_debug()
         payload = {
             "ok": True,
             "service": "rngn-reels-wc-bot",
@@ -237,7 +238,8 @@ class handler(BaseHTTPRequestHandler):
             "optional_missing_env": optional_missing_env_names(),
             "schema_version": db.current_schema_version(),
             "database": db.pool_diagnostics(),
-            "jobs": _jobs_debug(),
+            "jobs": job_debug,
+            "worker": jobs.worker_health_snapshot(job_debug),
             "sheets": _sheets_debug(),
             "telegram_updates": _telegram_updates_debug(),
             "bulk_operations": _bulk_operations_debug(),

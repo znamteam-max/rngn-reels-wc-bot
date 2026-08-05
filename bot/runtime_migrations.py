@@ -31,7 +31,7 @@ def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
             versions_table_before = bool(cur.fetchone()[0])
             version_already_applied = False
             if versions_table_before:
-                cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.15')")
+                cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.16')")
                 version_already_applied = bool(cur.fetchone()[0])
             cur.execute(SCHEMA_SQL)
         seed_action, person_id = upsert_person(
@@ -114,9 +114,11 @@ def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
             background_jobs_table_exists = bool(cur.fetchone()[0])
             cur.execute("SELECT to_regclass('bulk_operations') IS NOT NULL")
             bulk_operations_table_exists = bool(cur.fetchone()[0])
+            cur.execute("SELECT to_regclass('worker_heartbeats') IS NOT NULL")
+            worker_heartbeats_table_exists = bool(cur.fetchone()[0])
             cur.execute("SELECT to_regclass('schema_versions') IS NOT NULL")
             schema_versions_table_exists = bool(cur.fetchone()[0])
-            cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.15')")
+            cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.16')")
             schema_version_applied = bool(cur.fetchone()[0])
             cur.execute(
                 """
@@ -177,8 +179,9 @@ def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
             "telegram_updates_table": telegram_updates_table_exists,
             "background_jobs_table": background_jobs_table_exists,
             "bulk_operations_table": bulk_operations_table_exists,
+            "worker_heartbeats_table": worker_heartbeats_table_exists,
             "schema_versions_table": schema_versions_table_exists,
-            "schema_version_1_0_15": schema_version_applied,
+            "schema_version_1_0_16": schema_version_applied,
             "sheet_sync_columns": sheet_sync_columns,
         },
         "seed": {

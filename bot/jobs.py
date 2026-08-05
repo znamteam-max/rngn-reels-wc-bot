@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import psycopg
 from psycopg.types.json import Jsonb
 
 from bot import db
@@ -131,7 +132,7 @@ def enqueue_sheet_sync(video_id: int, *, version: str | None = None, conn=None) 
         "sheets_sync_video",
         {"video_id": int(video_id), "version": version or "current"},
         dedupe_key=f"sheets:video:{int(video_id)}",
-        priority=40,
+        priority=60,
         conn=conn,
     )
 
@@ -144,6 +145,7 @@ def enqueue_telegram_notification(
     reply_markup: dict[str, Any] | None = None,
     operation_id: int | None = None,
     available_at: datetime | None = None,
+    priority: int = 80,
     conn=None,
 ) -> int | None:
     payload: dict[str, Any] = {
@@ -159,7 +161,7 @@ def enqueue_telegram_notification(
         "telegram_notify",
         payload,
         dedupe_key=f"telegram:{event_key}",
-        priority=60,
+        priority=priority,
         available_at=available_at,
         conn=conn,
     )
@@ -304,6 +306,99 @@ def jobs_status_snapshot() -> dict[str, Any]:
         "sheets_failed": int(sheets.get("failed") or 0),
         "bulk": bulk,
     }
+
+
+def worker_health_snapshot(job_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+    counts = job_snapshot or jobs_status_snapshot()
+    try:
+        row = db.fetch_one(
+            """
+            SELECT
+                last_started_at,
+                last_finished_at,
+                last_success_at,
+                last_error_at,
+                last_error,
+                last_claimed,
+                last_done,
+                last_remaining,
+                source,
+                invocation_id
+            FROM worker_heartbeats
+            WHERE worker_name = 'background_jobs'
+            """
+        ) or {}
+    except psycopg.Error:
+        row = {}
+
+    last_success_at = row.get("last_success_at")
+    seconds_since_last_success: int | None = None
+    if last_success_at:
+        current = datetime.now(timezone.utc)
+        if last_success_at.tzinfo is None:
+            last_success_at = last_success_at.replace(tzinfo=timezone.utc)
+        seconds_since_last_success = max(0, int((current - last_success_at).total_seconds()))
+    queued = int(counts.get("queued") or 0)
+    recent = seconds_since_last_success is not None and seconds_since_last_success <= 600
+    healthy = bool(recent or queued == 0)
+    snapshot = {
+        "last_started_at": row["last_started_at"].isoformat() if row.get("last_started_at") else None,
+        "last_finished_at": row["last_finished_at"].isoformat() if row.get("last_finished_at") else None,
+        "last_success_at": last_success_at.isoformat() if last_success_at else None,
+        "last_error_at": row["last_error_at"].isoformat() if row.get("last_error_at") else None,
+        "last_error": row.get("last_error"),
+        "seconds_since_last_success": seconds_since_last_success,
+        "last_claimed": int(row.get("last_claimed") or 0),
+        "last_done": int(row.get("last_done") or 0),
+        "last_remaining": int(row.get("last_remaining") or 0),
+        "source": row.get("source"),
+        "invocation_id": row.get("invocation_id"),
+        "healthy": healthy,
+    }
+    if not healthy:
+        snapshot["warning"] = "queued jobs are not being processed"
+    return snapshot
+
+
+def format_worker_status(worker: dict[str, Any], job_snapshot: dict[str, Any]) -> str:
+    source_labels = {
+        "github_actions": "GitHub Actions",
+        "vercel_cron": "Vercel Cron",
+        "manual": "ручной запуск",
+    }
+    seconds = worker.get("seconds_since_last_success")
+    if seconds is None:
+        last_run = "нет успешных запусков"
+    elif int(seconds) < 60:
+        last_run = f"{int(seconds)} сек. назад"
+    else:
+        last_run = f"{max(1, int(seconds) // 60)} мин. назад"
+    if worker.get("healthy"):
+        state = "работает" if seconds is not None and int(seconds) <= 600 else "очередь пуста"
+        lines = [
+            "Worker",
+            "",
+            f"Состояние: {state}",
+            f"Последний успешный запуск: {last_run}",
+            f"Источник: {source_labels.get(worker.get('source'), worker.get('source') or 'неизвестен')}",
+        ]
+    else:
+        age_minutes = max(1, int(seconds) // 60) if seconds is not None else 0
+        age_text = f" {age_minutes} мин." if age_minutes else "."
+        lines = [
+            f"Внимание: Worker не запускался{age_text}",
+            f"В очереди: {int(job_snapshot.get('queued') or 0)} заданий.",
+            "",
+        ]
+    lines.extend(
+        [
+            f"Queued: {int(job_snapshot.get('queued') or 0)}",
+            f"Processing: {int(job_snapshot.get('processing') or 0)}",
+            f"Failed: {int(job_snapshot.get('failed') or 0)}",
+            f"Dead: {int(job_snapshot.get('dead') or 0)}",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def format_jobs_status(snapshot: dict[str, Any]) -> str:

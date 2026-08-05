@@ -129,15 +129,15 @@ class DashboardV1014Tests(unittest.TestCase):
             patch("bot.handlers.db.log_event"),
             patch("bot.handlers._archive_queue_message") as archive,
             patch(
-                "bot.handlers.pump_admin_queue",
+                "bot.handlers.pump_queue_live_or_enqueue",
                 return_value={"pending_count": 8, "active_video_id": 41, "active_message_id": 501},
             ) as pump,
-            patch("bot.handlers._safe_refresh_admin_dashboard"),
+            patch("bot.handlers.refresh_dashboard_live_or_enqueue"),
         ):
             result = change_admin_queue_filter(tg, actor, "project", "bolshe")
         clear.assert_called_once_with(conn)
         archive.assert_called_once()
-        pump.assert_called_once_with(tg, actor)
+        pump.assert_called_once_with(tg, actor, reason="queue_filter_changed")
         self.assertEqual(result["active_video_id"], 41)
 
     def test_stale_dashboard_callback_is_rejected(self) -> None:
@@ -166,15 +166,16 @@ class DashboardV1014Tests(unittest.TestCase):
         }
         with (
             patch("bot.handlers.require_admin", return_value=True),
-            patch("bot.handlers._safe_refresh_admin_dashboard") as refresh,
-            patch("bot.handlers.pump_admin_queue", return_value=result) as pump,
+            patch("bot.handlers.refresh_dashboard_live_or_enqueue") as refresh,
+            patch("bot.handlers.pump_queue_live_or_enqueue", return_value=result) as pump,
             patch("bot.handlers.record_system_log"),
         ):
             show_admin(tg, actor)
             resend_pending_command(tg, actor)
         self.assertEqual(pump.call_count, 2)
-        self.assertTrue(all(call.kwargs == {"force_repost": True} for call in pump.call_args_list))
-        self.assertEqual(refresh.call_count, 4)
+        self.assertTrue(all(call.kwargs.get("force_repost") is True for call in pump.call_args_list))
+        self.assertEqual([call.kwargs["reason"] for call in pump.call_args_list], ["admin", "resend_pending"])
+        self.assertEqual(refresh.call_count, 2)
 
     def test_queue_status_includes_filter_diagnostics(self) -> None:
         actor = Actor(tg_id=1, chat_id=-1001)
@@ -223,15 +224,15 @@ class DashboardV1014Tests(unittest.TestCase):
             patch("bot.handlers._clear_queue_state") as clear,
             patch("bot.handlers.db.log_event"),
             patch(
-                "bot.handlers.pump_admin_queue",
+                "bot.handlers.pump_queue_live_or_enqueue",
                 return_value={"pending_count": 0, "active_video_id": None, "active_message_id": None},
             ) as pump,
             patch("bot.handlers.record_system_log"),
-            patch("bot.handlers._safe_refresh_admin_dashboard"),
+            patch("bot.handlers.refresh_dashboard_live_or_enqueue"),
         ):
             reset_admin_queue_command(tg, actor)
         clear.assert_called_once_with(conn)
-        pump.assert_called_once_with(tg, actor)
+        pump.assert_called_once_with(tg, actor, reason="reset_admin_queue", force_repost=True)
         sql_text = "\n".join(str(call.args[0]) for call in conn.cursor.return_value.__enter__.return_value.execute.call_args_list)
         self.assertNotIn("SET status", sql_text)
 

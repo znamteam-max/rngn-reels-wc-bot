@@ -213,6 +213,21 @@ CREATE TABLE IF NOT EXISTS bulk_operations (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS worker_heartbeats (
+    worker_name text PRIMARY KEY,
+    last_started_at timestamptz,
+    last_finished_at timestamptz,
+    last_success_at timestamptz,
+    last_error_at timestamptz,
+    last_error text,
+    last_claimed integer NOT NULL DEFAULT 0,
+    last_done integer NOT NULL DEFAULT 0,
+    last_remaining integer NOT NULL DEFAULT 0,
+    source text,
+    invocation_id text,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS schema_versions (
     version text PRIMARY KEY,
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -357,6 +372,10 @@ EXECUTE FUNCTION set_updated_at();
 
 INSERT INTO schema_versions (version)
 VALUES ('1.0.15')
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO schema_versions (version)
+VALUES ('1.0.16')
 ON CONFLICT (version) DO NOTHING;
 """
 

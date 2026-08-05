@@ -28,7 +28,7 @@ from bot.messages import (
     user_label,
 )
 from bot.projects import PROJECTS, normalize_custom_project_name
-from bot.telegram import TelegramAPIError, TelegramClient, inline_keyboard
+from bot.telegram import LIVE_TELEGRAM_TIMEOUT, TelegramAPIError, TelegramClient, inline_keyboard
 
 
 ROLE_BY_SHORT = {"a": "author", "m": "montage", "v": "voice"}
@@ -345,6 +345,10 @@ def handle_message(message: dict[str, Any]) -> None:
             return_missing_dates_command(tg, actor)
         elif command == "/jobs_status":
             jobs_status_command(tg, actor)
+        elif command == "/worker_status":
+            worker_status_command(tg, actor)
+        elif command == "/run_jobs_now":
+            run_jobs_now_command(tg, actor)
         elif command == "/retry_failed_jobs":
             retry_failed_jobs_command(tg, actor)
         elif command == "/add_person":
@@ -570,6 +574,9 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
         "/metrics_youtube_all — YouTube всего",
         "/metrics_video id — метрики одного видео",
     ]
+    lines.append("/worker_status — состояние worker")
+    if is_superadmin(actor.tg_id):
+        lines.append("/run_jobs_now — инструкция ручного запуска worker")
     if is_superadmin(actor.tg_id):
         lines.extend(
             [
@@ -2129,33 +2136,12 @@ def notify_admin_queue(
     actor: Actor | None = None,
 ) -> bool:
     if not jobs.background_jobs_enabled():
-        _safe_refresh_admin_dashboard(tg, actor, immediate=True)
-        try:
-            pump_admin_queue(tg, actor)
-            return True
-        except Exception:
-            return False
-    try:
-        with db.transaction() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT active_video_id FROM admin_queue_state WHERE queue_name = %s FOR UPDATE",
-                    (ADMIN_QUEUE_NAME,),
-                )
-                state = cur.fetchone() or {}
-            jobs.enqueue_dashboard_refresh(conn=conn)
-            if not state.get("active_video_id"):
-                jobs.enqueue_admin_queue_pump(conn=conn)
+        pump_queue_live_or_enqueue(tg, actor, reason="submission")
+        refresh_dashboard_live_or_enqueue(tg, actor=actor, reason="submission", force=True)
         return True
-    except Exception as exc:
-        record_system_log(
-            "admin_queue_notify_failed",
-            "video",
-            int(video["id"]),
-            telegram_failure_payload(exc, get_settings().admin_chat_id, "pump_after_submission"),
-            actor,
-        )
-        return False
+    pump_queue_live_or_enqueue(tg, actor, reason="submission")
+    refresh_dashboard_live_or_enqueue(tg, actor=actor, reason="submission")
+    return True
 
 
 def send_admin_review_card(
@@ -2170,8 +2156,10 @@ def send_admin_review_card(
 def resend_pending_command(tg: TelegramClient, actor: Actor) -> None:
     if not require_admin(tg, actor):
         return
-    _safe_refresh_admin_dashboard(tg, actor, immediate=True)
-    result = pump_admin_queue(tg, actor, force_repost=True)
+    result = pump_queue_live_or_enqueue(tg, actor, reason="resend_pending", force_repost=True) or {
+        "pending_count": 0,
+        "active_video_id": None,
+    }
     record_system_log(
         "admin_queue_pumped",
         "admin_queue",
@@ -2179,7 +2167,7 @@ def resend_pending_command(tg: TelegramClient, actor: Actor) -> None:
         {"source": "resend_pending", **result},
         actor,
     )
-    _safe_refresh_admin_dashboard(tg, actor)
+    refresh_dashboard_live_or_enqueue(tg, actor=actor, reason="resend_pending", force=True)
     if result["pending_count"] == 0:
         tg.send_message(actor.chat_id, "Очередь пуста. Pending-заявок: 0.")
 
@@ -2205,6 +2193,7 @@ def queue_status_command(tg: TelegramClient, actor: Actor) -> None:
             ]
         ),
     )
+    refresh_dashboard_live_or_enqueue(tg, actor=actor, reason="queue_status", force=True)
 
 
 def _dashboard_callback_is_current(actor: Actor, message_id: int | None) -> bool:
@@ -2336,8 +2325,11 @@ def change_admin_queue_filter(
             format_admin_queue_card(kept[2], kept[3], kept[4], kept[5]),
             admin_queue_keyboard(int(kept[2]["id"])),
         )
-    result = pump_admin_queue(tg, actor)
-    _safe_refresh_admin_dashboard(tg, actor)
+    result = pump_queue_live_or_enqueue(tg, actor, reason="queue_filter_changed") or {
+        "pending_count": 0,
+        "active_video_id": None,
+    }
+    refresh_dashboard_live_or_enqueue(tg, actor=actor, reason="queue_filter_changed")
     return result
 
 
@@ -2768,63 +2760,63 @@ def _dashboard_message_missing(exc: TelegramAPIError) -> bool:
     )
 
 
-def refresh_admin_dashboard(
+def _refresh_admin_dashboard_with_conn(
     tg: TelegramClient,
-    actor: Actor | None = None,
+    conn,
+    actor: Actor | None,
 ) -> dict[str, Any]:
     created = False
     chat_id = int(get_settings().admin_chat_id)
     message_id: int | None = None
-    with db.transaction() as conn:
-        state = _queue_state_for_update(conn)
-        snapshot = _admin_dashboard_snapshot(conn, state)
-        text = format_admin_dashboard(snapshot)
-        stored_message_id = int(state["dashboard_message_id"]) if state.get("dashboard_message_id") else None
-        stored_chat_id = int(state["dashboard_chat_id"]) if state.get("dashboard_chat_id") else None
-        if stored_message_id and stored_chat_id == chat_id:
-            try:
-                _edit_message_text_idempotent(
-                    tg,
-                    chat_id,
-                    stored_message_id,
-                    text,
-                    admin_dashboard_keyboard(),
-                )
-                message_id = stored_message_id
-            except TelegramAPIError as exc:
-                if not _dashboard_message_missing(exc):
-                    raise
-        if message_id is None:
-            response = tg.send_message(chat_id, text, admin_dashboard_keyboard())
-            message_id = _message_id(response)
-            if not message_id:
-                raise RuntimeError("Telegram did not return a message_id for the admin dashboard")
-            created = True
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE admin_queue_state
-                SET dashboard_chat_id = %s,
-                    dashboard_message_id = %s,
-                    dashboard_updated_at = now(),
-                    updated_at = now()
-                WHERE queue_name = %s
-                """,
-                (chat_id, message_id, ADMIN_QUEUE_NAME),
+    state = _queue_state_for_update(conn)
+    snapshot = _admin_dashboard_snapshot(conn, state)
+    text = format_admin_dashboard(snapshot)
+    stored_message_id = int(state["dashboard_message_id"]) if state.get("dashboard_message_id") else None
+    stored_chat_id = int(state["dashboard_chat_id"]) if state.get("dashboard_chat_id") else None
+    if stored_message_id and stored_chat_id == chat_id:
+        try:
+            _edit_message_text_idempotent(
+                tg,
+                chat_id,
+                stored_message_id,
+                text,
+                admin_dashboard_keyboard(),
             )
-        db.log_event(
-            conn,
-            entity_type="admin_dashboard",
-            entity_id=message_id,
-            action="admin_dashboard_refreshed",
-            actor_tg_id=actor.tg_id if actor else None,
-            actor_username=actor.username if actor else None,
-            after_data={
-                "pending_count": snapshot["pending_count"],
-                "active_video_id": snapshot.get("active_video_id"),
-                "created": created,
-            },
+            message_id = stored_message_id
+        except TelegramAPIError as exc:
+            if not _dashboard_message_missing(exc):
+                raise
+    if message_id is None:
+        response = tg.send_message(chat_id, text, admin_dashboard_keyboard())
+        message_id = _message_id(response)
+        if not message_id:
+            raise RuntimeError("Telegram did not return a message_id for the admin dashboard")
+        created = True
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE admin_queue_state
+            SET dashboard_chat_id = %s,
+                dashboard_message_id = %s,
+                dashboard_updated_at = now(),
+                updated_at = now()
+            WHERE queue_name = %s
+            """,
+            (chat_id, message_id, ADMIN_QUEUE_NAME),
         )
+    db.log_event(
+        conn,
+        entity_type="admin_dashboard",
+        entity_id=message_id,
+        action="admin_dashboard_refreshed",
+        actor_tg_id=actor.tg_id if actor else None,
+        actor_username=actor.username if actor else None,
+        after_data={
+            "pending_count": snapshot["pending_count"],
+            "active_video_id": snapshot.get("active_video_id"),
+            "created": created,
+        },
+    )
     pin_ok: bool | None = None
     if created:
         try:
@@ -2847,35 +2839,129 @@ def refresh_admin_dashboard(
     }
 
 
+def refresh_admin_dashboard(
+    tg: TelegramClient,
+    actor: Actor | None = None,
+) -> dict[str, Any]:
+    with db.transaction() as conn:
+        return _refresh_admin_dashboard_with_conn(tg, conn, actor)
+
+
+def _enqueue_dashboard_repair(actor: Actor | None, reason: str) -> int | None:
+    try:
+        return jobs.enqueue_dashboard_refresh()
+    except Exception as exc:
+        try:
+            record_system_log(
+                "admin_dashboard_queue_failed",
+                "admin_dashboard",
+                None,
+                {"error": _safe_error(exc), "reason": reason},
+                actor,
+            )
+        except Exception:
+            pass
+        return None
+
+
+def refresh_dashboard_live_or_enqueue(
+    tg: TelegramClient,
+    *,
+    reason: str,
+    actor: Actor | None = None,
+    force: bool = False,
+) -> dict[str, Any] | None:
+    lock_acquired = False
+    conn = None
+    old_timeout = getattr(tg, "timeout", None)
+    try:
+        with db.connect(timeout=2) as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT dashboard_updated_at
+                        FROM admin_queue_state
+                        WHERE queue_name = %s
+                        """,
+                        (ADMIN_QUEUE_NAME,),
+                    )
+                    state = cur.fetchone() or {}
+                updated_at = state.get("dashboard_updated_at")
+                if not force and updated_at:
+                    if updated_at.tzinfo is None:
+                        updated_at = updated_at.replace(tzinfo=timezone.utc)
+                    if datetime.now(timezone.utc) - updated_at < timedelta(seconds=3):
+                        conn.rollback()
+                        job_id = _enqueue_dashboard_repair(actor, reason)
+                        return {"queued": True, "job_id": job_id, "debounced": True}
+
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT pg_try_advisory_lock(hashtext(%s)) AS locked",
+                        ("rngn:admin-dashboard:main",),
+                    )
+                    lock_row = cur.fetchone() or {}
+                    lock_acquired = bool(lock_row.get("locked"))
+                if not lock_acquired:
+                    conn.rollback()
+                    job_id = _enqueue_dashboard_repair(actor, reason)
+                    return {"queued": True, "job_id": job_id, "lock_busy": True}
+
+                if old_timeout is not None:
+                    tg.timeout = LIVE_TELEGRAM_TIMEOUT
+                result = _refresh_admin_dashboard_with_conn(tg, conn, actor)
+                conn.commit()
+                return result
+            finally:
+                if lock_acquired:
+                    try:
+                        conn.rollback()
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT pg_advisory_unlock(hashtext(%s))",
+                                ("rngn:admin-dashboard:main",),
+                            )
+                        conn.commit()
+                    except Exception:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+    except Exception as exc:
+        job_id = _enqueue_dashboard_repair(actor, reason)
+        try:
+            record_system_log(
+                "admin_dashboard_refresh_failed",
+                "admin_dashboard",
+                None,
+                {
+                    **telegram_failure_payload(exc, get_settings().admin_chat_id, "refresh_dashboard_live"),
+                    "reason": reason,
+                    "repair_job_id": job_id,
+                },
+                actor,
+            )
+        except Exception:
+            pass
+        return {"queued": True, "job_id": job_id, "failed": True}
+    finally:
+        if old_timeout is not None:
+            tg.timeout = old_timeout
+
+
 def _safe_refresh_admin_dashboard(
     tg: TelegramClient,
     actor: Actor | None = None,
     *,
     immediate: bool = False,
 ) -> dict[str, Any] | None:
-    if jobs.background_jobs_enabled() and not immediate:
-        try:
-            job_id = jobs.enqueue_dashboard_refresh()
-            return {"queued": True, "job_id": job_id}
-        except Exception as exc:
-            record_system_log(
-                "admin_dashboard_queue_failed",
-                "admin_dashboard",
-                None,
-                {"error": _safe_error(exc)},
-                actor,
-            )
-    try:
-        return refresh_admin_dashboard(tg, actor)
-    except Exception as exc:
-        record_system_log(
-            "admin_dashboard_refresh_failed",
-            "admin_dashboard",
-            None,
-            telegram_failure_payload(exc, get_settings().admin_chat_id, "refresh_dashboard"),
-            actor,
-        )
-        return None
+    return refresh_dashboard_live_or_enqueue(
+        tg,
+        actor=actor,
+        reason="safe_refresh",
+        force=immediate,
+    )
 
 
 def _oldest_pending_video(conn, state: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -3150,6 +3236,44 @@ def pump_admin_queue(
         }
 
 
+def pump_queue_live_or_enqueue(
+    tg: TelegramClient,
+    actor: Actor | None = None,
+    *,
+    reason: str,
+    force_repost: bool = False,
+) -> dict[str, Any] | None:
+    old_timeout = getattr(tg, "timeout", None)
+    try:
+        if old_timeout is not None:
+            tg.timeout = LIVE_TELEGRAM_TIMEOUT
+        return pump_admin_queue(tg, actor, force_repost=force_repost)
+    except Exception as exc:
+        job_id: int | None = None
+        try:
+            job_id = jobs.enqueue_admin_queue_pump(force_repost=force_repost)
+        except Exception:
+            pass
+        try:
+            record_system_log(
+                "admin_queue_pump_failed",
+                "admin_queue",
+                None,
+                {
+                    **telegram_failure_payload(exc, get_settings().admin_chat_id, "pump_queue_live"),
+                    "reason": reason,
+                    "repair_job_id": job_id,
+                },
+                actor,
+            )
+        except Exception:
+            pass
+        return None
+    finally:
+        if old_timeout is not None:
+            tg.timeout = old_timeout
+
+
 def _queue_stale_text(current_video_id: int | None) -> str:
     if current_video_id:
         return f"Эта карточка устарела. Текущая заявка #{current_video_id}."
@@ -3365,8 +3489,8 @@ def _set_active_queue_project(
             f"📂 Проект заявки #{video_id} изменён; она больше не входит в выбранный фильтр.",
             actor,
         )
-        pump_admin_queue(tg, actor)
-    _safe_refresh_admin_dashboard(tg, actor)
+        pump_queue_live_or_enqueue(tg, actor, reason="project_changed")
+    refresh_dashboard_live_or_enqueue(tg, actor=actor, reason="project_changed")
     return None
 
 
@@ -3664,6 +3788,7 @@ def _process_admin_queue_action(
                 int(chat_id),
                 messages[status],
                 event_key=f"queue-result:{status}:{video_id}:{chat_id}",
+                priority=40,
             )
         except Exception as exc:
             record_system_log(
@@ -3673,9 +3798,8 @@ def _process_admin_queue_action(
                 {"error": _safe_error(exc)},
                 actor,
             )
-    _safe_refresh_admin_dashboard(tg, actor)
-    try:
-        result = pump_admin_queue(tg, actor)
+    result = pump_queue_live_or_enqueue(tg, actor, reason=f"after_{status}")
+    if result:
         record_system_log(
             "admin_queue_pumped",
             "admin_queue",
@@ -3683,19 +3807,7 @@ def _process_admin_queue_action(
             {"source": f"after_{status}", **result},
             actor,
         )
-    except Exception as exc:
-        record_system_log(
-            "admin_queue_pump_failed",
-            "video",
-            video_id,
-            telegram_failure_payload(exc, get_settings().admin_chat_id, "pump_after_action"),
-            actor,
-        )
-        try:
-            jobs.enqueue_admin_queue_pump()
-        except Exception:
-            pass
-    _safe_refresh_admin_dashboard(tg, actor)
+    refresh_dashboard_live_or_enqueue(tg, actor=actor, reason=f"after_{status}")
     return None
 
 
@@ -3833,7 +3945,10 @@ def reset_admin_queue_command(tg: TelegramClient, actor: Actor) -> None:
                 "archive_attempt_limit": ADMIN_RESET_ARCHIVE_LIMIT,
             },
         )
-    result = pump_admin_queue(tg, actor)
+    result = pump_queue_live_or_enqueue(tg, actor, reason="reset_admin_queue", force_repost=True) or {
+        "pending_count": 0,
+        "active_video_id": None,
+    }
     record_system_log(
         "admin_queue_pumped",
         "admin_queue",
@@ -3841,7 +3956,7 @@ def reset_admin_queue_command(tg: TelegramClient, actor: Actor) -> None:
         {"source": "reset_admin_queue", **result},
         actor,
     )
-    _safe_refresh_admin_dashboard(tg, actor)
+    refresh_dashboard_live_or_enqueue(tg, actor=actor, reason="reset_admin_queue", force=True)
     for row in old_cards[:ADMIN_RESET_ARCHIVE_LIMIT]:
         _archive_queue_message(
             tg,
@@ -3880,6 +3995,23 @@ def jobs_status_command(tg: TelegramClient, actor: Actor) -> None:
     if not require_admin(tg, actor):
         return
     tg.send_message(actor.chat_id, jobs.format_jobs_status(jobs.jobs_status_snapshot()))
+
+
+def worker_status_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_admin(tg, actor):
+        return
+    job_snapshot = jobs.jobs_status_snapshot()
+    worker = jobs.worker_health_snapshot(job_snapshot)
+    tg.send_message(actor.chat_id, jobs.format_worker_status(worker, job_snapshot))
+
+
+def run_jobs_now_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_superadmin(tg, actor):
+        return
+    tg.send_message(
+        actor.chat_id,
+        "Ручной запуск: GitHub Actions → Process background jobs → Run workflow.",
+    )
 
 
 def retry_failed_jobs_command(tg: TelegramClient, actor: Actor) -> None:
@@ -3990,7 +4122,7 @@ def bulk_return_missing_dates(tg: TelegramClient, actor: Actor) -> dict[str, Any
                     "bulk_return_missing_dates",
                     {"operation_id": int(operation["id"])},
                     dedupe_key=f"bulk:{operation['id']}:chunk:0",
-                    priority=30,
+                    priority=100,
                     conn=conn,
                 )
             else:
@@ -4195,18 +4327,8 @@ def restore_missing_date(
         f"✅ Дата добавлена. Заявка #{video_id} снова отправлена на проверку.\n"
         f"Дата: {_format_ddmmyyyy(publish_date)}",
     )
-    _safe_refresh_admin_dashboard(tg, actor)
-    try:
-        pump_admin_queue(tg, actor)
-    except Exception as exc:
-        record_system_log(
-            "admin_queue_pump_failed",
-            "video",
-            video_id,
-            telegram_failure_payload(exc, get_settings().admin_chat_id, "pump_after_date_revision"),
-            actor,
-        )
-    _safe_refresh_admin_dashboard(tg, actor)
+    pump_queue_live_or_enqueue(tg, actor, reason="date_revision")
+    refresh_dashboard_live_or_enqueue(tg, actor=actor, reason="date_revision")
     return video
 
 
@@ -4285,8 +4407,10 @@ def start_revision(tg: TelegramClient, actor: Actor, video_id: int) -> None:
 def show_admin(tg: TelegramClient, actor: Actor) -> None:
     if not require_admin(tg, actor):
         return
-    _safe_refresh_admin_dashboard(tg, actor, immediate=True)
-    result = pump_admin_queue(tg, actor, force_repost=True)
+    result = pump_queue_live_or_enqueue(tg, actor, reason="admin", force_repost=True) or {
+        "pending_count": 0,
+        "active_video_id": None,
+    }
     record_system_log(
         "admin_queue_pumped",
         "admin_queue",
@@ -4294,7 +4418,7 @@ def show_admin(tg: TelegramClient, actor: Actor) -> None:
         {"source": "admin", **result},
         actor,
     )
-    _safe_refresh_admin_dashboard(tg, actor, immediate=True)
+    refresh_dashboard_live_or_enqueue(tg, actor=actor, reason="admin", force=True)
     if result["pending_count"] == 0:
         tg.send_message(actor.chat_id, "Очередь пуста. Pending-заявок: 0.")
 
@@ -5502,7 +5626,7 @@ def handle_daily_report_callback(
                 "actor_username": actor.username,
             },
             dedupe_key=f"daily-report:{report_date.isoformat()}",
-            priority=70,
+            priority=120,
         )
         text = "Отчёт поставлен в очередь." if job_id else "Фоновые задания временно отключены."
         _answer_queue_callback(tg, callback_id, text, show_alert=True)
@@ -5528,7 +5652,7 @@ def sync_sheets_command(tg: TelegramClient, actor: Actor) -> None:
         queued += int(
             jobs.enqueue_sheet_sync(int(row["id"]), version=_sheet_sync_version(row)) is not None
         )
-    jobs.enqueue_job("sheets_sync_stats", {}, dedupe_key="stats:projects", priority=80)
+    jobs.enqueue_job("sheets_sync_stats", {}, dedupe_key="stats:projects", priority=70)
     tg.send_message(actor.chat_id, f"Синхронизация поставлена в очередь. Видео: {queued}.")
 
 
@@ -5539,7 +5663,7 @@ def sync_youtube_metrics_command(tg: TelegramClient, actor: Actor) -> None:
         "youtube_metrics",
         {"actor_tg_id": actor.tg_id, "actor_username": actor.username},
         dedupe_key=f"youtube-metrics:{date.today().isoformat()}",
-        priority=70,
+        priority=120,
     )
     text = "Обновление YouTube-метрик поставлено в очередь." if job_id else "Фоновые задания временно отключены."
     tg.send_message(actor.chat_id, text)

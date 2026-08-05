@@ -1,0 +1,116 @@
+name: Process background jobs
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: rngn-background-jobs-production
+  cancel-in-progress: false
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Drain production queue
+        shell: bash
+        env:
+          WORKER_URL: https://project-dcd2y.vercel.app/api/cron/process-jobs
+          OIDC_AUDIENCE: rngn-reels-wc-worker
+        run: |
+          set -euo pipefail
+
+          OIDC_RESPONSE="$(curl --fail --silent --show-error \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUDIENCE}")"
+          OIDC_TOKEN="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value; print(value)' <<<"${OIDC_RESPONSE}")"
+          echo "::add-mask::${OIDC_TOKEN}"
+          unset OIDC_RESPONSE
+
+          calls=0
+          claimed=0
+          done=0
+          retried=0
+          dead=0
+          remaining=1
+
+          while (( remaining > 0 && calls < 12 )); do
+            calls=$((calls + 1))
+            attempt=1
+            while true; do
+              status="$(curl --silent --show-error \
+                --request POST \
+                --header "Authorization: Bearer ${OIDC_TOKEN}" \
+                --header "Content-Type: application/json" \
+                --output worker-response.json \
+                --write-out '%{http_code}' \
+                "${WORKER_URL}")"
+              if [[ "${status}" == "401" || "${status}" == "403" ]]; then
+                echo "Worker authorization failed with HTTP ${status}." >&2
+                exit 1
+              fi
+              if [[ "${status}" == "429" || "${status}" =~ ^5 ]]; then
+                if (( attempt >= 3 )); then
+                  echo "Worker failed with HTTP ${status} after ${attempt} attempts." >&2
+                  exit 1
+                fi
+                sleep $((attempt * 3))
+                attempt=$((attempt + 1))
+                continue
+              fi
+              if [[ ! "${status}" =~ ^2 ]]; then
+                echo "Worker failed with HTTP ${status}." >&2
+                exit 1
+              fi
+              break
+            done
+
+            read -r batch_claimed batch_done batch_retried batch_dead remaining < <(
+              python - <<'PY'
+          import json
+
+          with open("worker-response.json", encoding="utf-8") as source:
+              payload = json.load(source)
+          if payload.get("ok") is not True:
+              raise SystemExit("worker returned ok=false")
+          names = ("claimed", "done", "retried", "dead", "remaining_ready")
+          values = []
+          for name in names:
+              value = payload.get(name)
+              if not isinstance(value, int) or value < 0:
+                  raise SystemExit(f"worker returned invalid {name}")
+              values.append(str(value))
+          print(" ".join(values))
+          PY
+            )
+            claimed=$((claimed + batch_claimed))
+            done=$((done + batch_done))
+            retried=$((retried + batch_retried))
+            dead=$((dead + batch_dead))
+            if (( remaining > 0 && calls < 12 )); then
+              sleep 5
+            fi
+          done
+
+          {
+            echo "## Background jobs"
+            echo ""
+            echo "| Metric | Value |"
+            echo "| --- | ---: |"
+            echo "| Calls | ${calls} |"
+            echo "| Claimed | ${claimed} |"
+            echo "| Done | ${done} |"
+            echo "| Retried | ${retried} |"
+            echo "| Dead | ${dead} |"
+            echo "| Remaining ready | ${remaining} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if (( remaining > 0 )); then
+            echo "Queue still has ${remaining} ready jobs after 12 bounded calls." >&2
+          fi

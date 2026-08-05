@@ -259,22 +259,13 @@ class DashboardV1013Tests(unittest.TestCase):
     def test_new_pending_with_active_card_refreshes_dashboard_without_new_card(self) -> None:
         tg = FakeTelegram()
         actor = Actor(tg_id=1, chat_id=1)
-        conn = MagicMock()
-        cursor = conn.cursor.return_value.__enter__.return_value
-        cursor.fetchone.return_value = {"active_video_id": 64}
-
-        @contextmanager
-        def transaction():
-            yield conn
-
         with (
-            patch("bot.handlers.db.transaction", transaction),
-            patch("bot.handlers.jobs.enqueue_dashboard_refresh") as refresh,
-            patch("bot.handlers.jobs.enqueue_admin_queue_pump") as pump,
+            patch("bot.handlers.refresh_dashboard_live_or_enqueue") as refresh,
+            patch("bot.handlers.pump_queue_live_or_enqueue") as pump,
         ):
             self.assertTrue(notify_admin_queue(tg, {"id": 99}, actor))
-        refresh.assert_called_once_with(conn=conn)
-        pump.assert_not_called()
+        pump.assert_called_once_with(tg, actor, reason="submission")
+        refresh.assert_called_once_with(tg, actor=actor, reason="submission")
         self.assertEqual(tg.sent, [])
 
 

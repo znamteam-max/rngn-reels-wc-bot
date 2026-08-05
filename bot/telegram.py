@@ -3,8 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 import requests
+from urllib3.util import Timeout
 
 from bot.config import get_settings
+
+
+LIVE_TELEGRAM_TIMEOUT = Timeout(connect=2, read=3, total=3.5)
 
 
 class TelegramAPIError(RuntimeError):
@@ -21,18 +25,19 @@ class TelegramAPIError(RuntimeError):
 
 
 class TelegramClient:
-    def __init__(self) -> None:
+    def __init__(self, *, timeout: float | tuple[float, float] = 15) -> None:
         self.settings = get_settings()
         if not self.settings.bot_token:
             raise RuntimeError("BOT_TOKEN is not configured")
         self.base_url = f"https://api.telegram.org/bot{self.settings.bot_token}"
+        self.timeout = timeout
 
     def _request(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             response = requests.post(
                 f"{self.base_url}/{method}",
                 json=payload,
-                timeout=15,
+                timeout=self.timeout,
             )
         except requests.RequestException as exc:
             raise RuntimeError("Telegram API request failed") from exc

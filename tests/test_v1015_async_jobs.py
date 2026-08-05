@@ -278,10 +278,13 @@ class AsyncJobsV1015Tests(unittest.TestCase):
         self.assertIsNone(result["operation_id"])
         self.assertIn("Фоновые задания временно отключены", tg.messages[0][1])
 
-    def test_hot_path_dashboard_refresh_only_enqueues(self) -> None:
-        with patch("bot.handlers.jobs.enqueue_dashboard_refresh", return_value=9) as enqueue:
+    def test_safe_dashboard_refresh_delegates_to_live_path(self) -> None:
+        with patch(
+            "bot.handlers.refresh_dashboard_live_or_enqueue",
+            return_value={"queued": True, "job_id": 9},
+        ) as refresh:
             result = _safe_refresh_admin_dashboard(FakeTelegram(), Actor(tg_id=1, chat_id=1))
-        enqueue.assert_called_once()
+        refresh.assert_called_once()
         self.assertEqual(result, {"queued": True, "job_id": 9})
 
     def test_bulk_chunk_limit_is_ten(self) -> None:

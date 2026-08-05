@@ -23,17 +23,20 @@ COMMANDS = [
     ("resend_pending", "Восстановить текущую FIFO-карточку"),
     ("return_missing_dates", "Вернуть заявки без даты"),
     ("jobs_status", "Статус фоновых заданий"),
+    ("worker_status", "Статус worker"),
     ("test_admin_chat", "Проверить админский чат"),
     ("sync_youtube_metrics", "Обновить YouTube-метрики"),
     ("metrics_youtube_today", "YouTube сегодня"),
     ("metrics_youtube_all", "YouTube всего"),
     ("metrics_video", "Метрики одного видео"),
 ]
+
 SUPERADMIN_COMMANDS = [
     *COMMANDS,
     ("add_znambo", "Быстро добавить мой ролик"),
     ("reset_admin_queue", "Сбросить и восстановить FIFO-очередь"),
     ("retry_failed_jobs", "Повторить временно упавшие задания"),
+    ("run_jobs_now", "Запустить worker вручную"),
 ]
 
 

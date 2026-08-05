@@ -36,7 +36,7 @@ class handler(BaseHTTPRequestHandler):
                 "daily_report",
                 {},
                 dedupe_key=f"daily-report:{date.today().isoformat()}",
-                priority=70,
+                priority=120,
             )
             result = {"ok": True, "queued": True, "job_id": job_id}
         except Exception as exc:

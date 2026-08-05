@@ -355,7 +355,7 @@ def _handle_sheets_video(payload: dict[str, Any], context: WorkerContext) -> Non
         "sheets_sync_stats",
         {},
         dedupe_key="stats:projects",
-        priority=80,
+        priority=70,
     )
     context.sheets_video_syncs += 1
     h.record_system_log(
@@ -448,7 +448,7 @@ def _handle_sheets_video_batch(
             "sheets_sync_stats",
             {},
             dedupe_key="stats:projects",
-            priority=80,
+            priority=70,
             conn=conn,
         )
     return errors
@@ -595,6 +595,7 @@ def _handle_bulk_return(payload: dict[str, Any], context: WorkerContext) -> None
                         event_key=f"missing-date:{row['id']}:{row['added_by_tg_id']}",
                         reply_markup=inline_keyboard([[("Указать дату", f"revdate:{row['id']}")]]),
                         operation_id=operation_id,
+                        priority=80,
                         conn=conn,
                     )
                 else:
@@ -653,7 +654,7 @@ def _handle_bulk_return(payload: dict[str, Any], context: WorkerContext) -> None
                     "archive_admin_cards",
                     {"cards": [archive_card]},
                     dedupe_key=f"archive:bulk:{operation_id}:{active_id}",
-                    priority=15,
+                    priority=40,
                     conn=conn,
                 )
             if done:
@@ -666,7 +667,7 @@ def _handle_bulk_return(payload: dict[str, Any], context: WorkerContext) -> None
                         "bulk_summary_operation_id": operation_id,
                     },
                     dedupe_key=f"telegram:bulk-summary:{operation_id}",
-                    priority=90,
+                    priority=80,
                     available_at=summary_at,
                     conn=conn,
                 )
@@ -676,7 +677,7 @@ def _handle_bulk_return(payload: dict[str, Any], context: WorkerContext) -> None
                     "bulk_return_missing_dates",
                     {"operation_id": operation_id},
                     dedupe_key=f"bulk:{operation_id}:chunk:{processed_after}",
-                    priority=30,
+                    priority=100,
                     conn=conn,
                 )
                 action = "bulk_operation_progress"
@@ -723,88 +724,177 @@ def _job_fits_budget(job: dict[str, Any], context: WorkerContext) -> bool:
     return True
 
 
-def process_jobs() -> dict[str, Any]:
+def _heartbeat_started(invocation_id: str, source: str) -> None:
+    try:
+        db.execute(
+            """
+            INSERT INTO worker_heartbeats (
+                worker_name, last_started_at, source, invocation_id, updated_at
+            )
+            VALUES ('background_jobs', now(), %s, %s, now())
+            ON CONFLICT (worker_name) DO UPDATE SET
+                last_started_at = EXCLUDED.last_started_at,
+                source = EXCLUDED.source,
+                invocation_id = EXCLUDED.invocation_id,
+                updated_at = now()
+            """,
+            (source, invocation_id),
+        )
+    except Exception:
+        pass
+
+
+def _heartbeat_finished(result: dict[str, Any], source: str) -> None:
+    try:
+        db.execute(
+            """
+            INSERT INTO worker_heartbeats (
+                worker_name, last_started_at, last_finished_at, last_success_at,
+                last_claimed, last_done, last_remaining, source, invocation_id, updated_at
+            )
+            VALUES ('background_jobs', now(), now(), now(), %s, %s, %s, %s, %s, now())
+            ON CONFLICT (worker_name) DO UPDATE SET
+                last_finished_at = now(),
+                last_success_at = now(),
+                last_error = NULL,
+                last_claimed = EXCLUDED.last_claimed,
+                last_done = EXCLUDED.last_done,
+                last_remaining = EXCLUDED.last_remaining,
+                source = EXCLUDED.source,
+                invocation_id = EXCLUDED.invocation_id,
+                updated_at = now()
+            """,
+            (
+                int(result.get("claimed") or 0),
+                int(result.get("done") or 0),
+                int(result.get("remaining_ready") or 0),
+                source,
+                str(result.get("invocation_id") or ""),
+            ),
+        )
+    except Exception:
+        pass
+
+
+def _heartbeat_failed(invocation_id: str, source: str, exc: Exception) -> None:
+    try:
+        db.execute(
+            """
+            INSERT INTO worker_heartbeats (
+                worker_name, last_started_at, last_finished_at, last_error_at,
+                last_error, source, invocation_id, updated_at
+            )
+            VALUES ('background_jobs', now(), now(), now(), %s, %s, %s, now())
+            ON CONFLICT (worker_name) DO UPDATE SET
+                last_finished_at = now(),
+                last_error_at = now(),
+                last_error = EXCLUDED.last_error,
+                source = EXCLUDED.source,
+                invocation_id = EXCLUDED.invocation_id,
+                updated_at = now()
+            """,
+            (_safe_error(exc), source, invocation_id),
+        )
+    except Exception:
+        pass
+
+
+def process_jobs(*, source: str = "manual") -> dict[str, Any]:
     settings = get_settings()
     started = time.monotonic()
     invocation_id = str(uuid.uuid4())
-    stale = recover_stale_jobs()
-    claimed_jobs = claim_jobs(settings.job_worker_batch_size, invocation_id)
-    context = WorkerContext(
-        invocation_id=invocation_id,
-        started_monotonic=started,
-        time_budget_seconds=settings.job_worker_time_budget_seconds,
-    )
-    done = 0
-    retried = 0
-    dead = stale["dead"]
-    failed = 0
-    processed_count = 0
-    index = 0
-    while index < len(claimed_jobs):
-        job = claimed_jobs[index]
-        if not _job_fits_budget(job, context):
-            _release_unprocessed(claimed_jobs[index:])
-            break
-        if job.get("kind") == "sheets_sync_video":
-            capacity = MAX_SHEETS_VIDEO_SYNCS - context.sheets_video_syncs
-            batch: list[dict[str, Any]] = []
-            while (
-                index + len(batch) < len(claimed_jobs)
-                and claimed_jobs[index + len(batch)].get("kind") == "sheets_sync_video"
-                and len(batch) < capacity
-            ):
-                batch.append(claimed_jobs[index + len(batch)])
-            if not batch:
+    _heartbeat_started(invocation_id, source)
+    try:
+        stale = recover_stale_jobs()
+        claimed_jobs = claim_jobs(settings.job_worker_batch_size, invocation_id)
+        context = WorkerContext(
+            invocation_id=invocation_id,
+            started_monotonic=started,
+            time_budget_seconds=settings.job_worker_time_budget_seconds,
+        )
+        done = 0
+        retried = 0
+        dead = stale["dead"]
+        failed = 0
+        processed_count = 0
+        processed_by_kind: dict[str, int] = {}
+        index = 0
+        while index < len(claimed_jobs):
+            job = claimed_jobs[index]
+            if not _job_fits_budget(job, context):
                 _release_unprocessed(claimed_jobs[index:])
                 break
-            processed_count += len(batch)
+            if job.get("kind") == "sheets_sync_video":
+                capacity = MAX_SHEETS_VIDEO_SYNCS - context.sheets_video_syncs
+                batch: list[dict[str, Any]] = []
+                while (
+                    index + len(batch) < len(claimed_jobs)
+                    and claimed_jobs[index + len(batch)].get("kind") == "sheets_sync_video"
+                    and len(batch) < capacity
+                ):
+                    batch.append(claimed_jobs[index + len(batch)])
+                if not batch:
+                    _release_unprocessed(claimed_jobs[index:])
+                    break
+                processed_count += len(batch)
+                processed_by_kind["sheets_sync_video"] = (
+                    processed_by_kind.get("sheets_sync_video", 0) + len(batch)
+                )
+                job_started = time.monotonic()
+                batch_errors = _handle_sheets_video_batch(batch, context)
+                duration_ms = int((time.monotonic() - job_started) * 1000)
+                for sheet_job in batch:
+                    error = batch_errors.get(int(sheet_job["id"]))
+                    if error is None:
+                        _finish_job(sheet_job, duration_ms)
+                        done += 1
+                        continue
+                    status = _fail_job(sheet_job, error)
+                    retried += int(status == "queued")
+                    dead += int(status == "dead")
+                    failed += int(status == "failed")
+                index += len(batch)
+                continue
+            processed_count += 1
+            kind = str(job.get("kind") or "")
+            processed_by_kind[kind] = processed_by_kind.get(kind, 0) + 1
             job_started = time.monotonic()
-            batch_errors = _handle_sheets_video_batch(batch, context)
-            duration_ms = int((time.monotonic() - job_started) * 1000)
-            for sheet_job in batch:
-                error = batch_errors.get(int(sheet_job["id"]))
-                if error is None:
-                    _finish_job(sheet_job, duration_ms)
-                    done += 1
-                    continue
-                status = _fail_job(sheet_job, error)
+            handler = JOB_HANDLERS.get(kind)
+            if not handler:
+                status = _fail_job(job, PermanentJobError(f"unsupported kind: {job.get('kind')}"))
+                dead += int(status == "dead")
+                failed += int(status == "failed")
+                index += 1
+                continue
+            try:
+                handler(job.get("payload") or {}, context)
+                _finish_job(job, int((time.monotonic() - job_started) * 1000))
+                done += 1
+            except Exception as exc:
+                status = _fail_job(job, exc)
                 retried += int(status == "queued")
                 dead += int(status == "dead")
                 failed += int(status == "failed")
-            index += len(batch)
-            continue
-        processed_count += 1
-        job_started = time.monotonic()
-        handler = JOB_HANDLERS.get(str(job.get("kind") or ""))
-        if not handler:
-            status = _fail_job(job, PermanentJobError(f"unsupported kind: {job.get('kind')}"))
-            dead += int(status == "dead")
-            failed += int(status == "failed")
             index += 1
-            continue
-        try:
-            handler(job.get("payload") or {}, context)
-            _finish_job(job, int((time.monotonic() - job_started) * 1000))
-            done += 1
-        except Exception as exc:
-            status = _fail_job(job, exc)
-            retried += int(status == "queued")
-            dead += int(status == "dead")
-            failed += int(status == "failed")
-        index += 1
 
-    ready = db.fetch_one(
-        "SELECT count(*) AS count FROM background_jobs WHERE status = 'queued' AND available_at <= now()"
-    ) or {}
-    return {
-        "ok": True,
-        "claimed": len(claimed_jobs),
-        "processed": processed_count,
-        "done": done,
-        "retried": retried,
-        "failed": failed,
-        "dead": dead,
-        "remaining_ready": int(ready.get("count") or 0),
-        "duration_ms": int((time.monotonic() - started) * 1000),
-        "invocation_id": invocation_id,
-    }
+        ready = db.fetch_one(
+            "SELECT count(*) AS count FROM background_jobs WHERE status = 'queued' AND available_at <= now()"
+        ) or {}
+        result = {
+            "ok": True,
+            "claimed": len(claimed_jobs),
+            "processed": processed_count,
+            "processed_by_kind": processed_by_kind,
+            "done": done,
+            "retried": retried,
+            "failed": failed,
+            "dead": dead,
+            "remaining_ready": int(ready.get("count") or 0),
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "invocation_id": invocation_id,
+        }
+    except Exception as exc:
+        _heartbeat_failed(invocation_id, source, exc)
+        raise
+    _heartbeat_finished(result, source)
+    return result
