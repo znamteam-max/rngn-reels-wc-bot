@@ -157,6 +157,9 @@ class AuditV1019Tests(ReconciliationFixture):
         self.assertEqual(result["sheet_videos_unique_count"], 4)
         self.assertEqual(result["sheet_project_union_count"], 4)
         self.assertEqual(result["sheet_month_union_count"], 4)
+        self.assertEqual(result["db_month_counts"]["2026-05"], {"active": 1, "published": 1})
+        self.assertEqual(result["db_project_counts"]["ves_sport"], 1)
+        self.assertEqual(result["project_sheet_counts"][PROJECT_SHEET_TITLES["ves_sport"]], 1)
 
     def test_audit_detects_duplicate_missing_extra_and_row_mismatch(self) -> None:
         tables = copy.deepcopy(self.tables)

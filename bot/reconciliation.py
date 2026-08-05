@@ -548,9 +548,11 @@ def audit_sheet_tables(
                 problems.append(_problem("videos_row_mismatch", video_id=video_id, sheet_name=SHEET_NAME, details="columns: " + ", ".join(differing)))
 
     project_membership: dict[int, list[str]] = defaultdict(list)
+    project_sheet_counts: dict[str, int] = {}
     project_invalid = 0
     for title in PROJECT_SHEET_TITLES.values():
         ids, parse_problems = _sheet_ids(tables.get(title))
+        project_sheet_counts[title] = len(ids)
         project_invalid += len(parse_problems)
         for item in parse_problems:
             problems.append(_problem(item["problem_type"], sheet_name=title, sheet_value=item.get("sheet_value"), details=item["details"]))
@@ -575,9 +577,11 @@ def audit_sheet_tables(
     month_titles = sorted({title for title in tables if MONTH_RE.match(title)} | expected_months)
     month_titles.append(NO_DATE_SHEET)
     month_membership: dict[int, list[str]] = defaultdict(list)
+    month_sheet_counts: dict[str, int] = {}
     month_invalid = 0
     for title in month_titles:
         ids, parse_problems = _sheet_ids(tables.get(title))
+        month_sheet_counts[title] = len(ids)
         month_invalid += len(parse_problems)
         for item in parse_problems:
             problems.append(_problem(item["problem_type"], sheet_name=title, sheet_value=item.get("sheet_value"), details=item["details"]))
@@ -638,6 +642,17 @@ def audit_sheet_tables(
             stats_mismatches,
         ]
     )
+    db_project_counts = Counter(project_partition_code(video) for video in active)
+    db_month_counts = {
+        period: {
+            "active": sum(_period_matches(video, period) for video in active),
+            "published": sum(
+                _period_matches(video, period) and video.get("status") == PUBLISHED_STATUS
+                for video in active
+            ),
+        }
+        for period in canonical_periods(active)
+    }
     return {
         "db_active_count": len(active),
         "db_approved_count": sum(video.get("status") == "approved" for video in active),
@@ -669,6 +684,10 @@ def audit_sheet_tables(
         "project_membership": {str(video_id): titles for video_id, titles in project_membership.items()},
         "month_membership": {str(video_id): titles for video_id, titles in month_membership.items()},
         "month_titles": month_titles,
+        "project_sheet_counts": project_sheet_counts,
+        "month_sheet_counts": month_sheet_counts,
+        "db_project_counts": dict(db_project_counts),
+        "db_month_counts": db_month_counts,
     }
 
 

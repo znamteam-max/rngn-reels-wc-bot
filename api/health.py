@@ -364,6 +364,71 @@ class handler(BaseHTTPRequestHandler):
                         "status": run.get("status"),
                         "stage": run.get("stage"),
                     }
+                elif action == "reaudit":
+                    run = reconciliation.get_run()
+                    if not run or run.get("status") != "awaiting_confirmation":
+                        raise RuntimeError("no audit awaiting confirmation")
+                    run_id = int(run["id"])
+                    db.execute(
+                        "UPDATE sheet_reconciliation_runs SET status='created', stage='refresh_queued', updated_at=now() WHERE id=%s",
+                        (run_id,),
+                    )
+                    jobs.enqueue_job(
+                        "sheets_audit",
+                        {"run_id": run_id},
+                        dedupe_key=f"sheets:audit:{run_id}:refresh",
+                        priority=50,
+                    )
+                    result = {"run_id": run_id, "status": "created", "stage": "refresh_queued"}
+                elif action == "status":
+                    run = reconciliation.get_run()
+                    if not run:
+                        raise RuntimeError("no reconciliation run")
+                    summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+                    result = {
+                        "run_id": int(run["id"]),
+                        "status": run.get("status"),
+                        "stage": run.get("stage"),
+                        "db_active_count": int(run.get("db_active_count") or 0),
+                        "db_approved_count": int(run.get("db_approved_count") or 0),
+                        "db_pending_count": int(run.get("db_pending_count") or 0),
+                        "db_needs_revision_count": int(run.get("db_needs_revision_count") or 0),
+                        "db_duplicate_count": int(run.get("db_duplicate_count") or 0),
+                        "db_unassigned_count": int(run.get("db_unassigned_count") or 0),
+                        "db_missing_date_count": int(run.get("db_missing_date_count") or 0),
+                        "sheet_videos_count": run.get("sheet_videos_count"),
+                        "sheet_project_union_count": run.get("sheet_project_union_count"),
+                        "sheet_month_union_count": run.get("sheet_month_union_count"),
+                        "safe_project_backfill_candidates": int(run.get("safe_project_backfill_candidates") or 0),
+                        "conflicting_project_assignments": int(run.get("conflicting_project_assignments") or 0),
+                        "unfinished_request_count": int(summary.get("unfinished_request_count") or 0),
+                        "stale_session_count": int(summary.get("stale_session_count") or 0),
+                        "mismatch_count": reconciliation.run_mismatch_count(run),
+                        "audit_counts": {
+                            key: summary.get(key)
+                            for key in (
+                                "missing_from_videos",
+                                "extra_in_videos",
+                                "duplicate_in_videos",
+                                "missing_from_projects",
+                                "duplicate_in_projects",
+                                "project_mismatches",
+                                "project_sheet_only_ids",
+                                "missing_from_months",
+                                "duplicate_in_months",
+                                "month_mismatches",
+                                "month_sheet_only_ids",
+                                "statistics_mismatches",
+                                "videos_header_mismatches",
+                                "videos_row_mismatches",
+                            )
+                        },
+                        "db_project_counts": summary.get("db_project_counts") or {},
+                        "project_sheet_counts": summary.get("project_sheet_counts") or {},
+                        "db_month_counts": summary.get("db_month_counts") or {},
+                        "month_sheet_counts": summary.get("month_sheet_counts") or {},
+                        "month_titles": summary.get("month_titles") or [],
+                    }
                 else:
                     raise ValueError("unsupported rollout action")
             except Exception as exc:
