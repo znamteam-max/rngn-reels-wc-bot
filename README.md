@@ -7,6 +7,7 @@ Admin chat: `-5520370963`
 Runtime: Python 3.12 and Node.js on Vercel Functions
 Database: Neon Postgres via `DATABASE_URL`  
 Report: Google Sheets tab `Videos`
+Version/schema: `1.0.18`
 
 ## Structure
 
@@ -223,6 +224,7 @@ Admin commands:
 /daily_report [YYYY-MM-DD]
 /sync_sheets
 /queue_status
+/queue_debug
 /resend_pending
 /return_missing_dates
 /jobs_status
@@ -241,6 +243,7 @@ Superadmin commands:
 /activate_person id
 /deactivate_person id
 /reset_admin_queue
+/queue_trace video_id
 /retry_failed_jobs
 /kick_worker
 /run_jobs_now
@@ -256,7 +259,9 @@ Roles: `author`, `montage`, `voice`, `admin`, `superadmin`.
 
 Both commands work only in a private chat with the bot. In groups, the bot asks the user to open a private chat. The montage step includes `Смонтировал сам автор`. Participants do not set the publication date.
 
-After preview, the user sends the request to review. The video becomes `pending` and remains available in FIFO order by `created_at, id`. The queue can stay global or be filtered by a permanent project, custom `other` projects, or unassigned legacy rows. Changing the filter never changes video statuses and moves the pointer to the oldest matching pending video. The bot keeps exactly one actionable card in `ADMIN_CHAT_ID`; later submissions stay pending without flooding the chat. A persistent pinned dashboard is edited in place with the global pending count, current video, oldest age, project breakdown, participants, search, and filter controls. `/admin` refreshes the dashboard and moves the current filtered card to the bottom, `/queue_status` shows compact diagnostics, and `/resend_pending` repairs the pointer and reposts only that one card. Batches remain only for reporting and never hide pending videos from the admin queue.
+After preview, the user sends the request to review. The video becomes `pending` and remains available in FIFO order by `created_at, id`. The queue can stay global or be filtered by a permanent project, custom `other` projects, or unassigned legacy rows. Changing the filter never changes video statuses and moves the pointer to the oldest matching pending video. The bot keeps exactly one actionable card in `ADMIN_CHAT_ID`; later submissions stay pending without flooding the chat. The queue singleton is locked and reserves the oldest eligible video with a UUID token and generation before any Telegram API call. Historical `videos.admin_message_id` values never exclude pending rows from FIFO.
+
+A persistent pinned dashboard is edited in place with the global pending count, current video, oldest age, project breakdown, participants, search, and filter controls. Its refresh path reads FIFO state and may update only `dashboard_chat_id`, `dashboard_message_id`, and `dashboard_updated_at`; it cannot select, clear, repair, or deliver review cards. `/queue_status` shows compact status, `/queue_debug` exposes reservation/watchdog diagnostics, and `/resend_pending` requests explicit repair without replacing a valid active card. `/queue_trace <video_id>` is superadmin-only and shows recent queue stages without reservation tokens or raw callback IDs. Batches remain only for reporting and never hide pending videos from the admin queue.
 
 `/find` resolves exact video ID and platform IDs first, then exact participant username/name, and only then uses a URL substring fallback. `/person` merges role-specific `people` rows that represent one Telegram identity and reports approved role counts for all time and the current month, pending work, project totals, and five-item video pages.
 
@@ -266,21 +271,20 @@ The permanent project catalog contains nine choices, including `Другой п�
 
 Admin date controls and `/add_znambo` use the same deterministic parser. It accepts today, yesterday, the day before yesterday, `YYYY-MM-DD`, `DD.MM`, and `D.M`; `DD.MM` always means day-month and uses the current year from `TIMEZONE`. Past, current, and future publication dates are allowed.
 
-After approval:
+After any final admin decision:
 
-1. `videos.status` becomes `approved`.
-2. `checked_by_*` and `checked_at` are set.
-3. A durable `sheets_sync_video` job is queued; the webhook does not wait for Google Sheets.
-4. The active card is edited to a compact final result without buttons.
-5. The next oldest pending video is sent as the only new actionable card.
+1. The business mutation and active-pointer clear commit atomically.
+2. The old card is edited to a compact result without buttons.
+3. The next oldest pending video is reserved and sent synchronously.
+4. Dashboard, result notification, and Google Sheets jobs are queued afterward.
 
 If Google Sheets is temporarily unavailable, the video remains `approved`. `sheet_sync_status` moves through `queued`, `syncing`, `synced`, or `failed`, and retries happen in the worker. `/sync_sheets` queues a full approved-video resync without waiting for Google APIs.
 
-Dashboard refreshes, project statistics, non-critical Telegram notifications, daily reports, YouTube metrics, and `/return_missing_dates` are durable background jobs. Dashboard and queue-pump jobs coalesce by dedupe key. Bulk missing-date returns process at most 10 videos per chunk and expose progress through `/jobs_status`.
+Dashboard refreshes, project statistics, non-critical Telegram notifications, daily reports, YouTube metrics, and `/return_missing_dates` are durable background jobs. Dashboard and queue-pump jobs coalesce by dedupe key. `admin_queue_pump` has priority 5 and is the only worker job allowed to repair or deliver the active review card; `dashboard_refresh` has priority 20 and is FIFO read-only. The worker preserves `first_error`, `first_failed_at`, `last_failed_at`, and `failure_count` even after a retry succeeds. Bulk missing-date returns process at most 10 videos per chunk and expose progress through `/jobs_status`.
 
 The primary production wake-up path is the event-driven internal kicker. `.github/workflows/process-background-jobs.yml` remains enabled as backup/manual recovery on the offset schedule `2-57/5 * * * *` and through `workflow_dispatch`. GitHub Actions obtains a short-lived OIDC token with audience `rngn-reels-wc-worker`; production verifies the official GitHub issuer and JWKS plus the exact repository, owner, `main` ref, event, and audience. `CRON_SECRET` remains supported for protected event, manual, or Vercel cron calls, but is not copied to GitHub Secrets.
 
-FIFO pumping and dashboard refresh use a short live attempt after queue-changing actions. A valid active card is left untouched, dashboard events within three seconds debounce to one durable repair job, and a PostgreSQL advisory lock prevents concurrent Telegram edits. Network or lock failures never roll back the user's action; they enqueue coalesced `admin_queue_pump` or `dashboard_refresh` repairs. `/worker_status` reports ready/future jobs, event-kick state, heartbeat source, and GitHub backup status. `/kick_worker` is superadmin-only and only wakes the separate worker invocation. `/run_jobs_now` keeps the GitHub Actions manual-backup path instead of storing a GitHub PAT in Vercel.
+FIFO pumping uses a short live attempt after queue-changing actions. A recent reservation prevents concurrent pumps from sending a duplicate; a five-second watchdog retries the same reserved video before selecting anything newer. Send failures release only a matching reservation, while a send-success/pointer-save failure queues adoption of the already-sent Telegram message. Network failures never roll back the preceding business action. Dashboard refresh has its own coalesced background path and cannot block FIFO. `/worker_status` reports ready/future jobs, event-kick state, heartbeat source, and GitHub backup status. `/kick_worker` is superadmin-only and only wakes the separate worker invocation. `/run_jobs_now` keeps the GitHub Actions manual-backup path instead of storing a GitHub PAT in Vercel.
 
 Project reporting also maintains `Project Stats` and `People × Projects`. Project-sheet synchronization removes a video ID from its previous project sheet before upserting it into the current one.
 

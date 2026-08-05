@@ -16,11 +16,27 @@ def _admin_queue_debug() -> dict[str, object]:
         SELECT
             (SELECT count(*) FROM videos WHERE status = 'pending') AS pending_video_count,
             q.active_video_id AS active_queue_video_id,
+            q.active_chat_id AS active_queue_chat_id,
             q.active_message_id AS active_queue_message_id,
+            (q.active_reservation_token IS NOT NULL) AS active_reservation_present,
+            q.active_reserved_at,
+            q.active_generation,
+            q.active_delivery_attempts,
+            q.active_last_error,
+            q.active_last_error_at,
+            q.last_repaired_at,
+            q.last_repair_reason,
             q.dashboard_message_id,
             q.dashboard_updated_at,
             q.queue_filter_type,
             q.queue_filter_value,
+            (
+                SELECT count(*)
+                FROM videos stale
+                WHERE stale.status = 'pending'
+                  AND stale.admin_message_id IS NOT NULL
+                  AND (q.active_video_id IS NULL OR stale.id <> q.active_video_id)
+            ) AS stale_pending_message_metadata,
             EXTRACT(
                 EPOCH FROM now() - (
                     SELECT min(created_at) FROM videos WHERE status = 'pending'
@@ -35,12 +51,30 @@ def _admin_queue_debug() -> dict[str, object]:
     return {
         "pending_video_count": int(row.get("pending_video_count") or 0),
         "active_queue_video_id": row.get("active_queue_video_id"),
+        "active_queue_chat_id": row.get("active_queue_chat_id"),
         "active_queue_message_id": row.get("active_queue_message_id"),
+        "active_reservation_present": bool(row.get("active_reservation_present")),
+        "active_reserved_at": row["active_reserved_at"].isoformat()
+        if row.get("active_reserved_at")
+        else None,
+        "active_generation": int(row.get("active_generation") or 0),
+        "active_delivery_attempts": int(row.get("active_delivery_attempts") or 0),
+        "active_last_error": row.get("active_last_error"),
+        "active_last_error_at": row["active_last_error_at"].isoformat()
+        if row.get("active_last_error_at")
+        else None,
+        "last_repaired_at": row["last_repaired_at"].isoformat()
+        if row.get("last_repaired_at")
+        else None,
+        "last_repair_reason": row.get("last_repair_reason"),
         "active_queue_video_status": row.get("active_queue_video_status"),
         "dashboard_message_id": row.get("dashboard_message_id"),
         "dashboard_updated_at": row["dashboard_updated_at"].isoformat() if row.get("dashboard_updated_at") else None,
         "queue_filter_type": row.get("queue_filter_type") or "global",
         "queue_filter_value": row.get("queue_filter_value"),
+        "stale_pending_message_metadata": int(
+            row.get("stale_pending_message_metadata") or 0
+        ),
         "oldest_pending_age_seconds": max(0, int(row["oldest_pending_age_seconds"]))
         if row.get("oldest_pending_age_seconds") is not None
         else None,
@@ -142,6 +176,7 @@ def _jobs_debug() -> dict[str, object]:
             count(*) FILTER (
                 WHERE status = 'processing' AND locked_at < now() - interval '5 minutes'
             ) AS stale_processing,
+            count(*) FILTER (WHERE status = 'done' AND failure_count > 0) AS done_after_retry,
             max(finished_at) FILTER (WHERE status = 'done') AS last_done_at
         FROM background_jobs
         """
@@ -161,6 +196,7 @@ def _jobs_debug() -> dict[str, object]:
         if row.get("oldest_ready_age_seconds") is not None
         else None,
         "stale_processing": int(row.get("stale_processing") or 0),
+        "done_after_retry": int(row.get("done_after_retry") or 0),
         "last_done_at": row["last_done_at"].isoformat() if row.get("last_done_at") else None,
     }
 

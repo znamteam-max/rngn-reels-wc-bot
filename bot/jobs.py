@@ -122,12 +122,25 @@ def enqueue_dashboard_refresh(*, conn=None) -> int | None:
     )
 
 
-def enqueue_admin_queue_pump(*, conn=None, force_repost: bool = False) -> int | None:
+def enqueue_admin_queue_pump(
+    *,
+    conn=None,
+    force_repost: bool = False,
+    adopt_message: dict[str, Any] | None = None,
+) -> int | None:
+    payload: dict[str, Any] = {"force_repost": bool(force_repost)}
+    dedupe_key = "queue:pump:main"
+    if adopt_message:
+        payload["adopt_message"] = adopt_message
+        dedupe_key = (
+            f"queue:adopt:{int(adopt_message.get('video_id') or 0)}:"
+            f"{int(adopt_message.get('generation') or 0)}"
+        )
     return enqueue_job(
         "admin_queue_pump",
-        {"force_repost": bool(force_repost)},
-        dedupe_key="queue:pump:main",
-        priority=10,
+        payload,
+        dedupe_key=dedupe_key,
+        priority=5,
         conn=conn,
     )
 
@@ -282,6 +295,9 @@ def jobs_status_snapshot() -> dict[str, Any]:
             count(*) FILTER (
                 WHERE status = 'processing' AND locked_at < now() - interval '5 minutes'
             ) AS stale_processing,
+            count(*) FILTER (
+                WHERE status = 'done' AND failure_count > 0
+            ) AS done_after_retry,
             max(finished_at) FILTER (WHERE status = 'done') AS last_done_at
         FROM background_jobs
         """
@@ -317,6 +333,7 @@ def jobs_status_snapshot() -> dict[str, Any]:
         if row.get("oldest_ready_age_seconds") is not None
         else None,
         "stale_processing": int(row.get("stale_processing") or 0),
+        "done_after_retry": int(row.get("done_after_retry") or 0),
         "last_done_at": row["last_done_at"].isoformat() if row.get("last_done_at") else None,
         "sheets_queued": int(sheets.get("queued") or 0),
         "sheets_failed": int(sheets.get("failed") or 0),
@@ -447,6 +464,7 @@ def format_jobs_status(snapshot: dict[str, Any]) -> str:
         f"Processing: {snapshot.get('processing', 0)}",
         f"Failed: {snapshot.get('failed', 0)}",
         f"Dead: {snapshot.get('dead', 0)}",
+        f"Done after retry: {snapshot.get('done_after_retry', 0)}",
         f"Старейшее queued: {age if age is not None else 0} сек.",
         "",
         f"Sheets queued: {snapshot.get('sheets_queued', 0)}",

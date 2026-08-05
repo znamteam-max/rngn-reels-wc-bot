@@ -261,10 +261,10 @@ class DashboardV1013Tests(unittest.TestCase):
         actor = Actor(tg_id=1, chat_id=1)
         with (
             patch("bot.handlers.refresh_dashboard_live_or_enqueue") as refresh,
-            patch("bot.handlers.pump_queue_live_or_enqueue") as pump,
+            patch("bot.handlers.repair_queue_live_or_enqueue") as repair,
         ):
             self.assertTrue(notify_admin_queue(tg, {"id": 99}, actor))
-        pump.assert_called_once_with(tg, actor, reason="submission")
+        repair.assert_called_once_with(tg, actor, reason="submission")
         refresh.assert_called_once_with(tg, actor=actor, reason="submission")
         self.assertEqual(tg.sent, [])
 

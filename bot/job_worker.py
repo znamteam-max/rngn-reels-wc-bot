@@ -209,8 +209,13 @@ def _fail_job(job: dict[str, Any], exc: Exception) -> str:
     permanent = isinstance(exc, PermanentJobError)
     suspended = isinstance(exc, SuspendedJobError)
     exhausted = attempts >= max_attempts
+    dashboard_best_effort = job.get("kind") == "dashboard_refresh"
     retry_after = exc.retry_after if isinstance(exc, TelegramAPIError) else None
-    if permanent or exhausted:
+    if dashboard_best_effort:
+        next_status = "failed"
+        action = "job_failed_best_effort"
+        available_at = None
+    elif permanent or exhausted:
         next_status = "dead"
         action = "job_dead"
         available_at = None
@@ -235,10 +240,14 @@ def _fail_job(job: dict[str, Any], exc: Exception) -> str:
                     locked_by = NULL,
                     finished_at = CASE WHEN %s IN ('dead', 'failed') THEN now() ELSE NULL END,
                     last_error = %s,
+                    first_error = COALESCE(first_error, %s),
+                    first_failed_at = COALESCE(first_failed_at, now()),
+                    last_failed_at = now(),
+                    failure_count = failure_count + 1,
                     updated_at = now()
                 WHERE id = %s
                 """,
-                (next_status, available_at, next_status, error, job["id"]),
+                (next_status, available_at, next_status, error, error, job["id"]),
             )
             if job["kind"] == "sheets_sync_video" and (job.get("payload") or {}).get("video_id"):
                 cur.execute(
@@ -310,13 +319,19 @@ def _handle_dashboard_refresh(payload: dict[str, Any], context: WorkerContext) -
 
 
 def _handle_queue_pump(payload: dict[str, Any], context: WorkerContext) -> None:
-    from bot import handlers as h
+    from bot import admin_queue
 
-    h.pump_admin_queue(
+    result = admin_queue.repair_queue_if_needed(
         context.telegram(),
-        force_repost=bool(payload.get("force_repost")),
+        reason="worker_admin_queue_pump",
+        force=bool(payload.get("force_repost")),
+        adopt_message=payload.get("adopt_message")
+        if isinstance(payload.get("adopt_message"), dict)
+        else None,
     )
-    context.telegram_sends += 1
+    pump_result = result.pump_result or {}
+    context.telegram_sends += int(bool(pump_result.get("sent")))
+    jobs.enqueue_dashboard_refresh()
 
 
 def _handle_sheets_video(payload: dict[str, Any], context: WorkerContext) -> None:
@@ -524,7 +539,7 @@ def _handle_youtube_metrics(payload: dict[str, Any], context: WorkerContext) -> 
 
 
 def _handle_bulk_return(payload: dict[str, Any], context: WorkerContext) -> None:
-    from bot import handlers as h
+    from bot import admin_queue, handlers as h
 
     operation_id = int(payload.get("operation_id") or 0)
     if not operation_id:
@@ -548,6 +563,7 @@ def _handle_bulk_return(payload: dict[str, Any], context: WorkerContext) -> None
                 """,
                 (operation_id,),
             )
+            queue_state = admin_queue.queue_state_for_update(conn)
             cur.execute(
                 """
                 SELECT id, batch_id, added_by_tg_id, project_name, instagram_url, youtube_url
@@ -603,16 +619,22 @@ def _handle_bulk_return(payload: dict[str, Any], context: WorkerContext) -> None
             for batch_id in sorted({int(row["batch_id"]) for row in rows if row.get("batch_id")}):
                 h.recalculate_batch(conn, batch_id)
 
-            state = h._queue_state_for_update(conn)
-            active_id = int(state["active_video_id"]) if state.get("active_video_id") else None
+            active_id = (
+                int(queue_state["active_video_id"])
+                if queue_state.get("active_video_id")
+                else None
+            )
             if active_id and active_id in ids:
-                if state.get("active_chat_id") and state.get("active_message_id"):
+                if queue_state.get("active_chat_id") and queue_state.get("active_message_id"):
                     archive_card = {
-                        "chat_id": int(state["active_chat_id"]),
-                        "message_id": int(state["active_message_id"]),
+                        "chat_id": int(queue_state["active_chat_id"]),
+                        "message_id": int(queue_state["active_message_id"]),
                         "text": f"Заявка #{active_id} возвращена автору на заполнение даты.",
                     }
-                h._clear_queue_state(conn)
+                admin_queue.clear_active_pointer(
+                    conn,
+                    reason="active video returned for missing date",
+                )
                 jobs.enqueue_admin_queue_pump(conn=conn)
 
             processed_after = int(operation["processed_count"]) + len(rows)

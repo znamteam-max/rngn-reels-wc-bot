@@ -129,15 +129,20 @@ class DashboardV1014Tests(unittest.TestCase):
             patch("bot.handlers.db.log_event"),
             patch("bot.handlers._archive_queue_message") as archive,
             patch(
-                "bot.handlers.pump_queue_live_or_enqueue",
+                "bot.handlers.repair_queue_live_or_enqueue",
                 return_value={"pending_count": 8, "active_video_id": 41, "active_message_id": 501},
-            ) as pump,
+            ) as repair,
             patch("bot.handlers.refresh_dashboard_live_or_enqueue"),
         ):
             result = change_admin_queue_filter(tg, actor, "project", "bolshe")
         clear.assert_called_once_with(conn)
         archive.assert_called_once()
-        pump.assert_called_once_with(tg, actor, reason="queue_filter_changed")
+        repair.assert_called_once_with(
+            tg,
+            actor,
+            reason="queue_filter_changed",
+            force=True,
+        )
         self.assertEqual(result["active_video_id"], 41)
 
     def test_stale_dashboard_callback_is_rejected(self) -> None:
@@ -198,8 +203,9 @@ class DashboardV1014Tests(unittest.TestCase):
         }
         with (
             patch("bot.handlers.require_admin", return_value=True),
-            patch("bot.handlers.db.transaction", transaction),
-            patch("bot.handlers._queue_state_for_update", return_value=state),
+            patch("bot.handlers.db.connect", transaction),
+            patch("bot.handlers.admin_queue.read_queue_state", return_value=state),
+            patch("bot.handlers.repair_queue_live_or_enqueue"),
             patch("bot.handlers._admin_dashboard_snapshot", return_value=snapshot),
             patch("bot.handlers._pending_video_count", return_value=8),
         ):
@@ -218,11 +224,10 @@ class DashboardV1014Tests(unittest.TestCase):
 
         with (
             patch("bot.handlers.require_superadmin", return_value=True),
-            patch("bot.handlers.db.fetch_all", return_value=[]),
-            patch("bot.handlers.db.transaction", transaction),
-            patch("bot.handlers._queue_state_for_update"),
-            patch("bot.handlers._clear_queue_state") as clear,
-            patch("bot.handlers.db.log_event"),
+            patch(
+                "bot.handlers.admin_queue.reset_queue",
+                return_value={"old_cards": [], "stale_metadata_cleared": 0},
+            ) as reset,
             patch(
                 "bot.handlers.pump_queue_live_or_enqueue",
                 return_value={"pending_count": 0, "active_video_id": None, "active_message_id": None},
@@ -231,7 +236,7 @@ class DashboardV1014Tests(unittest.TestCase):
             patch("bot.handlers.refresh_dashboard_live_or_enqueue"),
         ):
             reset_admin_queue_command(tg, actor)
-        clear.assert_called_once_with(conn)
+        reset.assert_called_once_with(actor=actor)
         pump.assert_called_once_with(tg, actor, reason="reset_admin_queue", force_repost=True)
         sql_text = "\n".join(str(call.args[0]) for call in conn.cursor.return_value.__enter__.return_value.execute.call_args_list)
         self.assertNotIn("SET status", sql_text)

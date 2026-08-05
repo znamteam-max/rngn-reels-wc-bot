@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import psycopg
@@ -13,6 +14,16 @@ from scripts.seed_people import upsert_person
 
 _DONE = False
 _LAST_RESULT: dict[str, Any] = {"applied": False}
+
+
+def _fetchone_dict(cursor) -> dict[str, Any]:
+    row = cursor.fetchone()
+    if row is None:
+        return {}
+    return {
+        getattr(column, "name", str(column)): value
+        for column, value in zip(cursor.description or (), row)
+    }
 
 
 def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
@@ -31,8 +42,34 @@ def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
             versions_table_before = bool(cur.fetchone()[0])
             version_already_applied = False
             if versions_table_before:
-                cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.17')")
+                cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.18')")
                 version_already_applied = bool(cur.fetchone()[0])
+            pre_queue_snapshot: dict[str, Any] = {}
+            if versions_table_before:
+                cur.execute(
+                    """
+                    SELECT
+                        q.active_video_id,
+                        q.active_chat_id,
+                        q.active_message_id,
+                        v.status AS active_status,
+                        (SELECT count(*) FROM videos WHERE status = 'pending') AS pending_count,
+                        (
+                            SELECT count(*) FROM videos
+                            WHERE status = 'pending' AND admin_message_id IS NOT NULL
+                        ) AS pending_with_message_id,
+                        (
+                            SELECT count(*) FROM videos
+                            WHERE status = 'pending'
+                              AND admin_message_id IS NOT NULL
+                              AND (q.active_video_id IS NULL OR id <> q.active_video_id)
+                        ) AS non_active_pending_with_message_id
+                    FROM admin_queue_state q
+                    LEFT JOIN videos v ON v.id = q.active_video_id
+                    WHERE q.queue_name = 'main'
+                    """
+                )
+                pre_queue_snapshot = _fetchone_dict(cur)
             cur.execute(SCHEMA_SQL)
         seed_action, person_id = upsert_person(
             conn,
@@ -120,8 +157,34 @@ def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
             worker_kick_state_table_exists = bool(cur.fetchone()[0])
             cur.execute("SELECT to_regclass('schema_versions') IS NOT NULL")
             schema_versions_table_exists = bool(cur.fetchone()[0])
-            cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.17')")
+            cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.18')")
             schema_version_applied = bool(cur.fetchone()[0])
+            cur.execute(
+                """
+                SELECT count(*)
+                FROM information_schema.columns
+                WHERE table_name = 'admin_queue_state'
+                  AND column_name IN (
+                    'active_reservation_token', 'active_reserved_at',
+                    'active_generation', 'active_delivery_attempts',
+                    'active_last_error', 'active_last_error_at',
+                    'last_repaired_at', 'last_repair_reason'
+                  )
+                """
+            )
+            atomic_queue_columns = int(cur.fetchone()[0])
+            cur.execute(
+                """
+                SELECT count(*)
+                FROM information_schema.columns
+                WHERE table_name = 'background_jobs'
+                  AND column_name IN (
+                    'first_error', 'first_failed_at',
+                    'last_failed_at', 'failure_count'
+                  )
+                """
+            )
+            job_failure_columns = int(cur.fetchone()[0])
             cur.execute(
                 """
                 SELECT count(*)
@@ -145,7 +208,119 @@ def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
                 """
             )
             prokudin_active_rows = int(cur.fetchone()[0])
+            stale_metadata_cleared = 0
+            repair_action = "already_applied"
             if not version_already_applied:
+                cur.execute(
+                    "SELECT * FROM admin_queue_state WHERE queue_name = 'main' FOR UPDATE"
+                )
+                queue_state = _fetchone_dict(cur)
+                active_video_id = queue_state.get("active_video_id")
+                active_video = None
+                if active_video_id:
+                    cur.execute(
+                        "SELECT id, status FROM videos WHERE id = %s FOR UPDATE",
+                        (active_video_id,),
+                    )
+                    active_video = _fetchone_dict(cur)
+                if active_video and active_video.get("status") == "pending":
+                    has_message = bool(queue_state.get("active_message_id"))
+                    cur.execute(
+                        """
+                        UPDATE admin_queue_state
+                        SET active_chat_id = %s,
+                            active_reservation_token = %s,
+                            active_reserved_at = CASE
+                                WHEN %s THEN now()
+                                ELSE now() - interval '6 seconds'
+                            END,
+                            active_generation = GREATEST(active_generation, 1),
+                            active_delivery_attempts = GREATEST(active_delivery_attempts, 1),
+                            active_last_error = NULL,
+                            active_last_error_at = NULL,
+                            last_repaired_at = now(),
+                            last_repair_reason = 'v1.0.18 migration preserved active pending pointer',
+                            updated_at = now()
+                        WHERE queue_name = 'main'
+                        """,
+                        (settings.admin_chat_id, uuid.uuid4(), has_message),
+                    )
+                    if has_message:
+                        cur.execute(
+                            """
+                            UPDATE videos
+                            SET admin_message_chat_id = %s,
+                                admin_message_id = %s,
+                                admin_notified_at = COALESCE(admin_notified_at, now()),
+                                updated_at = now()
+                            WHERE id = %s
+                            """,
+                            (
+                                settings.admin_chat_id,
+                                queue_state.get("active_message_id"),
+                                active_video_id,
+                            ),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            UPDATE videos
+                            SET admin_message_chat_id = NULL,
+                                admin_message_id = NULL,
+                                admin_notified_at = NULL,
+                                updated_at = now()
+                            WHERE id = %s
+                            """,
+                            (active_video_id,),
+                        )
+                    repair_action = "active_pending_preserved"
+                else:
+                    cur.execute(
+                        """
+                        UPDATE admin_queue_state
+                        SET active_video_id = NULL,
+                            active_chat_id = NULL,
+                            active_message_id = NULL,
+                            active_reservation_token = NULL,
+                            active_reserved_at = NULL,
+                            claimed_by_tg_id = NULL,
+                            claimed_by_username = NULL,
+                            claimed_at = NULL,
+                            last_repaired_at = now(),
+                            last_repair_reason = 'v1.0.18 migration cleared invalid active pointer',
+                            updated_at = now()
+                        WHERE queue_name = 'main'
+                        """
+                    )
+                    active_video_id = None
+                    repair_action = "invalid_pointer_cleared"
+                cur.execute(
+                    """
+                    UPDATE videos
+                    SET admin_message_chat_id = NULL,
+                        admin_message_id = NULL,
+                        admin_notified_at = NULL,
+                        updated_at = now()
+                    WHERE status = 'pending'
+                      AND (%s IS NULL OR id <> %s)
+                      AND admin_message_id IS NOT NULL
+                    """,
+                    (active_video_id, active_video_id),
+                )
+                stale_metadata_cleared = int(cur.rowcount or 0)
+                cur.execute(
+                    """
+                    INSERT INTO background_jobs (kind, dedupe_key, payload, priority)
+                    VALUES ('admin_queue_pump', 'queue:pump:main', '{}'::jsonb, 5)
+                    ON CONFLICT (dedupe_key)
+                    WHERE dedupe_key IS NOT NULL
+                      AND status IN ('queued', 'processing')
+                    DO UPDATE SET
+                        priority = LEAST(background_jobs.priority, EXCLUDED.priority),
+                        available_at = LEAST(background_jobs.available_at, now()),
+                        updated_at = now()
+                    """
+                )
                 cur.execute(
                     """
                     INSERT INTO background_jobs (kind, dedupe_key, payload, priority)
@@ -156,7 +331,42 @@ def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
                     DO NOTHING
                     """
                 )
+            cur.execute(
+                """
+                SELECT
+                    q.active_video_id,
+                    q.active_chat_id,
+                    q.active_message_id,
+                    q.active_generation,
+                    q.active_delivery_attempts,
+                    (q.active_reservation_token IS NOT NULL) AS has_reservation_token,
+                    v.status AS active_status,
+                    (SELECT count(*) FROM videos WHERE status = 'pending') AS pending_count,
+                    (
+                        SELECT count(*) FROM videos
+                        WHERE status = 'pending' AND admin_message_id IS NOT NULL
+                    ) AS pending_with_message_id,
+                    (
+                        SELECT count(*) FROM videos
+                        WHERE status = 'pending'
+                          AND admin_message_id IS NOT NULL
+                          AND (q.active_video_id IS NULL OR id <> q.active_video_id)
+                    ) AS non_active_pending_with_message_id
+                FROM admin_queue_state q
+                LEFT JOIN videos v ON v.id = q.active_video_id
+                WHERE q.queue_name = 'main'
+                """
+            )
+            post_queue_snapshot = _fetchone_dict(cur)
         conn.commit()
+
+    if not version_already_applied:
+        try:
+            from bot.worker_kick import kick_worker_if_ready
+
+            kick_worker_if_ready(reason="migration:1.0.18")
+        except Exception:
+            pass
 
     _LAST_RESULT = {
         "applied": True,
@@ -184,8 +394,16 @@ def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
             "worker_heartbeats_table": worker_heartbeats_table_exists,
             "worker_kick_state_table": worker_kick_state_table_exists,
             "schema_versions_table": schema_versions_table_exists,
-            "schema_version_1_0_17": schema_version_applied,
+            "schema_version_1_0_18": schema_version_applied,
+            "atomic_queue_columns": atomic_queue_columns,
+            "job_failure_columns": job_failure_columns,
             "sheet_sync_columns": sheet_sync_columns,
+        },
+        "queue_repair": {
+            "action": repair_action,
+            "stale_pending_message_metadata_cleared": stale_metadata_cleared,
+            "before": pre_queue_snapshot,
+            "after": post_queue_snapshot,
         },
         "seed": {
             "prokudin_action": seed_action,

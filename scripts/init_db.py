@@ -104,6 +104,14 @@ CREATE TABLE IF NOT EXISTS admin_queue_state (
     active_video_id bigint REFERENCES videos(id) ON DELETE SET NULL,
     active_chat_id bigint,
     active_message_id bigint,
+    active_reservation_token uuid,
+    active_reserved_at timestamptz,
+    active_generation bigint NOT NULL DEFAULT 0,
+    active_delivery_attempts integer NOT NULL DEFAULT 0,
+    active_last_error text,
+    active_last_error_at timestamptz,
+    last_repaired_at timestamptz,
+    last_repair_reason text,
     claimed_by_tg_id bigint,
     claimed_by_username text,
     claimed_at timestamptz,
@@ -191,6 +199,10 @@ CREATE TABLE IF NOT EXISTS background_jobs (
     started_at timestamptz,
     finished_at timestamptz,
     last_error text,
+    first_error text,
+    first_failed_at timestamptz,
+    last_failed_at timestamptz,
+    failure_count integer NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -297,6 +309,19 @@ ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS dashboard_message_id bigi
 ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS dashboard_updated_at timestamptz NULL;
 ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS queue_filter_type text NOT NULL DEFAULT 'global';
 ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS queue_filter_value text NULL;
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS active_reservation_token uuid NULL;
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS active_reserved_at timestamptz NULL;
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS active_generation bigint NOT NULL DEFAULT 0;
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS active_delivery_attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS active_last_error text NULL;
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS active_last_error_at timestamptz NULL;
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS last_repaired_at timestamptz NULL;
+ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS last_repair_reason text NULL;
+
+ALTER TABLE background_jobs ADD COLUMN IF NOT EXISTS first_error text NULL;
+ALTER TABLE background_jobs ADD COLUMN IF NOT EXISTS first_failed_at timestamptz NULL;
+ALTER TABLE background_jobs ADD COLUMN IF NOT EXISTS last_failed_at timestamptz NULL;
+ALTER TABLE background_jobs ADD COLUMN IF NOT EXISTS failure_count integer NOT NULL DEFAULT 0;
 
 UPDATE admin_queue_state
 SET queue_filter_type = 'global', queue_filter_value = NULL
@@ -398,6 +423,10 @@ ON CONFLICT (version) DO NOTHING;
 
 INSERT INTO schema_versions (version)
 VALUES ('1.0.17')
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO schema_versions (version)
+VALUES ('1.0.18')
 ON CONFLICT (version) DO NOTHING;
 """
 

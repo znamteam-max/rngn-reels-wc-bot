@@ -16,6 +16,7 @@ COMMANDS = [
     ("help", "Помощь"),
     ("admin", "Админская очередь"),
     ("queue_status", "Статус очереди"),
+    ("queue_debug", "Диагностика FIFO-очереди"),
     ("find", "Найти заявку"),
     ("person", "Карточка участника"),
     ("daily_report", "Ежедневный отчёт"),
@@ -38,6 +39,7 @@ SUPERADMIN_COMMANDS = [
     ("retry_failed_jobs", "Повторить временно упавшие задания"),
     ("kick_worker", "Разбудить event worker"),
     ("run_jobs_now", "Запустить worker вручную"),
+    ("queue_trace", "Трассировка FIFO по заявке"),
 ]
 
 

@@ -317,7 +317,7 @@ class WorkerHeartbeatV1016Tests(unittest.TestCase):
             jobs.enqueue_telegram_notification(1, "text", event_key="bulk")
         self.assertEqual(
             [call.kwargs["priority"] for call in enqueue.call_args_list],
-            [10, 20, 60, 80],
+            [5, 20, 60, 80],
         )
 
 
