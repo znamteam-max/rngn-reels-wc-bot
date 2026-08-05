@@ -318,11 +318,11 @@ class ProjectSheetsV1013Tests(unittest.TestCase):
             },
         ]
         stats = build_project_stats_rows(videos, updated_at=datetime(2026, 8, 3, tzinfo=timezone.utc))
-        bolshe = next(row for row in stats if row[0] == "bolshe")
-        self.assertEqual(bolshe[2:7], ["1", "1", "0", "0", "1"])
+        bolshe = next(row for row in stats if row[0] == "ALL" and row[1] == "bolshe")
+        self.assertEqual(bolshe[3:8], ["2", "1", "1", "0", "0"])
         people = build_people_projects_rows(videos)
-        self.assertEqual(len(people), 2)
-        self.assertTrue(all(row[2] == "bolshe" for row in people))
+        self.assertEqual(len(people), 4)
+        self.assertTrue(all(row[3] == "bolshe" for row in people))
 
 
 if __name__ == "__main__":

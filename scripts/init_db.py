@@ -207,6 +207,64 @@ CREATE TABLE IF NOT EXISTS background_jobs (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS sheet_reconciliation_runs (
+    id bigserial PRIMARY KEY,
+    status text NOT NULL DEFAULT 'created',
+    mode text NOT NULL,
+    initiated_by_tg_id bigint,
+    initiated_by_username text,
+    initiated_chat_id bigint,
+    confirmed_by_tg_id bigint,
+    confirmed_by_username text,
+    confirmed_at timestamptz,
+    stage text,
+    sheet_index integer NOT NULL DEFAULT 0,
+    row_offset integer NOT NULL DEFAULT 0,
+    db_active_count integer NOT NULL DEFAULT 0,
+    db_approved_count integer NOT NULL DEFAULT 0,
+    db_pending_count integer NOT NULL DEFAULT 0,
+    db_needs_revision_count integer NOT NULL DEFAULT 0,
+    db_duplicate_count integer NOT NULL DEFAULT 0,
+    db_unassigned_count integer NOT NULL DEFAULT 0,
+    db_missing_date_count integer NOT NULL DEFAULT 0,
+    sheet_videos_count integer,
+    sheet_project_union_count integer,
+    sheet_month_union_count integer,
+    missing_from_videos integer NOT NULL DEFAULT 0,
+    extra_in_videos integer NOT NULL DEFAULT 0,
+    missing_from_projects integer NOT NULL DEFAULT 0,
+    duplicate_in_projects integer NOT NULL DEFAULT 0,
+    project_mismatches integer NOT NULL DEFAULT 0,
+    missing_from_months integer NOT NULL DEFAULT 0,
+    duplicate_in_months integer NOT NULL DEFAULT 0,
+    month_mismatches integer NOT NULL DEFAULT 0,
+    safe_project_backfill_candidates integer NOT NULL DEFAULT 0,
+    conflicting_project_assignments integer NOT NULL DEFAULT 0,
+    started_at timestamptz,
+    finished_at timestamptz,
+    last_error text,
+    summary jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT sheet_reconciliation_status_check CHECK (
+        status IN (
+            'created','auditing','awaiting_confirmation','rebuilding',
+            'validating','done','failed','cancelled'
+        )
+    )
+);
+
+CREATE TABLE IF NOT EXISTS sheet_reconciliation_items (
+    id bigserial PRIMARY KEY,
+    run_id bigint NOT NULL REFERENCES sheet_reconciliation_runs(id) ON DELETE CASCADE,
+    item_type text NOT NULL,
+    sheet_name text,
+    video_id bigint,
+    row_index integer NOT NULL DEFAULT 0,
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS bulk_operations (
     id bigserial PRIMARY KEY,
     kind text NOT NULL,
@@ -279,6 +337,10 @@ ON background_jobs(dedupe_key)
 WHERE dedupe_key IS NOT NULL
   AND status IN ('queued', 'processing');
 CREATE INDEX IF NOT EXISTS idx_bulk_operations_status ON bulk_operations(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_sheet_reconciliation_runs_status
+ON sheet_reconciliation_runs(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sheet_reconciliation_items_run
+ON sheet_reconciliation_items(run_id, item_type, sheet_name, row_index);
 
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS publish_date_set_by_tg_id bigint NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS video_type text NOT NULL DEFAULT 'regular';
@@ -322,6 +384,14 @@ ALTER TABLE background_jobs ADD COLUMN IF NOT EXISTS first_error text NULL;
 ALTER TABLE background_jobs ADD COLUMN IF NOT EXISTS first_failed_at timestamptz NULL;
 ALTER TABLE background_jobs ADD COLUMN IF NOT EXISTS last_failed_at timestamptz NULL;
 ALTER TABLE background_jobs ADD COLUMN IF NOT EXISTS failure_count integer NOT NULL DEFAULT 0;
+
+ALTER TABLE sheet_reconciliation_runs ADD COLUMN IF NOT EXISTS initiated_chat_id bigint NULL;
+ALTER TABLE sheet_reconciliation_runs ADD COLUMN IF NOT EXISTS confirmed_by_tg_id bigint NULL;
+ALTER TABLE sheet_reconciliation_runs ADD COLUMN IF NOT EXISTS confirmed_by_username text NULL;
+ALTER TABLE sheet_reconciliation_runs ADD COLUMN IF NOT EXISTS confirmed_at timestamptz NULL;
+ALTER TABLE sheet_reconciliation_runs ADD COLUMN IF NOT EXISTS stage text NULL;
+ALTER TABLE sheet_reconciliation_runs ADD COLUMN IF NOT EXISTS sheet_index integer NOT NULL DEFAULT 0;
+ALTER TABLE sheet_reconciliation_runs ADD COLUMN IF NOT EXISTS row_offset integer NOT NULL DEFAULT 0;
 
 UPDATE admin_queue_state
 SET queue_filter_type = 'global', queue_filter_value = NULL
@@ -413,6 +483,12 @@ BEFORE UPDATE ON bulk_operations
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 
+DROP TRIGGER IF EXISTS trg_sheet_reconciliation_runs_updated_at ON sheet_reconciliation_runs;
+CREATE TRIGGER trg_sheet_reconciliation_runs_updated_at
+BEFORE UPDATE ON sheet_reconciliation_runs
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
 INSERT INTO schema_versions (version)
 VALUES ('1.0.15')
 ON CONFLICT (version) DO NOTHING;
@@ -427,6 +503,10 @@ ON CONFLICT (version) DO NOTHING;
 
 INSERT INTO schema_versions (version)
 VALUES ('1.0.18')
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO schema_versions (version)
+VALUES ('1.0.19')
 ON CONFLICT (version) DO NOTHING;
 """
 

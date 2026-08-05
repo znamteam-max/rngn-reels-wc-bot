@@ -41,9 +41,12 @@ def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
             cur.execute("SELECT to_regclass('schema_versions') IS NOT NULL")
             versions_table_before = bool(cur.fetchone()[0])
             version_already_applied = False
+            version_1019_already_applied = False
             if versions_table_before:
                 cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.18')")
                 version_already_applied = bool(cur.fetchone()[0])
+                cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.19')")
+                version_1019_already_applied = bool(cur.fetchone()[0])
             pre_queue_snapshot: dict[str, Any] = {}
             if versions_table_before:
                 cur.execute(
@@ -159,6 +162,21 @@ def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
             schema_versions_table_exists = bool(cur.fetchone()[0])
             cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.18')")
             schema_version_applied = bool(cur.fetchone()[0])
+            cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.19')")
+            schema_version_1019_applied = bool(cur.fetchone()[0])
+            cur.execute("SELECT to_regclass('sheet_reconciliation_runs') IS NOT NULL")
+            reconciliation_runs_table_exists = bool(cur.fetchone()[0])
+            cur.execute("SELECT to_regclass('sheet_reconciliation_items') IS NOT NULL")
+            reconciliation_items_table_exists = bool(cur.fetchone()[0])
+            cur.execute(
+                """
+                SELECT count(*)
+                FROM information_schema.columns
+                WHERE table_name = 'sheet_reconciliation_runs'
+                  AND column_name IN ('stage','sheet_index','row_offset','initiated_chat_id')
+                """
+            )
+            reconciliation_progress_columns = int(cur.fetchone()[0])
             cur.execute(
                 """
                 SELECT count(*)
@@ -395,15 +413,25 @@ def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
             "worker_kick_state_table": worker_kick_state_table_exists,
             "schema_versions_table": schema_versions_table_exists,
             "schema_version_1_0_18": schema_version_applied,
+            "schema_version_1_0_19": schema_version_1019_applied,
             "atomic_queue_columns": atomic_queue_columns,
             "job_failure_columns": job_failure_columns,
             "sheet_sync_columns": sheet_sync_columns,
+            "sheet_reconciliation_runs": reconciliation_runs_table_exists,
+            "sheet_reconciliation_items": reconciliation_items_table_exists,
+            "sheet_reconciliation_progress_columns": reconciliation_progress_columns,
         },
         "queue_repair": {
             "action": repair_action,
             "stale_pending_message_metadata_cleared": stale_metadata_cleared,
             "before": pre_queue_snapshot,
             "after": post_queue_snapshot,
+        },
+        "reconciliation": {
+            "already_applied": version_1019_already_applied,
+            "runs_table": reconciliation_runs_table_exists,
+            "items_table": reconciliation_items_table_exists,
+            "progress_columns": reconciliation_progress_columns,
         },
         "seed": {
             "prokudin_action": seed_action,

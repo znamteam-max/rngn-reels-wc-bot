@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
-from bot import db, jobs, metrics, sheets
+from bot import db, jobs, metrics, reconciliation, sheets
 from bot.config import get_settings
 from bot.telegram import TelegramAPIError, TelegramClient, inline_keyboard
 
@@ -200,6 +200,21 @@ def _terminal_side_effect(conn, job: dict[str, Any], error: str) -> None:
                 """,
                 (int(payload["operation_id"]),),
             )
+    if job["kind"] in {
+        "sheets_audit",
+        "sheets_reconcile",
+        "sheets_rebuild_chunk",
+        "sheets_validate",
+    } and payload.get("run_id"):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE sheet_reconciliation_runs
+                SET status='failed', last_error=%s, finished_at=now(), updated_at=now()
+                WHERE id=%s
+                """,
+                (error[:500], int(payload["run_id"])),
+            )
 
 
 def _fail_job(job: dict[str, Any], exc: Exception) -> str:
@@ -357,14 +372,14 @@ def _handle_sheets_video(payload: dict[str, Any], context: WorkerContext) -> Non
     db.execute(
         """
         UPDATE videos
-        SET sheet_row = COALESCE(%s, sheet_row),
+        SET sheet_row = CASE WHEN %s THEN NULL ELSE COALESCE(%s, sheet_row) END,
             sheet_sync_status = 'synced',
             sheet_sync_error = NULL,
             sheet_synced_at = now(),
             updated_at = now()
         WHERE id = %s
         """,
-        (row_number or None, video_id),
+        (video.get("status") == "deleted", row_number or None, video_id),
     )
     jobs.enqueue_job(
         "sheets_sync_stats",
@@ -443,14 +458,18 @@ def _handle_sheets_video_batch(
                 cur.execute(
                     """
                     UPDATE videos
-                    SET sheet_row = COALESCE(%s, sheet_row),
+                    SET sheet_row = CASE WHEN %s THEN NULL ELSE COALESCE(%s, sheet_row) END,
                         sheet_sync_status = 'synced',
                         sheet_sync_error = NULL,
                         sheet_synced_at = now(),
                         updated_at = now()
                     WHERE id = %s
                     """,
-                    (row_numbers.get(video_id) or None, video_id),
+                    (
+                        video.get("status") == "deleted",
+                        row_numbers.get(video_id) or None,
+                        video_id,
+                    ),
                 )
                 db.log_event(
                     conn,
@@ -474,6 +493,85 @@ def _handle_sheets_stats(payload: dict[str, Any], context: WorkerContext) -> Non
 
     rows = db.fetch_all(h.VIDEO_SELECT + " WHERE v.status <> 'deleted'")
     sheets.sync_project_reports(rows, service=context.sheets_service())
+
+
+def _reconciliation_run_id(payload: dict[str, Any], kind: str) -> int:
+    run_id = int(payload.get("run_id") or 0)
+    if not run_id:
+        raise PermanentJobError(f"{kind} requires run_id")
+    return run_id
+
+
+def _handle_sheets_audit(payload: dict[str, Any], context: WorkerContext) -> None:
+    run_id = _reconciliation_run_id(payload, "sheets_audit")
+    try:
+        run = reconciliation.audit_run(run_id, service=context.sheets_service())
+    except Exception as exc:
+        reconciliation.mark_run_error(run_id, exc)
+        raise
+    chat_id = int(run.get("initiated_chat_id") or run.get("initiated_by_tg_id") or 0)
+    if chat_id and run.get("status") == "done":
+        context.telegram().send_message(
+            chat_id,
+            reconciliation.format_run_summary(run) + "\n\nИзменений ещё не выполнено.",
+            inline_keyboard(
+                [
+                    [("Применить безопасные назначения и пересобрать", f"recon:apply:{run_id}")],
+                    [("Пересобрать только из БД", f"recon:db:{run_id}")],
+                    [("Отмена", f"recon:cancel:{run_id}")],
+                ]
+            ),
+        )
+        context.telegram_sends += 1
+
+
+def _handle_sheets_reconcile(payload: dict[str, Any], context: WorkerContext) -> None:
+    run_id = _reconciliation_run_id(payload, "sheets_reconcile")
+    try:
+        reconciliation.rebuild_managed_sheets_from_db(run_id)
+    except Exception as exc:
+        reconciliation.mark_run_error(run_id, exc)
+        raise
+
+
+def _handle_sheets_rebuild_chunk(payload: dict[str, Any], context: WorkerContext) -> None:
+    run_id = _reconciliation_run_id(payload, "sheets_rebuild_chunk")
+    sheet_index = int(payload.get("sheet_index") or 0)
+    try:
+        reconciliation.rebuild_sheet_chunk(
+            run_id,
+            sheet_index,
+            service=context.sheets_service(),
+        )
+    except Exception as exc:
+        reconciliation.mark_run_error(run_id, exc)
+        raise
+
+
+def _handle_sheets_validate(payload: dict[str, Any], context: WorkerContext) -> None:
+    run_id = _reconciliation_run_id(payload, "sheets_validate")
+    try:
+        run = reconciliation.validate_and_promote(run_id, service=context.sheets_service())
+    except Exception as exc:
+        reconciliation.mark_run_error(run_id, exc)
+        raise
+    chat_id = int(run.get("initiated_chat_id") or run.get("initiated_by_tg_id") or 0)
+    if chat_id:
+        context.telegram().send_message(
+            chat_id,
+            reconciliation.format_run_summary(run) + "\n\nСверка и rebuild завершены.",
+        )
+        context.telegram_sends += 1
+
+
+def _handle_unfinished_requests_sync(payload: dict[str, Any], context: WorkerContext) -> None:
+    videos = reconciliation.load_active_video_snapshot()
+    sessions = reconciliation.load_stale_unsubmitted_sessions()
+    sheets.sync_unfinished_reports(
+        videos,
+        sessions,
+        service=context.sheets_service(),
+    )
 
 
 def _handle_telegram_notify(payload: dict[str, Any], context: WorkerContext) -> None:
@@ -604,6 +702,11 @@ def _handle_bulk_return(payload: dict[str, Any], context: WorkerContext) -> None
                     before_data={"status": "pending", "publish_date": None},
                     after_data={"status": "needs_revision", "bulk_operation_id": operation_id},
                 )
+                jobs.enqueue_sheet_sync(
+                    int(row["id"]),
+                    version="needs_revision",
+                    conn=conn,
+                )
                 if row.get("added_by_tg_id"):
                     jobs.enqueue_telegram_notification(
                         int(row["added_by_tg_id"]),
@@ -724,6 +827,11 @@ JOB_HANDLERS: dict[str, Callable[[dict[str, Any], WorkerContext], None]] = {
     "archive_admin_cards": _handle_archive_cards,
     "daily_report": _handle_daily_report,
     "youtube_metrics": _handle_youtube_metrics,
+    "sheets_audit": _handle_sheets_audit,
+    "sheets_reconcile": _handle_sheets_reconcile,
+    "sheets_rebuild_chunk": _handle_sheets_rebuild_chunk,
+    "sheets_validate": _handle_sheets_validate,
+    "unfinished_requests_sync": _handle_unfinished_requests_sync,
 }
 
 
@@ -736,6 +844,8 @@ def _job_fits_budget(job: dict[str, Any], context: WorkerContext) -> bool:
         "telegram_notify",
         "admin_queue_pump",
         "daily_report",
+        "sheets_audit",
+        "sheets_validate",
     } else 0
     if kind == "archive_admin_cards":
         telegram_cost = min(10, len((job.get("payload") or {}).get("cards") or []))

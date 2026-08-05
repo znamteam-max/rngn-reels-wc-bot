@@ -7,7 +7,7 @@ Admin chat: `-5520370963`
 Runtime: Python 3.12 and Node.js on Vercel Functions
 Database: Neon Postgres via `DATABASE_URL`  
 Report: Google Sheets tab `Videos`
-Version/schema: `1.0.18`
+Version/schema: `1.0.19`
 
 ## Structure
 
@@ -100,14 +100,15 @@ python scripts/seed_people.py authors.txt --role author
 
 ## Google Sheets
 
-The spreadsheet must contain a tab named `Videos` with these columns:
+The spreadsheet contains a canonical `Videos` tab with these columns:
 
 ```text
-id,status,video_type,publish_date,instagram_url,instagram_id,youtube_url,youtube_id,tiktok_url,vk_url,author,author_tg_id,montage,montage_tg_id,voice,voice_tg_id,added_by,checked_by,created_at,checked_at,batch_id,comment
+id,status,video_type,project_id,project_code,project_name,publish_date,instagram_url,instagram_id,youtube_url,youtube_id,tiktok_url,vk_url,author,author_tg_id,montage,montage_tg_id,voice,voice_tg_id,added_by,checked_by,created_at,checked_at,batch_id,comment,publish_month,is_published,is_incomplete,missing_fields
 ```
 
-Create a Google Cloud service account, enable Google Sheets API, and share the spreadsheet with the service account email as Editor.
-If the `video_type` column is missing, the bot inserts it safely after `status` before writing approved rows.
+Active records (`status <> deleted`) also appear exactly once in a project partition and exactly once in a `YYYY-MM` publication-month partition. Missing values use `Без проекта` and `Без даты`; May-August 2026 always exist and future month tabs are created automatically. Reconciliation rebuilds managed tabs through validated `__tmp__...` staging tabs and leaves unknown user-created tabs untouched.
+
+Create a Google Cloud service account, enable Google Sheets API, and share the spreadsheet with the service account email as Editor. Missing managed columns are appended before incremental synchronization.
 
 Encode the service account JSON for Vercel:
 
@@ -222,6 +223,10 @@ Admin commands:
 /person username_or_id
 /find query
 /daily_report [YYYY-MM-DD]
+/sheets_audit
+/reconcile_sheets
+/sheets_status
+/unfinished_requests
 /sync_sheets
 /queue_status
 /queue_debug
@@ -286,7 +291,9 @@ The primary production wake-up path is the event-driven internal kicker. `.githu
 
 FIFO pumping uses a short live attempt after queue-changing actions. A recent reservation prevents concurrent pumps from sending a duplicate; a five-second watchdog retries the same reserved video before selecting anything newer. Send failures release only a matching reservation, while a send-success/pointer-save failure queues adoption of the already-sent Telegram message. Network failures never roll back the preceding business action. Dashboard refresh has its own coalesced background path and cannot block FIFO. `/worker_status` reports ready/future jobs, event-kick state, heartbeat source, and GitHub backup status. `/kick_worker` is superadmin-only and only wakes the separate worker invocation. `/run_jobs_now` keeps the GitHub Actions manual-backup path instead of storing a GitHub PAT in Vercel.
 
-Project reporting also maintains `Project Stats` and `People × Projects`. Project-sheet synchronization removes a video ID from its previous project sheet before upserting it into the current one.
+Project reporting maintains `Project Stats`, `Month Stats`, and `People × Projects`. Published totals contain approved rows only; pending, revision, and duplicate records are reported separately. `/sheets_audit` and `/reconcile_sheets` always run a read-only background audit first. A superadmin must then explicitly choose safe project backfills plus rebuild, DB-only rebuild, or cancellation. `/unfinished_requests` refreshes separate managed tabs for incomplete records and stale forms without sending reminders.
+
+Incremental synchronization updates `Videos`, the current project tab, and the current publication-month tab, removing old memberships after project, date, or status changes. Full reconciliation uses a durable DB snapshot and resumes by sheet index after a worker timeout.
 
 Use `/chatid` in the target admin group or supergroup to get the real `chat_id`, then update `ADMIN_CHAT_ID` in Vercel and run `/resend_pending`.
 

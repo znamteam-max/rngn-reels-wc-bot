@@ -22,6 +22,11 @@ ALLOWED_JOB_KINDS = {
     "archive_admin_cards",
     "daily_report",
     "youtube_metrics",
+    "sheets_audit",
+    "sheets_reconcile",
+    "sheets_rebuild_chunk",
+    "sheets_validate",
+    "unfinished_requests_sync",
 }
 
 

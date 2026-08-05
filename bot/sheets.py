@@ -10,6 +10,7 @@ from typing import Any
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
+from bot import reconciliation
 from bot.config import get_settings
 from bot.messages import person_value
 from bot.projects import PROJECTS, PROJECT_SHEET_TITLES, project_sheet_title
@@ -19,6 +20,11 @@ SHEET_NAME = "Videos"
 METRICS_SHEET_NAME = "MetricsRaw"
 PROJECT_STATS_SHEET_NAME = "Project Stats"
 PEOPLE_PROJECTS_SHEET_NAME = "People × Projects"
+MONTH_STATS_SHEET_NAME = reconciliation.MONTH_STATS_SHEET_NAME
+UNFINISHED_SHEET_NAME = reconciliation.UNFINISHED_SHEET_NAME
+UNSUBMITTED_SHEET_NAME = reconciliation.UNSUBMITTED_SHEET_NAME
+RECONCILIATION_SHEET_NAME = reconciliation.RECONCILIATION_SHEET_NAME
+BACKFILL_REVIEW_SHEET_NAME = reconciliation.BACKFILL_REVIEW_SHEET_NAME
 SHEET_COLUMNS = [
     "id",
     "status",
@@ -45,29 +51,11 @@ SHEET_COLUMNS = [
     "checked_at",
     "batch_id",
     "comment",
+    *reconciliation.DERIVED_VIDEO_COLUMNS,
 ]
-PROJECT_STATS_COLUMNS = [
-    "project_code",
-    "project_name",
-    "approved_videos",
-    "pending_videos",
-    "duplicate_videos",
-    "needs_revision_videos",
-    "authors_count",
-    "montage_count",
-    "voice_count",
-    "updated_at",
-]
-PEOPLE_PROJECTS_COLUMNS = [
-    "person_name",
-    "person_username",
-    "project_code",
-    "project_name",
-    "author_count",
-    "montage_count",
-    "voice_count",
-    "approved_total",
-]
+PROJECT_STATS_COLUMNS = reconciliation.PROJECT_STATS_COLUMNS
+MONTH_STATS_COLUMNS = reconciliation.MONTH_STATS_COLUMNS
+PEOPLE_PROJECTS_COLUMNS = reconciliation.PEOPLE_PROJECTS_COLUMNS
 METRICS_COLUMNS = [
     "captured_at",
     "video_id",
@@ -153,6 +141,7 @@ def video_to_row(video: dict[str, Any], columns: list[str] | None = None) -> lis
         "checked_at": video.get("checked_at"),
         "batch_id": video.get("batch_id"),
         "comment": video.get("comment"),
+        **reconciliation.derived_video_values(video),
     }
     return [_as_cell(values.get(column)) for column in (columns or SHEET_COLUMNS)]
 
@@ -382,7 +371,7 @@ def _write_video_to_named_sheet(
             .update(
                 spreadsheetId=spreadsheet_id,
                 range=_sheet_range(sheet_name, f"A{row_number}:{end_column}{row_number}"),
-                valueInputOption="USER_ENTERED",
+                valueInputOption="RAW",
                 body={"values": row_values},
             )
             .execute()
@@ -394,7 +383,7 @@ def _write_video_to_named_sheet(
         .append(
             spreadsheetId=spreadsheet_id,
             range=_sheet_range(sheet_name, f"A:{end_column}"),
-            valueInputOption="USER_ENTERED",
+            valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": row_values},
         )
@@ -430,6 +419,23 @@ def _project_sheet_rows_by_id(
                 found[title] = row_index
                 break
     return found
+
+
+def _managed_month_sheet_titles(
+    service,
+    spreadsheet_id: str,
+    videos: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    properties = _sheet_properties(service, spreadsheet_id)
+    titles = {
+        title for title in properties if reconciliation.MONTH_RE.match(title)
+    }
+    titles.update(reconciliation.BASE_MONTHS)
+    for video in videos or []:
+        month = reconciliation.publish_month(video)
+        if month:
+            titles.add(month)
+    return [*sorted(titles), reconciliation.NO_DATE_SHEET]
 
 
 def _sync_video_project_sheet(
@@ -478,6 +484,85 @@ def _sync_video_project_sheet(
         )
 
 
+def _sync_video_month_sheet(
+    service,
+    spreadsheet_id: str,
+    video: dict[str, Any],
+    columns: list[str],
+) -> None:
+    month_sheets = _managed_month_sheet_titles(service, spreadsheet_id, [video])
+    _ensure_named_sheets(
+        service,
+        spreadsheet_id,
+        {title: columns for title in month_sheets},
+    )
+    target_title = reconciliation.month_partition_sheet(video)
+    existing_rows = _project_sheet_rows_by_id(
+        service,
+        spreadsheet_id,
+        month_sheets,
+        int(video["id"]),
+    )
+    end_column = _column_letter(len(columns))
+    clear_ranges = [
+        _sheet_range(title, f"A{row_number}:{end_column}{row_number}")
+        for title, row_number in existing_rows.items()
+        if title != target_title
+    ]
+    if clear_ranges:
+        service.spreadsheets().values().batchClear(
+            spreadsheetId=spreadsheet_id,
+            body={"ranges": clear_ranges},
+        ).execute()
+    _write_video_to_named_sheet(
+        service,
+        spreadsheet_id,
+        target_title,
+        video,
+        columns,
+        row_number=existing_rows.get(target_title),
+    )
+
+
+def _remove_video_from_managed_sheets(
+    service,
+    spreadsheet_id: str,
+    video_id: int,
+    columns: list[str],
+) -> None:
+    partition_titles = [
+        *PROJECT_SHEET_TITLES.values(),
+        *_managed_month_sheet_titles(service, spreadsheet_id),
+    ]
+    _ensure_named_sheets(
+        service,
+        spreadsheet_id,
+        {title: columns for title in partition_titles},
+    )
+    titles = [
+        SHEET_NAME,
+        *partition_titles,
+    ]
+    existing_rows = _project_sheet_rows_by_id(
+        service,
+        spreadsheet_id,
+        list(dict.fromkeys(titles)),
+        video_id,
+    )
+    if not existing_rows:
+        return
+    end_column = _column_letter(len(columns))
+    service.spreadsheets().values().batchClear(
+        spreadsheetId=spreadsheet_id,
+        body={
+            "ranges": [
+                _sheet_range(title, f"A{row_number}:{end_column}{row_number}")
+                for title, row_number in existing_rows.items()
+            ]
+        },
+    ).execute()
+
+
 def upsert_video(video: dict[str, Any], *, service=None) -> int:
     settings = get_settings()
     if not settings.google_sheets_spreadsheet_id:
@@ -486,6 +571,14 @@ def upsert_video(video: dict[str, Any], *, service=None) -> int:
     service = service or _service()
     spreadsheet_id = settings.google_sheets_spreadsheet_id
     columns = _ensure_video_sheet_columns(service, spreadsheet_id)
+    if video.get("status") == "deleted":
+        _remove_video_from_managed_sheets(
+            service,
+            spreadsheet_id,
+            int(video["id"]),
+            columns,
+        )
+        return 0
     end_column = _column_letter(len(columns))
     row_values = [video_to_row(video, columns)]
     row_number = video.get("sheet_row") or _find_row_by_id(service, spreadsheet_id, int(video["id"]))
@@ -497,12 +590,13 @@ def upsert_video(video: dict[str, Any], *, service=None) -> int:
             .update(
                 spreadsheetId=spreadsheet_id,
                 range=f"{SHEET_NAME}!A{row_number}:{end_column}{row_number}",
-                valueInputOption="USER_ENTERED",
+                valueInputOption="RAW",
                 body={"values": row_values},
             )
             .execute()
         )
         _sync_video_project_sheet(service, spreadsheet_id, video, columns)
+        _sync_video_month_sheet(service, spreadsheet_id, video, columns)
         return int(row_number)
 
     response = (
@@ -511,7 +605,7 @@ def upsert_video(video: dict[str, Any], *, service=None) -> int:
         .append(
             spreadsheetId=spreadsheet_id,
             range=f"{SHEET_NAME}!A:{end_column}",
-            valueInputOption="USER_ENTERED",
+            valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": row_values},
         )
@@ -522,9 +616,11 @@ def upsert_video(video: dict[str, Any], *, service=None) -> int:
     if match:
         row_number = int(match.group(1))
         _sync_video_project_sheet(service, spreadsheet_id, video, columns)
+        _sync_video_month_sheet(service, spreadsheet_id, video, columns)
         return row_number
     found = _find_row_by_id(service, spreadsheet_id, int(video["id"]))
     _sync_video_project_sheet(service, spreadsheet_id, video, columns)
+    _sync_video_month_sheet(service, spreadsheet_id, video, columns)
     return int(found or 0)
 
 
@@ -545,12 +641,14 @@ def batch_upsert_videos(
     spreadsheet_id = settings.google_sheets_spreadsheet_id
     columns = _ensure_video_sheet_columns(service, spreadsheet_id)
     project_sheets = list(PROJECT_SHEET_TITLES.values())
+    month_sheets = _managed_month_sheet_titles(service, spreadsheet_id, videos)
+    partition_sheets = [*project_sheets, *month_sheets]
     _ensure_named_sheets(
         service,
         spreadsheet_id,
-        {title: columns for title in project_sheets},
+        {title: columns for title in partition_sheets},
     )
-    sheet_names = [SHEET_NAME, *project_sheets]
+    sheet_names = [SHEET_NAME, *partition_sheets]
     response = (
         service.spreadsheets()
         .values()
@@ -582,18 +680,26 @@ def batch_upsert_videos(
         video_id = int(video["id"])
         row_values = [video_to_row(video, columns)]
         main_row = int(video.get("sheet_row") or index_by_sheet[SHEET_NAME].get(video_id) or 0)
-        if not main_row:
-            main_row = next_row[SHEET_NAME]
-            next_row[SHEET_NAME] += 1
-        main_rows[video_id] = main_row
-        updates.append(
-            {
-                "range": _sheet_range(SHEET_NAME, f"A{main_row}:{end_column}{main_row}"),
-                "values": row_values,
-            }
-        )
+        is_deleted = video.get("status") == "deleted"
+        if is_deleted:
+            if main_row:
+                clear_ranges.append(
+                    _sheet_range(SHEET_NAME, f"A{main_row}:{end_column}{main_row}")
+                )
+            main_rows[video_id] = 0
+        else:
+            if not main_row:
+                main_row = next_row[SHEET_NAME]
+                next_row[SHEET_NAME] += 1
+            main_rows[video_id] = main_row
+            updates.append(
+                {
+                    "range": _sheet_range(SHEET_NAME, f"A{main_row}:{end_column}{main_row}"),
+                    "values": row_values,
+                }
+            )
 
-        target_title = project_sheet_title(str(video.get("project_code") or ""))
+        target_title = None if is_deleted else reconciliation.project_partition_sheet(video)
         for title in project_sheets:
             existing_row = index_by_sheet[title].get(video_id)
             if existing_row and title != target_title:
@@ -615,16 +721,39 @@ def batch_upsert_videos(
                 }
             )
 
+        target_month = None if is_deleted else reconciliation.month_partition_sheet(video)
+        for title in month_sheets:
+            existing_row = index_by_sheet[title].get(video_id)
+            if existing_row and title != target_month:
+                clear_ranges.append(
+                    _sheet_range(title, f"A{existing_row}:{end_column}{existing_row}")
+                )
+        if target_month:
+            month_row = index_by_sheet[target_month].get(video_id)
+            if not month_row:
+                month_row = next_row[target_month]
+                next_row[target_month] += 1
+            updates.append(
+                {
+                    "range": _sheet_range(
+                        target_month,
+                        f"A{month_row}:{end_column}{month_row}",
+                    ),
+                    "values": row_values,
+                }
+            )
+
     values_api = service.spreadsheets().values()
     if clear_ranges:
         values_api.batchClear(
             spreadsheetId=spreadsheet_id,
             body={"ranges": clear_ranges},
         ).execute()
-    values_api.batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={"valueInputOption": "USER_ENTERED", "data": updates},
-    ).execute()
+    if updates:
+        values_api.batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"valueInputOption": "RAW", "data": updates},
+        ).execute()
     return main_rows
 
 
@@ -651,96 +780,11 @@ def build_project_stats_rows(
     *,
     updated_at: datetime | None = None,
 ) -> list[list[str]]:
-    current = updated_at or datetime.now(timezone.utc)
-    stats: dict[str, dict[str, Any]] = {
-        str(project["code"]): {
-            "name": "Другие проекты" if project["code"] == "other" else project["name"],
-            "sort_order": int(project["sort_order"]),
-            "approved": 0,
-            "pending": 0,
-            "duplicate": 0,
-            "needs_revision": 0,
-            "author": set(),
-            "montage": set(),
-            "voice": set(),
-        }
-        for project in PROJECTS
-    }
-    for video in videos:
-        code, name = _report_project(video)
-        item = stats.setdefault(
-            code,
-            {
-                "name": name,
-                "sort_order": 1000,
-                "approved": 0,
-                "pending": 0,
-                "duplicate": 0,
-                "needs_revision": 0,
-                "author": set(),
-                "montage": set(),
-                "voice": set(),
-            },
-        )
-        status = str(video.get("status") or "")
-        if status in {"approved", "pending", "duplicate", "needs_revision"}:
-            item[status] += 1
-        if status == "approved":
-            for role in ("author", "montage", "voice"):
-                person = _person_key(video, role)
-                if person:
-                    item[role].add(person)
-    rows: list[list[str]] = []
-    for code, item in sorted(stats.items(), key=lambda pair: (pair[1]["sort_order"], pair[1]["name"])):
-        rows.append(
-            [
-                code,
-                str(item["name"]),
-                str(item["approved"]),
-                str(item["pending"]),
-                str(item["duplicate"]),
-                str(item["needs_revision"]),
-                str(len(item["author"])),
-                str(len(item["montage"])),
-                str(len(item["voice"])),
-                current.isoformat(),
-            ]
-        )
-    return rows
+    return reconciliation.build_project_stats_rows(videos, updated_at=updated_at)
 
 
 def build_people_projects_rows(videos: list[dict[str, Any]]) -> list[list[str]]:
-    counts: dict[tuple[str, str, str, str], dict[str, Any]] = defaultdict(
-        lambda: {"author": 0, "montage": 0, "voice": 0, "video_ids": set()}
-    )
-    for video in videos:
-        if video.get("status") != "approved":
-            continue
-        project_code, project_name = _report_project(video)
-        video_id = str(video.get("id") or "")
-        for role in ("author", "montage", "voice"):
-            person = _person_key(video, role)
-            if not person:
-                continue
-            name, username = person
-            item = counts[(name, username, project_code, project_name)]
-            item[role] += 1
-            item["video_ids"].add(video_id)
-    rows = []
-    for (name, username, project_code, project_name), item in sorted(counts.items()):
-        rows.append(
-            [
-                name,
-                f"@{username}" if username else "",
-                project_code,
-                project_name,
-                str(item["author"]),
-                str(item["montage"]),
-                str(item["voice"]),
-                str(len(item["video_ids"])),
-            ]
-        )
-    return rows
+    return reconciliation.build_people_projects_rows(videos)
 
 
 def _replace_named_sheet(
@@ -767,7 +811,7 @@ def _replace_named_sheet(
         .update(
             spreadsheetId=spreadsheet_id,
             range=_sheet_range(sheet_name, f"A1:{end_column}{len(rows) + 1}"),
-            valueInputOption="USER_ENTERED",
+            valueInputOption="RAW",
             body={"values": [columns, *rows]},
         )
         .execute()
@@ -785,6 +829,7 @@ def sync_project_reports(videos: list[dict[str, Any]], *, service=None) -> None:
         spreadsheet_id,
         {
             PROJECT_STATS_SHEET_NAME: PROJECT_STATS_COLUMNS,
+            MONTH_STATS_SHEET_NAME: MONTH_STATS_COLUMNS,
             PEOPLE_PROJECTS_SHEET_NAME: PEOPLE_PROJECTS_COLUMNS,
         },
     )
@@ -798,9 +843,281 @@ def sync_project_reports(videos: list[dict[str, Any]], *, service=None) -> None:
     _replace_named_sheet(
         service,
         spreadsheet_id,
+        MONTH_STATS_SHEET_NAME,
+        MONTH_STATS_COLUMNS,
+        reconciliation.build_month_stats_rows(videos),
+    )
+    _replace_named_sheet(
+        service,
+        spreadsheet_id,
         PEOPLE_PROJECTS_SHEET_NAME,
         PEOPLE_PROJECTS_COLUMNS,
         build_people_projects_rows(videos),
+    )
+
+
+def read_named_tables(
+    sheet_names: list[str],
+    *,
+    service=None,
+) -> dict[str, list[list[Any]]]:
+    settings = get_settings()
+    if not settings.google_sheets_spreadsheet_id:
+        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured")
+    service = service or _service()
+    spreadsheet_id = settings.google_sheets_spreadsheet_id
+    properties = _sheet_properties(service, spreadsheet_id)
+    unique_names = list(dict.fromkeys(sheet_names))
+    existing = [name for name in unique_names if name in properties]
+    result: dict[str, list[list[Any]]] = {name: [] for name in unique_names}
+    if not existing:
+        return result
+    response = (
+        service.spreadsheets()
+        .values()
+        .batchGet(
+            spreadsheetId=spreadsheet_id,
+            ranges=[_sheet_range(name, "A:AZ") for name in existing],
+            majorDimension="ROWS",
+        )
+        .execute()
+    )
+    ranges = response.get("valueRanges", [])
+    for index, name in enumerate(existing):
+        result[name] = ranges[index].get("values", []) if index < len(ranges) else []
+    return result
+
+
+def read_reconciliation_tables(
+    videos: list[dict[str, Any]],
+    *,
+    service=None,
+) -> dict[str, list[list[Any]]]:
+    settings = get_settings()
+    if not settings.google_sheets_spreadsheet_id:
+        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured")
+    service = service or _service()
+    spreadsheet_id = settings.google_sheets_spreadsheet_id
+    properties = _sheet_properties(service, spreadsheet_id)
+    months = set(reconciliation.BASE_MONTHS)
+    months.update(title for title in properties if reconciliation.MONTH_RE.match(title))
+    months.update(
+        month for video in videos if (month := reconciliation.publish_month(video))
+    )
+    names = [
+        SHEET_NAME,
+        *PROJECT_SHEET_TITLES.values(),
+        *sorted(months),
+        reconciliation.NO_DATE_SHEET,
+        PROJECT_STATS_SHEET_NAME,
+        MONTH_STATS_SHEET_NAME,
+        PEOPLE_PROJECTS_SHEET_NAME,
+    ]
+    return read_named_tables(names, service=service)
+
+
+def build_managed_sheet_specs(
+    videos: list[dict[str, Any]],
+    sessions: list[dict[str, Any]],
+    backfill_items: list[dict[str, Any]],
+    reconciliation_result_rows: list[list[str]],
+) -> list[dict[str, Any]]:
+    active = sorted(reconciliation.active_videos(videos), key=reconciliation.canonical_sort_key)
+    specs: list[dict[str, Any]] = [
+        {
+            "name": SHEET_NAME,
+            "columns": SHEET_COLUMNS,
+            "rows": [video_to_row(video, SHEET_COLUMNS) for video in active],
+        }
+    ]
+    for title in PROJECT_SHEET_TITLES.values():
+        rows = [
+            video_to_row(video, SHEET_COLUMNS)
+            for video in active
+            if reconciliation.project_partition_sheet(video) == title
+        ]
+        specs.append({"name": title, "columns": SHEET_COLUMNS, "rows": rows})
+    months = set(reconciliation.BASE_MONTHS)
+    months.update(
+        month for video in active if (month := reconciliation.publish_month(video))
+    )
+    for title in [*sorted(months), reconciliation.NO_DATE_SHEET]:
+        rows = [
+            video_to_row(video, SHEET_COLUMNS)
+            for video in active
+            if reconciliation.month_partition_sheet(video) == title
+        ]
+        specs.append({"name": title, "columns": SHEET_COLUMNS, "rows": rows})
+    specs.extend(
+        [
+            {
+                "name": PROJECT_STATS_SHEET_NAME,
+                "columns": PROJECT_STATS_COLUMNS,
+                "rows": reconciliation.build_project_stats_rows(active),
+            },
+            {
+                "name": MONTH_STATS_SHEET_NAME,
+                "columns": MONTH_STATS_COLUMNS,
+                "rows": reconciliation.build_month_stats_rows(active),
+            },
+            {
+                "name": PEOPLE_PROJECTS_SHEET_NAME,
+                "columns": PEOPLE_PROJECTS_COLUMNS,
+                "rows": reconciliation.build_people_projects_rows(active),
+            },
+            {
+                "name": UNFINISHED_SHEET_NAME,
+                "columns": reconciliation.UNFINISHED_COLUMNS,
+                "rows": reconciliation.build_unfinished_rows(active),
+            },
+            {
+                "name": UNSUBMITTED_SHEET_NAME,
+                "columns": reconciliation.UNSUBMITTED_COLUMNS,
+                "rows": reconciliation.build_unsubmitted_rows(sessions),
+            },
+            {
+                "name": RECONCILIATION_SHEET_NAME,
+                "columns": reconciliation.RECONCILIATION_COLUMNS,
+                "rows": reconciliation_result_rows,
+            },
+            {
+                "name": BACKFILL_REVIEW_SHEET_NAME,
+                "columns": reconciliation.BACKFILL_REVIEW_COLUMNS,
+                "rows": [reconciliation.backfill_review_row(item) for item in backfill_items],
+            },
+        ]
+    )
+    return specs
+
+
+def write_staging_sheet(
+    sheet_name: str,
+    columns: list[str],
+    rows: list[list[str]],
+    *,
+    service=None,
+) -> None:
+    settings = get_settings()
+    if not settings.google_sheets_spreadsheet_id:
+        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured")
+    service = service or _service()
+    spreadsheet_id = settings.google_sheets_spreadsheet_id
+    _ensure_named_sheets(service, spreadsheet_id, {sheet_name: columns})
+    _replace_named_sheet(service, spreadsheet_id, sheet_name, columns, rows)
+
+
+def promote_staging_sheets(
+    staging_map: dict[str, str],
+    *,
+    run_id: int,
+    service=None,
+) -> None:
+    settings = get_settings()
+    if not settings.google_sheets_spreadsheet_id:
+        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured")
+    service = service or _service()
+    spreadsheet_id = settings.google_sheets_spreadsheet_id
+    properties = _sheet_properties(service, spreadsheet_id)
+    requests: list[dict[str, Any]] = []
+    old_sheet_ids: list[int] = []
+    for index, (final_name, staging_name) in enumerate(staging_map.items()):
+        staging = properties.get(staging_name)
+        if not staging:
+            raise RuntimeError(f"staging sheet is missing: {staging_name}")
+        old_name = f"__old__r{run_id}_{index:02d}"
+        lingering_old = properties.get(old_name)
+        if lingering_old:
+            requests.append({"deleteSheet": {"sheetId": int(lingering_old["sheetId"])}})
+        current = properties.get(final_name)
+        if current:
+            requests.append(
+                {
+                    "updateSheetProperties": {
+                        "properties": {"sheetId": int(current["sheetId"]), "title": old_name},
+                        "fields": "title",
+                    }
+                }
+            )
+            old_sheet_ids.append(int(current["sheetId"]))
+        requests.append(
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": int(staging["sheetId"]),
+                        "title": final_name,
+                    },
+                    "fields": "title",
+                }
+            }
+        )
+    requests.extend({"deleteSheet": {"sheetId": sheet_id}} for sheet_id in old_sheet_ids)
+    if requests:
+        (
+            service.spreadsheets()
+            .batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": requests},
+            )
+            .execute()
+        )
+
+
+def replace_reconciliation_result(
+    rows: list[list[str]],
+    *,
+    service=None,
+) -> None:
+    settings = get_settings()
+    if not settings.google_sheets_spreadsheet_id:
+        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured")
+    service = service or _service()
+    spreadsheet_id = settings.google_sheets_spreadsheet_id
+    _ensure_named_sheets(
+        service,
+        spreadsheet_id,
+        {RECONCILIATION_SHEET_NAME: reconciliation.RECONCILIATION_COLUMNS},
+    )
+    _replace_named_sheet(
+        service,
+        spreadsheet_id,
+        RECONCILIATION_SHEET_NAME,
+        reconciliation.RECONCILIATION_COLUMNS,
+        rows,
+    )
+
+
+def sync_unfinished_reports(
+    videos: list[dict[str, Any]],
+    sessions: list[dict[str, Any]],
+    *,
+    service=None,
+) -> None:
+    settings = get_settings()
+    if not settings.google_sheets_spreadsheet_id:
+        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured")
+    service = service or _service()
+    spreadsheet_id = settings.google_sheets_spreadsheet_id
+    _ensure_named_sheets(
+        service,
+        spreadsheet_id,
+        {
+            UNFINISHED_SHEET_NAME: reconciliation.UNFINISHED_COLUMNS,
+            UNSUBMITTED_SHEET_NAME: reconciliation.UNSUBMITTED_COLUMNS,
+        },
+    )
+    _replace_named_sheet(
+        service,
+        spreadsheet_id,
+        UNFINISHED_SHEET_NAME,
+        reconciliation.UNFINISHED_COLUMNS,
+        reconciliation.build_unfinished_rows(videos),
+    )
+    _replace_named_sheet(
+        service,
+        spreadsheet_id,
+        UNSUBMITTED_SHEET_NAME,
+        reconciliation.UNSUBMITTED_COLUMNS,
+        reconciliation.build_unsubmitted_rows(sessions),
     )
 
 

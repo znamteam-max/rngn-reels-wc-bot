@@ -216,6 +216,68 @@ def _sheets_debug() -> dict[str, int]:
     }
 
 
+def _sheets_reconciliation_debug() -> dict[str, object]:
+    try:
+        row = db.fetch_one(
+            """
+            SELECT
+                id, status, db_active_count, sheet_videos_count,
+                sheet_project_union_count, sheet_month_union_count,
+                db_unassigned_count, db_missing_date_count,
+                missing_from_videos, extra_in_videos,
+                missing_from_projects, duplicate_in_projects, project_mismatches,
+                missing_from_months, duplicate_in_months, month_mismatches,
+                summary
+            FROM sheet_reconciliation_runs
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ) or {}
+    except Exception:
+        return {
+            "last_run_id": None,
+            "last_status": None,
+            "db_active_count": 0,
+            "videos_count": None,
+            "project_union_count": None,
+            "month_union_count": None,
+            "unassigned_count": 0,
+            "missing_date_count": 0,
+            "mismatch_count": 0,
+        }
+    summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+    mismatch_count = int(summary.get("mismatch_count") or 0) if "mismatch_count" in summary else sum(
+        int(row.get(field) or 0)
+        for field in (
+            "missing_from_videos",
+            "extra_in_videos",
+            "missing_from_projects",
+            "duplicate_in_projects",
+            "project_mismatches",
+            "missing_from_months",
+            "duplicate_in_months",
+            "month_mismatches",
+        )
+    )
+    return {
+        "last_run_id": int(row["id"]) if row.get("id") else None,
+        "last_status": row.get("status"),
+        "db_active_count": int(row.get("db_active_count") or 0),
+        "videos_count": int(row["sheet_videos_count"])
+        if row.get("sheet_videos_count") is not None
+        else None,
+        "project_union_count": int(row["sheet_project_union_count"])
+        if row.get("sheet_project_union_count") is not None
+        else None,
+        "month_union_count": int(row["sheet_month_union_count"])
+        if row.get("sheet_month_union_count") is not None
+        else None,
+        "unassigned_count": int(row.get("db_unassigned_count") or 0),
+        "missing_date_count": int(row.get("db_missing_date_count") or 0),
+        "mismatch_count": mismatch_count,
+    }
+
+
 def _telegram_updates_debug() -> dict[str, int]:
     row = db.fetch_one(
         """
@@ -290,6 +352,7 @@ class handler(BaseHTTPRequestHandler):
             "worker": jobs.worker_health_snapshot(job_debug, kick_debug),
             "worker_kick": kick_debug,
             "sheets": _sheets_debug(),
+            "sheets_reconciliation": _sheets_reconciliation_debug(),
             "telegram_updates": _telegram_updates_debug(),
             "bulk_operations": _bulk_operations_debug(),
             "webhook_performance": _webhook_performance_debug(),

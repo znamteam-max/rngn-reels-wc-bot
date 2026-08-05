@@ -27,6 +27,7 @@ PROJECT_SHEET_TITLES = {
     "sport_core": "Sport Core",
     "music_core": "Music Core",
     "other": "Другие проекты",
+    "unassigned": "Без проекта",
 }
 
 _LINK_RE = re.compile(
@@ -72,4 +73,4 @@ def normalize_custom_project_name(value: str) -> str | None:
 
 
 def project_sheet_title(code: str | None) -> str | None:
-    return PROJECT_SHEET_TITLES.get(str(code or ""))
+    return PROJECT_SHEET_TITLES.get(str(code or "unassigned"), PROJECT_SHEET_TITLES["other"])

@@ -6,7 +6,7 @@ from typing import Any
 
 import psycopg
 
-from bot import admin_queue, db, jobs, metrics, worker_kick
+from bot import admin_queue, db, jobs, metrics, reconciliation, worker_kick
 from bot.config import get_settings
 from bot.daily_reports import preview_daily_report, previous_report_date
 from bot.links import (
@@ -356,6 +356,12 @@ def handle_message(message: dict[str, Any]) -> None:
             daily_report_command(tg, actor, rest)
         elif command == "/sync_sheets":
             sync_sheets_command(tg, actor)
+        elif command in {"/sheets_audit", "/reconcile_sheets"}:
+            sheets_audit_command(tg, actor)
+        elif command == "/sheets_status":
+            sheets_status_command(tg, actor)
+        elif command == "/unfinished_requests":
+            unfinished_requests_command(tg, actor)
         elif command == "/sync_youtube_metrics":
             sync_youtube_metrics_command(tg, actor)
         elif command == "/metrics_youtube_today":
@@ -426,6 +432,9 @@ def handle_callback(callback: dict[str, Any]) -> None:
         return
     if data.startswith("jobretry:"):
         handle_retry_failed_jobs_callback(tg, actor, data, callback_id)
+        return
+    if data.startswith("recon:"):
+        handle_reconciliation_callback(tg, actor, data, callback_id)
         return
     if data.startswith("adm:"):
         handle_stale_admin_callback(tg, actor, callback_id)
@@ -1870,6 +1879,7 @@ def submit_video(tg: TelegramClient, actor: Actor) -> None:
 
     db.clear_session(actor.tg_id)
     tg.send_message(actor.chat_id, "Заявка отправлена на проверку.")
+    sync_video_to_sheets(video, actor, flow="submission")
     if not notify_admin_queue(tg, video, actor):
         tg.send_message(
             actor.chat_id,
@@ -2703,6 +2713,35 @@ def _admin_dashboard_snapshot(conn, state: dict[str, Any] | None = None) -> dict
             """
         )
         unassigned = int(cur.fetchone()["count"])
+        cur.execute(
+            """
+            SELECT
+                count(*) FILTER (WHERE status = 'approved') AS approved,
+                count(*) FILTER (WHERE status = 'pending') AS pending,
+                count(*) FILTER (WHERE status = 'needs_revision') AS needs_revision,
+                count(*) FILTER (WHERE status = 'duplicate') AS duplicate,
+                count(*) FILTER (
+                    WHERE status <> 'deleted' AND COALESCE(project_code, '') = ''
+                ) AS unassigned,
+                count(*) FILTER (
+                    WHERE status <> 'deleted' AND publish_date IS NULL
+                ) AS missing_date,
+                count(*) FILTER (
+                    WHERE status = 'approved' AND to_char(publish_date, 'YYYY-MM') = '2026-05'
+                ) AS month_2026_05,
+                count(*) FILTER (
+                    WHERE status = 'approved' AND to_char(publish_date, 'YYYY-MM') = '2026-06'
+                ) AS month_2026_06,
+                count(*) FILTER (
+                    WHERE status = 'approved' AND to_char(publish_date, 'YYYY-MM') = '2026-07'
+                ) AS month_2026_07,
+                count(*) FILTER (
+                    WHERE status = 'approved' AND to_char(publish_date, 'YYYY-MM') = '2026-08'
+                ) AS month_2026_08
+            FROM videos
+            """
+        )
+        reporting = cur.fetchone()
     project_counts = [
         {
             "code": row["code"],
@@ -2726,13 +2765,27 @@ def _admin_dashboard_snapshot(conn, state: dict[str, Any] | None = None) -> dict
         "queue_filter_type": _queue_filter(queue_state)[0],
         "queue_filter_value": _queue_filter(queue_state)[1],
         "queue_filter_label": _queue_filter_label(queue_state),
+        "reporting_counts": {
+            "approved": int(reporting.get("approved") or 0),
+            "pending": int(reporting.get("pending") or 0),
+            "needs_revision": int(reporting.get("needs_revision") or 0),
+            "duplicate": int(reporting.get("duplicate") or 0),
+            "unassigned": int(reporting.get("unassigned") or 0),
+            "missing_date": int(reporting.get("missing_date") or 0),
+        },
+        "published_months": {
+            "2026-05": int(reporting.get("month_2026_05") or 0),
+            "2026-06": int(reporting.get("month_2026_06") or 0),
+            "2026-07": int(reporting.get("month_2026_07") or 0),
+            "2026-08": int(reporting.get("month_2026_08") or 0),
+        },
     }
 
 
 def format_admin_dashboard(snapshot: dict[str, Any]) -> str:
     pending_count = int(snapshot.get("pending_count") or 0)
     active_id = snapshot.get("active_video_id")
-    lines = ["📊 ОЧЕРЕДЬ РИЛЗОВ", ""]
+    lines = ["📊 ОЧЕРЕДЬ ЗАЯВОК", ""]
     if pending_count == 0:
         lines.append("🟢 Очередь разобрана")
     else:
@@ -2749,6 +2802,25 @@ def format_admin_dashboard(snapshot: dict[str, Any]) -> str:
             f"{row.get('emoji') or '📂'} {row['name']} — {int(row.get('count') or 0)}"
             for row in snapshot.get("project_counts") or []
         )
+    reporting = snapshot.get("reporting_counts") or {}
+    months = snapshot.get("published_months") or {}
+    lines.extend(
+        [
+            "",
+            "Отчётность:",
+            f"✅ Опубликовано: {int(reporting.get('approved') or 0)}",
+            f"🕒 В работе: {int(reporting.get('pending') or 0)}",
+            f"🛠 На доработке: {int(reporting.get('needs_revision') or 0)}",
+            f"♻️ Дубли: {int(reporting.get('duplicate') or 0)}",
+            f"❓ Без проекта: {int(reporting.get('unassigned') or 0)}",
+            f"📅 Без даты: {int(reporting.get('missing_date') or 0)}",
+            "Месяцы: "
+            + " · ".join(
+                f"{period} — {int(months.get(period) or 0)}"
+                for period in reconciliation.BASE_MONTHS
+            ),
+        ]
+    )
     updated_at = snapshot.get("updated_at")
     updated_text = updated_at.strftime("%H:%M") if isinstance(updated_at, datetime) else "—"
     lines.extend(["", f"Обновлено: {updated_text}"])
@@ -3514,6 +3586,8 @@ def _set_active_queue_project(
             reason="project_changed",
             force=True,
         )
+    if updated_video:
+        sync_video_to_sheets(updated_video, actor, flow="project_changed")
     refresh_dashboard_live_or_enqueue(tg, actor=actor, reason="project_changed")
     return None
 
@@ -3674,6 +3748,7 @@ def _set_active_queue_publish_date(
             format_admin_queue_card(video, total, position, _queue_filter_label(state)),
             admin_queue_keyboard(video_id),
         )
+    sync_video_to_sheets(video, actor, flow="publish_date_changed")
     return None
 
 
@@ -3851,9 +3926,7 @@ def _process_admin_queue_action_v1018(
         reason=f"after_{status}",
     )
 
-    sheet_ok = True
-    if status == "approved":
-        sheet_ok = sync_video_after_approval(video, actor)
+    sheet_ok = sync_video_to_sheets(video, actor, flow=f"admin_{status}")
     chat_id = video.get("added_by_tg_id")
     if chat_id:
         messages = {
@@ -4416,6 +4489,7 @@ def restore_missing_date(
         force=True,
     )
     refresh_dashboard_live_or_enqueue(tg, actor=actor, reason="date_revision")
+    sync_video_to_sheets(video, actor, flow="date_revision")
     return video
 
 
@@ -4768,6 +4842,9 @@ def set_video_publish_date(
             after_data={"publish_date": publish_date},
         )
     formatted = parse_publish_date(publish_date).strftime("%d.%m.%Y")
+    updated_video = get_video_by_id_outside(video_id)
+    if updated_video:
+        sync_video_to_sheets(updated_video, actor, flow="legacy_publish_date_changed")
     tg.send_message(actor.chat_id, f"Дата публикации установлена: {formatted}")
     show_queue_item(tg, actor, batch_id, index, edit_message_id)
 
@@ -4873,7 +4950,12 @@ def approve_video_in_db(video_id: int, actor: Actor) -> dict[str, Any] | None:
         return video
 
 
-def sync_video_after_approval(video: dict[str, Any], actor: Actor) -> bool:
+def sync_video_to_sheets(
+    video: dict[str, Any],
+    actor: Actor,
+    *,
+    flow: str = "video_changed",
+) -> bool:
     try:
         db.execute(
             """
@@ -4891,7 +4973,7 @@ def sync_video_after_approval(video: dict[str, Any], actor: Actor) -> bool:
             "sheets_sync_queued",
             "video",
             int(video["id"]),
-            {"job_id": job_id},
+            {"job_id": job_id, "flow": flow, "status": video.get("status")},
             actor,
         )
         return job_id is not None
@@ -4904,6 +4986,10 @@ def sync_video_after_approval(video: dict[str, Any], actor: Actor) -> bool:
             actor,
         )
         return False
+
+
+def sync_video_after_approval(video: dict[str, Any], actor: Actor) -> bool:
+    return sync_video_to_sheets(video, actor, flow="approval")
 
 
 def _sheet_sync_version(video: dict[str, Any]) -> str:
@@ -5030,6 +5116,9 @@ def mark_video_status(
             tg.send_message(before["added_by_tg_id"], f"{user_message}\nID: {video_id}")
     except Exception:
         pass
+    updated_video = get_video_by_id_outside(video_id)
+    if updated_video:
+        sync_video_to_sheets(updated_video, actor, flow=f"legacy_{status}")
     tg.send_message(actor.chat_id, user_message)
     show_queue_item(tg, actor, batch_id, index, edit_message_id)
 
@@ -5731,9 +5820,8 @@ def sync_sheets_command(tg: TelegramClient, actor: Actor) -> None:
     rows = db.fetch_all(
         VIDEO_SELECT
         + """
-        WHERE v.status = 'approved'
+        WHERE v.status <> 'deleted'
         ORDER BY v.updated_at DESC
-        LIMIT 200
         """
     )
     queued = 0
@@ -5743,6 +5831,149 @@ def sync_sheets_command(tg: TelegramClient, actor: Actor) -> None:
         )
     jobs.enqueue_job("sheets_sync_stats", {}, dedupe_key="stats:projects", priority=70)
     tg.send_message(actor.chat_id, f"Синхронизация поставлена в очередь. Видео: {queued}.")
+
+
+def _reconciliation_keyboard(run_id: int) -> dict[str, Any]:
+    return inline_keyboard(
+        [
+            [("Применить безопасные назначения и пересобрать", f"recon:apply:{run_id}")],
+            [("Пересобрать только из БД", f"recon:db:{run_id}")],
+            [("Отмена", f"recon:cancel:{run_id}")],
+        ]
+    )
+
+
+def sheets_audit_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_admin(tg, actor):
+        return
+    if not jobs.background_jobs_enabled():
+        tg.send_message(actor.chat_id, "Фоновые задания временно отключены.")
+        return
+    try:
+        run_id = reconciliation.create_audit_run(
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+            chat_id=actor.chat_id,
+        )
+        run = reconciliation.get_run(run_id) or {}
+        if run.get("status") == "awaiting_confirmation":
+            tg.send_message(
+                actor.chat_id,
+                reconciliation.format_run_summary(run) + "\n\nИзменений ещё не выполнено.",
+                _reconciliation_keyboard(run_id),
+            )
+        else:
+            tg.send_message(
+                actor.chat_id,
+                f"Read-only сверка #{run_id} поставлена в очередь. Полный rebuild в webhook не выполняется.",
+            )
+    except Exception as exc:
+        tg.send_message(actor.chat_id, f"Не удалось запустить сверку: {_safe_error(exc)}")
+
+
+def sheets_status_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_admin(tg, actor):
+        return
+    run = reconciliation.get_run()
+    if not run:
+        tg.send_message(actor.chat_id, "Сверки Google Sheets ещё не запускались.")
+        return
+    markup = (
+        _reconciliation_keyboard(int(run["id"]))
+        if run.get("status") == "awaiting_confirmation"
+        else None
+    )
+    tg.send_message(actor.chat_id, reconciliation.format_run_summary(run), markup)
+
+
+def unfinished_requests_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_admin(tg, actor):
+        return
+    videos = reconciliation.load_active_video_snapshot()
+    sessions = reconciliation.load_stale_unsubmitted_sessions()
+    unfinished = reconciliation.build_unfinished_rows(videos)
+    counts = {
+        "needs_revision": sum(video.get("status") == "needs_revision" for video in videos),
+        "pending_incomplete": sum(
+            video.get("status") == "pending" and bool(reconciliation.missing_fields(video))
+            for video in videos
+        ),
+        "unassigned": sum(
+            reconciliation.project_partition_code(video) == "unassigned" for video in videos
+        ),
+        "missing_date": sum(reconciliation.publish_month(video) is None for video in videos),
+    }
+    jobs.enqueue_job(
+        "unfinished_requests_sync",
+        {},
+        dedupe_key="sheets:unfinished",
+        priority=65,
+    )
+    tg.send_message(
+        actor.chat_id,
+        "\n".join(
+            [
+                "Незавершённые заявки",
+                "",
+                f"На доработке: {counts['needs_revision']}",
+                f"Pending с пропусками: {counts['pending_incomplete']}",
+                f"Без проекта: {counts['unassigned']}",
+                f"Без даты: {counts['missing_date']}",
+                f"Строк в отчёте: {len(unfinished)}",
+                f"Незавершённые формы старше 60 минут: {len(sessions)}",
+                "",
+                "Вкладки отчёта поставлены в очередь. Автоматические напоминания не отправляются.",
+            ]
+        ),
+    )
+
+
+def handle_reconciliation_callback(
+    tg: TelegramClient,
+    actor: Actor,
+    data: str,
+    callback_id: str,
+) -> None:
+    if not is_superadmin(actor.tg_id):
+        _answer_queue_callback(tg, callback_id, "Только для суперадмина.", show_alert=True)
+        return
+    try:
+        _, action, raw_run_id = data.split(":", 2)
+        run_id = int(raw_run_id)
+    except (TypeError, ValueError):
+        _answer_queue_callback(tg, callback_id, "Кнопка устарела.", show_alert=True)
+        return
+    if action == "cancel":
+        changed = reconciliation.cancel_run(
+            run_id,
+            actor_tg_id=actor.tg_id,
+            actor_username=actor.username,
+        )
+        _answer_queue_callback(
+            tg,
+            callback_id,
+            "Сверка отменена." if changed else "Сверка уже изменила статус.",
+            show_alert=True,
+        )
+        return
+    mode = {"apply": "safe_backfill", "db": "db_only"}.get(action)
+    if not mode:
+        _answer_queue_callback(tg, callback_id, "Кнопка устарела.", show_alert=True)
+        return
+    changed = reconciliation.confirm_run(
+        run_id,
+        mode=mode,
+        actor_tg_id=actor.tg_id,
+        actor_username=actor.username,
+    )
+    if not changed:
+        _answer_queue_callback(tg, callback_id, "Сверка уже изменила статус.", show_alert=True)
+        return
+    _answer_queue_callback(tg, callback_id, "Rebuild поставлен в durable очередь.", show_alert=True)
+    tg.send_message(
+        actor.chat_id,
+        f"Сверка #{run_id}: подтверждён режим {'safe backfill + rebuild' if mode == 'safe_backfill' else 'rebuild только из БД'}.",
+    )
 
 
 def sync_youtube_metrics_command(tg: TelegramClient, actor: Actor) -> None:
@@ -5887,9 +6118,8 @@ def finish_add_links(tg: TelegramClient, actor: Actor, data: dict[str, Any]) -> 
             after_data=links,
         )
     db.clear_session(actor.tg_id)
-    if after.get("status") == "approved":
-        if not sync_video_after_approval(after, actor):
-            send_admin_sync_warning(tg, after, actor)
+    if not sync_video_to_sheets(after, actor, flow="links_updated"):
+        send_admin_sync_warning(tg, after, actor)
     tg.send_message(actor.chat_id, "Ссылки обновлены.")
 
 
@@ -6047,9 +6277,8 @@ def edit_video_command(tg: TelegramClient, actor: Actor, rest: str) -> None:
             before_data={field: before.get(field)},
             after_data={field: update_value},
         )
-    if after.get("status") == "approved":
-        if not sync_video_after_approval(after, actor):
-            send_admin_sync_warning(tg, after, actor)
+    if not sync_video_to_sheets(after, actor, flow="video_edited"):
+        send_admin_sync_warning(tg, after, actor)
     tg.send_message(actor.chat_id, "Запись обновлена.")
 
 

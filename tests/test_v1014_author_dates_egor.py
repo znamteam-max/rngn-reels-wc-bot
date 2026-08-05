@@ -207,7 +207,10 @@ class MissingDateReturnTests(unittest.TestCase):
         recalculate.assert_called_once_with(conn, 2)
         clear.assert_called_once_with(conn)
         archive.assert_called_once()
-        self.assertEqual(log.call_args.kwargs["action"], "missing_date_revision_submitted")
+        self.assertIn(
+            "missing_date_revision_submitted",
+            [call.kwargs.get("action") for call in log.call_args_list],
+        )
         update_sql = str(cursor.execute.call_args_list[1].args[0])
         self.assertIn("status = 'pending'", update_sql)
         self.assertNotIn("project_name", update_sql)
