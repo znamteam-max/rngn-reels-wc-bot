@@ -1,0 +1,428 @@
+{
+  "ok": false,
+  "started_at": "2026-08-05T19:26:49.495237+00:00",
+  "stage": "validation_failed",
+  "last_wait_error": "HTTPError: HTTP Error 401: Unauthorized",
+  "initial_status": {
+    "ok": true,
+    "run_id": 1,
+    "run_status": "done",
+    "run_stage": "done",
+    "run_mode": "safe_backfill",
+    "db_active_count": 310,
+    "db_approved_count": 308,
+    "db_pending_count": 0,
+    "db_needs_revision_count": 2,
+    "db_duplicate_count": 0,
+    "db_unassigned_count": 32,
+    "db_missing_date_count": 2,
+    "sheet_videos_count": 310,
+    "sheet_project_union_count": 310,
+    "sheet_month_union_count": 310,
+    "mismatch_count": 0,
+    "changed_project_ids": [
+      11,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      20,
+      21,
+      10,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      9,
+      28,
+      12,
+      19
+    ],
+    "db_project_counts": {
+      "ves_sport": 277,
+      "unassigned": 32,
+      "home_of_hockey": 1
+    },
+    "project_counts_live": {
+      "home_of_hockey": 1,
+      "unassigned": 32,
+      "ves_sport": 277
+    },
+    "status_counts_live": {
+      "approved": 308,
+      "needs_revision": 2
+    },
+    "month_sheet_counts": {
+      "2026-05": 0,
+      "2026-06": 146,
+      "2026-07": 162,
+      "2026-08": 0,
+      "Без даты": 2
+    },
+    "project_sheet_counts": {
+      "Music Core": 0,
+      "Sport Core": 0,
+      "Double Play": 0,
+      "Больше": 0,
+      "Padel Channel": 0,
+      "Home of Hockey": 1,
+      "Взял Мяч": 0,
+      "Весь Спорт": 277,
+      "Без проекта": 32,
+      "Другие проекты": 0
+    },
+    "unfinished_request_count": 32,
+    "last_error": null,
+    "jobs": {
+      "failed": 12
+    },
+    "work_chat_id_present": false,
+    "updated_at": "2026-08-05T19:08:20.997594+00:00",
+    "finished_at": "2026-08-05T19:08:20.997594+00:00"
+  },
+  "apply_response": {
+    "ok": true,
+    "changed_count": 33,
+    "changed_ids": [
+      2,
+      6,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      41,
+      55,
+      56,
+      57,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      71,
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78,
+      99,
+      307
+    ],
+    "run_id": 2,
+    "status": {
+      "ok": true,
+      "run_id": 2,
+      "run_status": "created",
+      "run_stage": "queued",
+      "run_mode": "audit",
+      "db_active_count": 0,
+      "db_approved_count": 0,
+      "db_pending_count": 0,
+      "db_needs_revision_count": 0,
+      "db_duplicate_count": 0,
+      "db_unassigned_count": 0,
+      "db_missing_date_count": 0,
+      "sheet_videos_count": 0,
+      "sheet_project_union_count": 0,
+      "sheet_month_union_count": 0,
+      "mismatch_count": 0,
+      "changed_project_ids": [],
+      "db_project_counts": {
+        "ves_sport": 310
+      },
+      "project_counts_live": {
+        "ves_sport": 310
+      },
+      "status_counts_live": {
+        "approved": 308,
+        "needs_revision": 2
+      },
+      "month_sheet_counts": {},
+      "project_sheet_counts": {},
+      "unfinished_request_count": 0,
+      "last_error": null,
+      "jobs": {
+        "failed": 12,
+        "queued": 1
+      },
+      "work_chat_id_present": false,
+      "updated_at": "2026-08-05T19:29:04.442736+00:00",
+      "finished_at": null
+    }
+  },
+  "last_status": {
+    "ok": true,
+    "run_id": 2,
+    "run_status": "done",
+    "run_stage": "done",
+    "run_mode": "db_only",
+    "db_active_count": 310,
+    "db_approved_count": 308,
+    "db_pending_count": 0,
+    "db_needs_revision_count": 2,
+    "db_duplicate_count": 0,
+    "db_unassigned_count": 0,
+    "db_missing_date_count": 2,
+    "sheet_videos_count": 310,
+    "sheet_project_union_count": 310,
+    "sheet_month_union_count": 310,
+    "mismatch_count": 0,
+    "changed_project_ids": [],
+    "db_project_counts": {
+      "ves_sport": 310
+    },
+    "project_counts_live": {
+      "ves_sport": 310
+    },
+    "status_counts_live": {
+      "approved": 308,
+      "needs_revision": 2
+    },
+    "month_sheet_counts": {
+      "2026-05": 0,
+      "2026-06": 146,
+      "2026-07": 162,
+      "2026-08": 0,
+      "Без даты": 2
+    },
+    "project_sheet_counts": {
+      "Music Core": 0,
+      "Sport Core": 0,
+      "Double Play": 0,
+      "Больше": 0,
+      "Padel Channel": 0,
+      "Home of Hockey": 0,
+      "Взял Мяч": 0,
+      "Весь Спорт": 310,
+      "Без проекта": 0,
+      "Другие проекты": 0
+    },
+    "unfinished_request_count": 2,
+    "last_error": null,
+    "jobs": {
+      "failed": 12
+    },
+    "work_chat_id_present": false,
+    "updated_at": "2026-08-05T19:31:59.896654+00:00",
+    "finished_at": "2026-08-05T19:31:59.896654+00:00"
+  },
+  "last_drain": {
+    "ok": true,
+    "worker": {
+      "ok": true,
+      "claimed": 1,
+      "processed": 1,
+      "processed_by_kind": {
+        "sheets_validate": 1
+      },
+      "done": 1,
+      "retried": 0,
+      "failed": 0,
+      "dead": 0,
+      "remaining_ready": 0,
+      "remaining_queued_total": 0,
+      "next_available_in_seconds": 0,
+      "duration_ms": 2729,
+      "invocation_id": "067c72ba-63a7-4c9a-8bdd-d012b9500b6c"
+    },
+    "status": {
+      "ok": true,
+      "run_id": 2,
+      "run_status": "done",
+      "run_stage": "done",
+      "run_mode": "db_only",
+      "db_active_count": 310,
+      "db_approved_count": 308,
+      "db_pending_count": 0,
+      "db_needs_revision_count": 2,
+      "db_duplicate_count": 0,
+      "db_unassigned_count": 0,
+      "db_missing_date_count": 2,
+      "sheet_videos_count": 310,
+      "sheet_project_union_count": 310,
+      "sheet_month_union_count": 310,
+      "mismatch_count": 0,
+      "changed_project_ids": [],
+      "db_project_counts": {
+        "ves_sport": 310
+      },
+      "project_counts_live": {
+        "ves_sport": 310
+      },
+      "status_counts_live": {
+        "approved": 308,
+        "needs_revision": 2
+      },
+      "month_sheet_counts": {
+        "2026-05": 0,
+        "2026-06": 146,
+        "2026-07": 162,
+        "2026-08": 0,
+        "Без даты": 2
+      },
+      "project_sheet_counts": {
+        "Music Core": 0,
+        "Sport Core": 0,
+        "Double Play": 0,
+        "Больше": 0,
+        "Padel Channel": 0,
+        "Home of Hockey": 0,
+        "Взял Мяч": 0,
+        "Весь Спорт": 310,
+        "Без проекта": 0,
+        "Другие проекты": 0
+      },
+      "unfinished_request_count": 2,
+      "last_error": null,
+      "jobs": {
+        "failed": 12
+      },
+      "work_chat_id_present": false,
+      "updated_at": "2026-08-05T19:31:59.896654+00:00",
+      "finished_at": "2026-08-05T19:31:59.896654+00:00"
+    }
+  },
+  "confirm_response": {
+    "ok": true,
+    "confirmed_now": true,
+    "status": {
+      "ok": true,
+      "run_id": 2,
+      "run_status": "created",
+      "run_stage": "confirmed",
+      "run_mode": "db_only",
+      "db_active_count": 310,
+      "db_approved_count": 308,
+      "db_pending_count": 0,
+      "db_needs_revision_count": 2,
+      "db_duplicate_count": 0,
+      "db_unassigned_count": 0,
+      "db_missing_date_count": 2,
+      "sheet_videos_count": 310,
+      "sheet_project_union_count": 310,
+      "sheet_month_union_count": 310,
+      "mismatch_count": 69,
+      "changed_project_ids": [],
+      "db_project_counts": {
+        "ves_sport": 310
+      },
+      "project_counts_live": {
+        "ves_sport": 310
+      },
+      "status_counts_live": {
+        "approved": 308,
+        "needs_revision": 2
+      },
+      "month_sheet_counts": {
+        "2026-05": 0,
+        "2026-06": 146,
+        "2026-07": 162,
+        "2026-08": 0,
+        "Без даты": 2
+      },
+      "project_sheet_counts": {
+        "Music Core": 0,
+        "Sport Core": 0,
+        "Double Play": 0,
+        "Больше": 0,
+        "Padel Channel": 0,
+        "Home of Hockey": 1,
+        "Взял Мяч": 0,
+        "Весь Спорт": 277,
+        "Без проекта": 32,
+        "Другие проекты": 0
+      },
+      "unfinished_request_count": 2,
+      "last_error": null,
+      "jobs": {
+        "failed": 12,
+        "queued": 1
+      },
+      "work_chat_id_present": false,
+      "updated_at": "2026-08-05T19:29:11.059449+00:00",
+      "finished_at": null
+    }
+  },
+  "final_status": {
+    "ok": true,
+    "run_id": 2,
+    "run_status": "done",
+    "run_stage": "done",
+    "run_mode": "db_only",
+    "db_active_count": 310,
+    "db_approved_count": 308,
+    "db_pending_count": 0,
+    "db_needs_revision_count": 2,
+    "db_duplicate_count": 0,
+    "db_unassigned_count": 0,
+    "db_missing_date_count": 2,
+    "sheet_videos_count": 310,
+    "sheet_project_union_count": 310,
+    "sheet_month_union_count": 310,
+    "mismatch_count": 0,
+    "changed_project_ids": [],
+    "db_project_counts": {
+      "ves_sport": 310
+    },
+    "project_counts_live": {
+      "ves_sport": 310
+    },
+    "status_counts_live": {
+      "approved": 308,
+      "needs_revision": 2
+    },
+    "month_sheet_counts": {
+      "2026-05": 0,
+      "2026-06": 146,
+      "2026-07": 162,
+      "2026-08": 0,
+      "Без даты": 2
+    },
+    "project_sheet_counts": {
+      "Music Core": 0,
+      "Sport Core": 0,
+      "Double Play": 0,
+      "Больше": 0,
+      "Padel Channel": 0,
+      "Home of Hockey": 0,
+      "Взял Мяч": 0,
+      "Весь Спорт": 310,
+      "Без проекта": 0,
+      "Другие проекты": 0
+    },
+    "unfinished_request_count": 2,
+    "last_error": null,
+    "jobs": {
+      "failed": 12
+    },
+    "work_chat_id_present": false,
+    "updated_at": "2026-08-05T19:31:59.896654+00:00",
+    "finished_at": "2026-08-05T19:31:59.896654+00:00"
+  },
+  "equality": {
+    "db_active": 310,
+    "videos": 310,
+    "project_union": 310,
+    "month_union": 310,
+    "ves_sport": 310
+  },
+  "non_target_project_count": 0,
+  "mismatch_count": 0,
+  "work_chat_id_present": false,
+  "blocking_jobs": 12,
+  "finished_at": "2026-08-05T19:32:05.949816+00:00"
+}
