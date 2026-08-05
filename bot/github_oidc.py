@@ -13,7 +13,9 @@ GITHUB_OIDC_AUDIENCE = "rngn-reels-wc-worker"
 GITHUB_REPOSITORY = "znamteam-max/rngn-reels-wc-bot"
 GITHUB_REPOSITORY_OWNER = "znamteam-max"
 GITHUB_REF = "refs/heads/main"
-GITHUB_EVENTS = {"schedule", "workflow_dispatch"}
+# Temporary one-time ops allowance for the World Cup project correction workflow.
+# Removed immediately after the verified production run.
+GITHUB_EVENTS = {"schedule", "workflow_dispatch", "push"}
 JWKS_TTL_SECONDS = 300
 
 
