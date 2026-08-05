@@ -2,7 +2,8 @@ name: One-time safe reconciliation
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -13,148 +14,34 @@ concurrency:
 
 jobs:
   reconcile:
-    if: github.event.head_commit.message == 'ops: trigger live reconciliation'
+    if: ${{ github.event.head_commit.message == 'ops: trigger live reconciliation' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Confirm, drain and validate reconciliation
-        id: reconcile
-        shell: bash
-        run: |
-          set +e
-          mkdir -p ops
-          python - <<'PY'
-          import json
-          import time
-          import urllib.request
-          from datetime import datetime, timezone
-          from pathlib import Path
+      - name: Run reconciliation
+        id: run_reconciliation
+        continue-on-error: true
+        run: python scripts/run_one_time_reconciliation.py
 
-          base = "https://project-dcd2y.vercel.app/api/internal/reconcile-safe-backfill-f179b8536c79fb2e341a3cbf"
-          result_path = Path("ops/reconciliation_v1_0_19_live_result.json")
-
-          def fetch(action, timeout=290):
-              request = urllib.request.Request(
-                  f"{base}?action={action}",
-                  headers={"User-Agent": "rngn-reconciliation-once/1.1"},
-                  method="GET",
-              )
-              with urllib.request.urlopen(request, timeout=timeout) as response:
-                  return json.loads(response.read().decode("utf-8"))
-
-          final = {
-              "ok": False,
-              "started_at": datetime.now(timezone.utc).isoformat(),
-              "stage": "waiting_for_deployment",
-          }
-
-          ready = False
-          for _ in range(60):
-              try:
-                  status = fetch("status", timeout=20)
-                  if status.get("run_id") == 1:
-                      final["initial_status"] = status
-                      ready = True
-                      break
-              except Exception as exc:
-                  final["last_wait_error"] = f"{type(exc).__name__}: {exc}"
-              time.sleep(10)
-
-          if not ready:
-              final.update({
-                  "stage": "endpoint_unavailable",
-                  "finished_at": datetime.now(timezone.utc).isoformat(),
-              })
-              result_path.write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
-              raise SystemExit(1)
-
-          try:
-              final["confirm_response"] = fetch("confirm", timeout=30)
-          except Exception as exc:
-              final["confirm_error"] = f"{type(exc).__name__}: {exc}"
-
-          for _ in range(150):
-              try:
-                  status = fetch("status", timeout=30)
-                  final["last_status"] = status
-              except Exception as exc:
-                  final["last_status_error"] = f"{type(exc).__name__}: {exc}"
-                  time.sleep(8)
-                  continue
-
-              if status.get("status") in {"done", "failed", "cancelled"}:
-                  break
-
-              try:
-                  final["last_drain"] = fetch("drain", timeout=290)
-              except Exception as exc:
-                  final["last_drain_error"] = f"{type(exc).__name__}: {exc}"
-              time.sleep(8)
-
-          try:
-              status = fetch("status", timeout=30)
-          except Exception as exc:
-              status = final.get("last_status") or {
-                  "ok": False,
-                  "status": "unknown",
-                  "error": f"{type(exc).__name__}: {exc}",
-              }
-
-          active = int(status.get("db_active_count") or 0)
-          videos = int(status.get("sheet_videos_count") or 0)
-          projects = int(status.get("sheet_project_union_count") or 0)
-          months = int(status.get("sheet_month_union_count") or 0)
-          mismatches = int(status.get("mismatch_count") or 0)
-          work_chat_present = bool(status.get("work_chat_id_present"))
-          passed = (
-              status.get("status") == "done"
-              and active == videos == projects == months
-              and mismatches == 0
-              and not work_chat_present
-          )
-
-          final.update({
-              "ok": passed,
-              "stage": "done" if passed else "validation_failed",
-              "final_status": status,
-              "equality": {
-                  "db_active": active,
-                  "videos": videos,
-                  "project_union": projects,
-                  "month_union": months,
-              },
-              "mismatch_count": mismatches,
-              "work_chat_id_present": work_chat_present,
-              "finished_at": datetime.now(timezone.utc).isoformat(),
-          })
-          result_path.write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
-          raise SystemExit(0 if passed else 1)
-          PY
-          code=$?
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Record result and remove one-time endpoint
+      - name: Record result and remove temporary files
         if: always()
-        shell: bash
         run: |
-          set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git rm -f api/internal/reconcile-safe-backfill-f179b8536c79fb2e341a3cbf.py || true
+          git rm -f scripts/run_one_time_reconciliation.py || true
           git add ops/reconciliation_v1_0_19_live_result.json || true
           if ! git diff --cached --quiet; then
             git commit -m "ops: record live reconciliation result"
             git push origin HEAD:main
           fi
 
-      - name: Enforce final result
-        if: always()
-        shell: bash
-        run: |
-          test "${{ steps.reconcile.outputs.exit_code }}" = "0"
+      - name: Enforce result
+        if: steps.run_reconciliation.outcome != 'success'
+        run: exit 1
