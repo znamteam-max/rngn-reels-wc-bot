@@ -4,16 +4,10 @@ import json
 import os
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import parse_qs, urlparse
 
-from bot import admin_queue, db, jobs, worker_kick
+from bot import db, jobs, worker_kick
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
-from bot.runtime_migrations import ensure_runtime_migrations
-from bot.telegram import TelegramClient
 from bot.version import VERSION
-
-
-_V1018_ROLLOUT_KEY = "v1018-atomic-95f40bf3d4d34d8f"
 
 
 def _admin_queue_debug() -> dict[str, object]:
@@ -275,146 +269,11 @@ def _webhook_performance_debug() -> dict[str, object]:
     }
 
 
-def _rollout_snapshot() -> dict[str, object]:
-    rows = db.fetch_all(
-        """
-        SELECT id, status, created_at
-        FROM videos
-        WHERE status = 'pending'
-        ORDER BY created_at ASC, id ASC
-        LIMIT 15
-        """
-    )
-    return {
-        "admin_queue": _admin_queue_debug(),
-        "jobs": _jobs_debug(),
-        "oldest_pending": [
-            {
-                "id": int(row["id"]),
-                "status": row["status"],
-                "created_at": row["created_at"].isoformat(),
-            }
-            for row in rows
-        ],
-    }
-
-
-def _cleanup_first_acceptance_fixture_card() -> dict[str, object]:
-    rows = db.fetch_all(
-        """
-        SELECT
-            id AS job_id,
-            (payload->'adopt_message'->>'video_id')::bigint AS video_id,
-            (payload->'adopt_message'->>'chat_id')::bigint AS chat_id,
-            (payload->'adopt_message'->>'message_id')::bigint AS message_id
-        FROM background_jobs
-        WHERE kind = 'admin_queue_pump'
-          AND payload ? 'adopt_message'
-          AND (payload->'adopt_message'->>'video_id')::bigint BETWEEN 182 AND 192
-          AND NOT EXISTS (
-              SELECT 1
-              FROM videos
-              WHERE id = (payload->'adopt_message'->>'video_id')::bigint
-          )
-        ORDER BY id ASC
-        LIMIT 3
-        """
-    )
-    results: list[dict[str, object]] = []
-    tg = TelegramClient()
-    for row in rows:
-        item: dict[str, object] = {
-            "job_id": int(row["job_id"]),
-            "video_id": int(row["video_id"]),
-            "message_id": int(row["message_id"]),
-            "archived": False,
-        }
-        try:
-            tg.edit_message_text(
-                int(row["chat_id"]),
-                int(row["message_id"]),
-                "Архивная тестовая карточка v1.0.18. Действия отключены.",
-                {"inline_keyboard": []},
-            )
-            item["archived"] = True
-        except Exception as exc:
-            item["error"] = f"{type(exc).__name__}: {exc}"[:300]
-        results.append(item)
-    return {"candidates": len(rows), "results": results}
-
-
 class handler(BaseHTTPRequestHandler):
-    def _send_json(self, status: int, payload: dict[str, object]) -> None:
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
-
     def do_HEAD(self) -> None:
         self.do_GET()
 
     def do_GET(self) -> None:
-        query = parse_qs(urlparse(self.path).query)
-        rollout: dict[str, object] | None = None
-        if query.get("rollout") == [_V1018_ROLLOUT_KEY]:
-            stage = "migration"
-            try:
-                migration = ensure_runtime_migrations(force=True)
-                stage = "queue_repair"
-                repair = admin_queue.repair_queue_if_needed(
-                    reason="v1.0.18 rollout invariant repair",
-                    force=True,
-                )
-                stage = "before_acceptance"
-                before_acceptance = _rollout_snapshot()
-                stage = "acceptance"
-                acceptance = admin_queue.run_isolated_acceptance(actions=10)
-                stage = "first_fixture_cleanup"
-                first_fixture_cleanup = _cleanup_first_acceptance_fixture_card()
-                stage = "after_acceptance"
-                after_acceptance = _rollout_snapshot()
-            except Exception as exc:
-                self._send_json(
-                    200,
-                    {
-                        "ok": False,
-                        "version": VERSION,
-                        "stage": stage,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc)[:1000],
-                    },
-                )
-                return
-            rollout = {
-                "migration": migration,
-                "queue_repair": {
-                    "repaired": repair.repaired,
-                    "reason": repair.reason,
-                    "active_video_id": repair.active_video_id,
-                    "active_message_id": repair.active_message_id,
-                    "stale_metadata_cleared": repair.stale_metadata_cleared,
-                    "pump_needed": repair.pump_needed,
-                },
-                "before_acceptance": before_acceptance,
-                "acceptance": acceptance,
-                "first_fixture_cleanup": first_fixture_cleanup,
-                "after_acceptance": after_acceptance,
-                "mass_return_missing_dates_launched": False,
-                "work_chat_id_present": bool(os.environ.get("WORK_CHAT_ID")),
-            }
-            self._send_json(
-                200,
-                {
-                    "ok": True,
-                    "version": VERSION,
-                    "schema_version": db.current_schema_version(),
-                    "v1018_rollout": rollout,
-                },
-            )
-            return
         job_debug = _jobs_debug()
         kick_debug = worker_kick.worker_kick_snapshot()
         payload = {
@@ -440,6 +299,10 @@ class handler(BaseHTTPRequestHandler):
             "missing_publish_date": _missing_publish_date_debug(),
             "egor_montage": _egor_montage_debug(),
         }
-        if rollout is not None:
-            payload["v1018_rollout"] = rollout
-        self._send_json(200, payload)
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
