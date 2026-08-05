@@ -372,7 +372,12 @@ class handler(BaseHTTPRequestHandler):
                     "error": str(exc)[:500],
                 }
             body = json.dumps(
-                {"ok": "error" not in result, "version": VERSION, "v1019_rollout": result},
+                {
+                    "ok": "error" not in result,
+                    "version": VERSION,
+                    "work_chat_id_present": bool(os.environ.get("WORK_CHAT_ID")),
+                    "v1019_rollout": result,
+                },
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")
