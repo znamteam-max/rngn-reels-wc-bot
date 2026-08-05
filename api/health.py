@@ -7,7 +7,6 @@ from http.server import BaseHTTPRequestHandler
 
 from bot import db, jobs, worker_kick
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
-from bot.runtime_migrations import ensure_runtime_migrations
 from bot.version import VERSION
 
 
@@ -239,11 +238,6 @@ class handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self) -> None:
-        rollout_migration = ensure_runtime_migrations(force=True)
-        rollout_kick = worker_kick.kick_worker_if_ready(
-            reason="v1.0.17_rollout",
-            force=True,
-        )
         job_debug = _jobs_debug()
         kick_debug = worker_kick.worker_kick_snapshot()
         payload = {
@@ -255,8 +249,6 @@ class handler(BaseHTTPRequestHandler):
             "missing_env": missing_env_names(),
             "optional_missing_env": optional_missing_env_names(),
             "schema_version": db.current_schema_version(),
-            "rollout_migration": rollout_migration,
-            "rollout_kick": rollout_kick,
             "database": db.pool_diagnostics(),
             "jobs": job_debug,
             "worker": jobs.worker_health_snapshot(job_debug, kick_debug),
