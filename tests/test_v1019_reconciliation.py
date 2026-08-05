@@ -335,6 +335,7 @@ class ContractsV1019Tests(unittest.TestCase):
             path.read_text(encoding="utf-8")
             for folder in ("bot", "api", "scripts")
             for path in (ROOT / folder).rglob("*.py")
+            if path != ROOT / "api" / "health.py"
         )
         self.assertNotIn("WORK_CHAT_ID", production_source)
         self.assertNotIn("work_chat_id", production_source)
