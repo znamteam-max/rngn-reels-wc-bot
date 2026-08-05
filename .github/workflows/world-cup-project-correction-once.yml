@@ -1,0 +1,69 @@
+name: One-time World Cup project correction
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/world-cup-project-correction-once.yml
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: one-time-world-cup-project-correction
+  cancel-in-progress: false
+
+jobs:
+  correct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run correction and reconciliation
+        id: correction
+        shell: bash
+        run: |
+          set +e
+          python scripts/run_world_cup_project_correction_once.py
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Record result and remove temporary ops files
+        if: always()
+        shell: bash
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("bot/github_oidc.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace(
+              '# Temporary one-time ops allowance for the World Cup project correction workflow.\n# Removed immediately after the verified production run.\nGITHUB_EVENTS = {"schedule", "workflow_dispatch", "push"}',
+              'GITHUB_EVENTS = {"schedule", "workflow_dispatch"}',
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
+          git rm -f api/internal/reassign-all-world-cup-to-ves-sport-8f3bda9146.py
+          git rm -f scripts/run_world_cup_project_correction_once.py
+          git rm -f .github/workflows/world-cup-project-correction-once.yml
+          git add bot/github_oidc.py ops/world_cup_project_correction_result.json
+          git commit -m "ops: complete World Cup project correction"
+          git push origin HEAD:main
+
+      - name: Enforce result
+        if: always()
+        shell: bash
+        run: |
+          code="${{ steps.correction.outputs.exit_code }}"
+          if [ "$code" != "0" ]; then
+            echo "World Cup project correction did not pass validation"
+            exit 1
+          fi
