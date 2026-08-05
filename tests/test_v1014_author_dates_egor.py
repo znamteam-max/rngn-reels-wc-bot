@@ -132,64 +132,36 @@ class MissingDateReturnTests(unittest.TestCase):
         ]
         self.assertEqual(callbacks, ["missingdate:return", "missingdate:cancel"])
 
-    def test_bulk_returns_five_notifies_and_repairs_active_fifo(self) -> None:
+    def test_bulk_starts_durable_operation_without_mass_sends(self) -> None:
         actor = Actor(tg_id=10, chat_id=-1001, username="admin")
-        rows = [
-            {
-                "id": index,
-                "batch_id": 2,
-                "added_by_tg_id": 100 + index,
-                "added_by_username": f"u{index}",
-                "project_name": "Больше",
-                "instagram_url": f"https://instagram.com/reel/{index}",
-                "youtube_url": None,
-            }
-            for index in range(1, 6)
-        ]
-        tg = FakeTelegram({105})
+        tg = FakeTelegram()
         conn = MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
-        cursor.fetchall.return_value = rows
+        cursor.fetchone.side_effect = [
+            None,
+            {"count": 5},
+            {"id": 7, "total_count": 5, "status": "queued"},
+        ]
 
         @contextmanager
         def transaction():
             yield conn
 
-        state = {
-            "active_video_id": 1,
-            "active_chat_id": -1001,
-            "active_message_id": 600,
-        }
         with (
             patch("bot.handlers.db.transaction", transaction),
-            patch("bot.handlers._queue_state_for_update", return_value=state),
-            patch("bot.handlers.recalculate_batch") as recalculate,
-            patch("bot.handlers._clear_queue_state") as clear,
             patch("bot.handlers.db.log_event") as log,
-            patch("bot.handlers.record_system_log") as system_log,
-            patch("bot.handlers._archive_queue_message") as archive,
-            patch("bot.handlers._safe_refresh_admin_dashboard"),
-            patch(
-                "bot.handlers.pump_admin_queue",
-                return_value={"pending_count": 3, "global_pending_count": 3},
-            ),
+            patch("bot.handlers.jobs.enqueue_job") as enqueue,
         ):
             result = bulk_return_missing_dates(tg, actor)
 
-        self.assertEqual(result["returned_count"], 5)
-        self.assertEqual(result["notified_count"], 4)
-        self.assertEqual(result["failed_count"], 1)
-        recalculate.assert_called_once_with(conn, 2)
-        clear.assert_called_once_with(conn)
-        archive.assert_called_once()
-        self.assertEqual(
-            [call.kwargs["action"] for call in log.call_args_list].count("missing_date_returned"),
-            5,
-        )
-        self.assertEqual(log.call_args_list[-1].kwargs["action"], "missing_dates_bulk_returned")
-        self.assertEqual(system_log.call_args.args[0], "missing_date_notification_failed")
-        update_sql = str(cursor.execute.call_args_list[1].args[0])
-        self.assertIn("status = 'needs_revision'", update_sql)
+        self.assertEqual(result["operation_id"], 7)
+        self.assertEqual(result["returned_count"], 0)
+        self.assertEqual(result["total_count"], 5)
+        enqueue.assert_called_once()
+        self.assertEqual(enqueue.call_args.args[0], "bulk_return_missing_dates")
+        self.assertEqual(log.call_args.kwargs["action"], "bulk_operation_started")
+        self.assertEqual(len(tg.sent), 1)
+        self.assertIn("Операция #7", tg.sent[0][1])
 
     def test_owner_restores_only_date_and_fifo_is_repaired(self) -> None:
         actor = Actor(tg_id=101, chat_id=101, username="owner")

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-from datetime import date
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
+from bot import db
 from bot.config import get_settings
-from bot.jobs import enqueue_job
+from bot.runtime_migrations import ensure_runtime_migrations
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
@@ -23,7 +23,7 @@ class handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def do_GET(self) -> None:
+    def do_POST(self) -> None:
         settings = get_settings()
         if not settings.cron_secret:
             self._send_json(500, {"ok": False, "error": "CRON_SECRET not configured"})
@@ -31,19 +31,18 @@ class handler(BaseHTTPRequestHandler):
         if self.headers.get("Authorization") != f"Bearer {settings.cron_secret}":
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
-
         try:
-            job_id = enqueue_job(
-                "youtube_metrics",
-                {},
-                dedupe_key=f"youtube-metrics:{date.today().isoformat()}",
-                priority=75,
-            )
+            result = ensure_runtime_migrations(force=True)
         except Exception as exc:
-            self._send_json(500, {"ok": False, "error": str(exc)[:300]})
+            self._send_json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]})
             return
+        self._send_json(
+            200,
+            {"ok": True, "schema_version": db.current_schema_version(), "migration": result},
+        )
 
-        self._send_json(200, {"ok": True, "queued": True, "job_id": job_id})
+    def do_GET(self) -> None:
+        self.do_POST()
 
     def do_HEAD(self) -> None:
-        self.do_GET()
+        self.do_POST()

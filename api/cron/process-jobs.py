@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
-from datetime import date
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from bot.config import get_settings
-from bot.jobs import enqueue_job
+from bot.job_worker import process_jobs
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
@@ -31,19 +30,15 @@ class handler(BaseHTTPRequestHandler):
         if self.headers.get("Authorization") != f"Bearer {settings.cron_secret}":
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
-
-        try:
-            job_id = enqueue_job(
-                "youtube_metrics",
-                {},
-                dedupe_key=f"youtube-metrics:{date.today().isoformat()}",
-                priority=75,
-            )
-        except Exception as exc:
-            self._send_json(500, {"ok": False, "error": str(exc)[:300]})
+        if not settings.background_jobs_enabled:
+            self._send_json(503, {"ok": False, "error": "background jobs disabled"})
             return
-
-        self._send_json(200, {"ok": True, "queued": True, "job_id": job_id})
+        try:
+            result = process_jobs()
+        except Exception as exc:
+            self._send_json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]})
+            return
+        self._send_json(200, result)
 
     def do_HEAD(self) -> None:
         self.do_GET()

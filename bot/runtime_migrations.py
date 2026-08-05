@@ -15,9 +15,9 @@ _DONE = False
 _LAST_RESULT: dict[str, Any] = {"applied": False}
 
 
-def ensure_runtime_migrations() -> dict[str, Any]:
+def ensure_runtime_migrations(*, force: bool = False) -> dict[str, Any]:
     global _DONE, _LAST_RESULT
-    if _DONE:
+    if _DONE and not force:
         return _LAST_RESULT
 
     settings = get_settings()
@@ -27,6 +27,12 @@ def ensure_runtime_migrations() -> dict[str, Any]:
 
     with psycopg.connect(settings.database_url) as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('schema_versions') IS NOT NULL")
+            versions_table_before = bool(cur.fetchone()[0])
+            version_already_applied = False
+            if versions_table_before:
+                cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.15')")
+                version_already_applied = bool(cur.fetchone()[0])
             cur.execute(SCHEMA_SQL)
         seed_action, person_id = upsert_person(
             conn,
@@ -102,6 +108,28 @@ def ensure_runtime_migrations() -> dict[str, Any]:
             queue_filter_columns = int(cur.fetchone()[0])
             cur.execute("SELECT to_regclass('daily_reports') IS NOT NULL")
             daily_reports_table_exists = bool(cur.fetchone()[0])
+            cur.execute("SELECT to_regclass('telegram_updates') IS NOT NULL")
+            telegram_updates_table_exists = bool(cur.fetchone()[0])
+            cur.execute("SELECT to_regclass('background_jobs') IS NOT NULL")
+            background_jobs_table_exists = bool(cur.fetchone()[0])
+            cur.execute("SELECT to_regclass('bulk_operations') IS NOT NULL")
+            bulk_operations_table_exists = bool(cur.fetchone()[0])
+            cur.execute("SELECT to_regclass('schema_versions') IS NOT NULL")
+            schema_versions_table_exists = bool(cur.fetchone()[0])
+            cur.execute("SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = '1.0.15')")
+            schema_version_applied = bool(cur.fetchone()[0])
+            cur.execute(
+                """
+                SELECT count(*)
+                FROM information_schema.columns
+                WHERE table_name = 'videos'
+                  AND column_name IN (
+                    'sheet_sync_status', 'sheet_sync_attempts',
+                    'sheet_sync_error', 'sheet_synced_at'
+                  )
+                """
+            )
+            sheet_sync_columns = int(cur.fetchone()[0])
             cur.execute(
                 """
                 SELECT count(*)
@@ -113,6 +141,17 @@ def ensure_runtime_migrations() -> dict[str, Any]:
                 """
             )
             prokudin_active_rows = int(cur.fetchone()[0])
+            if not version_already_applied:
+                cur.execute(
+                    """
+                    INSERT INTO background_jobs (kind, dedupe_key, payload, priority)
+                    VALUES ('dashboard_refresh', 'dashboard:main', '{}'::jsonb, 20)
+                    ON CONFLICT (dedupe_key)
+                    WHERE dedupe_key IS NOT NULL
+                      AND status IN ('queued', 'processing')
+                    DO NOTHING
+                    """
+                )
         conn.commit()
 
     _LAST_RESULT = {
@@ -135,6 +174,12 @@ def ensure_runtime_migrations() -> dict[str, Any]:
             "admin_dashboard_columns": dashboard_columns,
             "admin_queue_filter_columns": queue_filter_columns,
             "daily_reports_table": daily_reports_table_exists,
+            "telegram_updates_table": telegram_updates_table_exists,
+            "background_jobs_table": background_jobs_table_exists,
+            "bulk_operations_table": bulk_operations_table_exists,
+            "schema_versions_table": schema_versions_table_exists,
+            "schema_version_1_0_15": schema_version_applied,
+            "sheet_sync_columns": sheet_sync_columns,
         },
         "seed": {
             "prokudin_action": seed_action,

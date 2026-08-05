@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from bot.config import get_settings
-from bot.daily_reports import send_daily_report
-from bot.runtime_migrations import ensure_runtime_migrations
+from bot.jobs import enqueue_job
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
@@ -32,8 +32,13 @@ class handler(BaseHTTPRequestHandler):
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
         try:
-            ensure_runtime_migrations()
-            result = send_daily_report()
+            job_id = enqueue_job(
+                "daily_report",
+                {},
+                dedupe_key=f"daily-report:{date.today().isoformat()}",
+                priority=70,
+            )
+            result = {"ok": True, "queued": True, "job_id": job_id}
         except Exception as exc:
             self._send_json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]})
             return

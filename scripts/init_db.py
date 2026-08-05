@@ -83,6 +83,10 @@ CREATE TABLE IF NOT EXISTS videos (
     checked_at timestamptz,
     batch_id bigint NULL REFERENCES batches(id),
     sheet_row int NULL,
+    sheet_sync_status text NOT NULL DEFAULT 'not_queued',
+    sheet_sync_attempts integer NOT NULL DEFAULT 0,
+    sheet_sync_error text,
+    sheet_synced_at timestamptz,
     admin_message_chat_id bigint NULL,
     admin_message_id bigint NULL,
     admin_notified_at timestamptz NULL,
@@ -158,6 +162,62 @@ CREATE TABLE IF NOT EXISTS user_sessions (
     updated_at timestamptz DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS telegram_updates (
+    update_id bigint PRIMARY KEY,
+    update_type text,
+    tg_user_id bigint,
+    chat_id bigint,
+    status text NOT NULL DEFAULT 'processing',
+    attempts integer NOT NULL DEFAULT 1,
+    first_seen_at timestamptz NOT NULL DEFAULT now(),
+    processing_started_at timestamptz,
+    finished_at timestamptz,
+    last_error text,
+    payload_hash text
+);
+
+CREATE TABLE IF NOT EXISTS background_jobs (
+    id bigserial PRIMARY KEY,
+    kind text NOT NULL,
+    dedupe_key text,
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    status text NOT NULL DEFAULT 'queued',
+    priority integer NOT NULL DEFAULT 100,
+    attempts integer NOT NULL DEFAULT 0,
+    max_attempts integer NOT NULL DEFAULT 8,
+    available_at timestamptz NOT NULL DEFAULT now(),
+    locked_at timestamptz,
+    locked_by text,
+    started_at timestamptz,
+    finished_at timestamptz,
+    last_error text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS bulk_operations (
+    id bigserial PRIMARY KEY,
+    kind text NOT NULL,
+    status text NOT NULL DEFAULT 'queued',
+    total_count integer NOT NULL DEFAULT 0,
+    processed_count integer NOT NULL DEFAULT 0,
+    success_count integer NOT NULL DEFAULT 0,
+    failure_count integer NOT NULL DEFAULT 0,
+    last_video_id bigint,
+    created_by_tg_id bigint,
+    created_by_username text,
+    started_at timestamptz,
+    finished_at timestamptz,
+    last_error text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS schema_versions (
+    version text PRIMARY KEY,
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_videos_instagram_id ON videos(instagram_id);
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
 CREATE INDEX IF NOT EXISTS idx_videos_publish_date ON videos(publish_date);
@@ -170,6 +230,14 @@ ON video_metrics_snapshots(video_id, platform, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_metrics_platform_time
 ON video_metrics_snapshots(platform, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_updated_at ON user_sessions(updated_at);
+CREATE INDEX IF NOT EXISTS idx_telegram_updates_status ON telegram_updates(status, processing_started_at);
+CREATE INDEX IF NOT EXISTS idx_background_jobs_ready
+ON background_jobs(status, available_at, priority, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_background_jobs_active_dedupe
+ON background_jobs(dedupe_key)
+WHERE dedupe_key IS NOT NULL
+  AND status IN ('queued', 'processing');
+CREATE INDEX IF NOT EXISTS idx_bulk_operations_status ON bulk_operations(status, created_at);
 
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS publish_date_set_by_tg_id bigint NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS video_type text NOT NULL DEFAULT 'regular';
@@ -190,6 +258,10 @@ ALTER TABLE videos ADD COLUMN IF NOT EXISTS youtube_last_sync_at timestamptz NUL
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS project_id bigint NULL REFERENCES projects(id);
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS project_code text NULL;
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS project_name text NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS sheet_sync_status text NOT NULL DEFAULT 'not_queued';
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS sheet_sync_attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS sheet_sync_error text NULL;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS sheet_synced_at timestamptz NULL;
 
 ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS dashboard_chat_id bigint NULL;
 ALTER TABLE admin_queue_state ADD COLUMN IF NOT EXISTS dashboard_message_id bigint NULL;
@@ -270,6 +342,22 @@ CREATE TRIGGER trg_projects_updated_at
 BEFORE UPDATE ON projects
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_background_jobs_updated_at ON background_jobs;
+CREATE TRIGGER trg_background_jobs_updated_at
+BEFORE UPDATE ON background_jobs
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_bulk_operations_updated_at ON bulk_operations;
+CREATE TRIGGER trg_bulk_operations_updated_at
+BEFORE UPDATE ON bulk_operations
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+INSERT INTO schema_versions (version)
+VALUES ('1.0.15')
+ON CONFLICT (version) DO NOTHING;
 """
 
 

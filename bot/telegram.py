@@ -8,10 +8,16 @@ from bot.config import get_settings
 
 
 class TelegramAPIError(RuntimeError):
-    def __init__(self, description: str, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        description: str,
+        status_code: int | None = None,
+        retry_after: int | None = None,
+    ) -> None:
         super().__init__(f"Telegram API error: {description}")
         self.description = description
         self.status_code = status_code
+        self.retry_after = retry_after
 
 
 class TelegramClient:
@@ -37,7 +43,13 @@ class TelegramClient:
             raise RuntimeError("Telegram API returned a non-JSON response") from exc
         if not data.get("ok"):
             description = data.get("description", "unknown Telegram API error")
-            raise TelegramAPIError(description, response.status_code)
+            parameters = data.get("parameters") if isinstance(data.get("parameters"), dict) else {}
+            retry_after = parameters.get("retry_after")
+            raise TelegramAPIError(
+                description,
+                response.status_code,
+                int(retry_after) if retry_after is not None else None,
+            )
         return data
 
     def send_message(

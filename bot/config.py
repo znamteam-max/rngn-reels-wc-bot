@@ -28,6 +28,13 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = _env(name)
+    if raw is None:
+        return default
+    return raw.lower() not in {"0", "false", "no", "off", "нет"}
+
+
 def _int_list_env(name: str, *aliases: str) -> set[int]:
     raw = _env(name, *aliases, default="") or ""
     values: set[int] = set()
@@ -56,6 +63,11 @@ class Settings:
     timezone: str
     bootstrap_superadmin_ids: set[int]
     batch_window_minutes: int = 15
+    background_jobs_enabled: bool = True
+    job_worker_batch_size: int = 20
+    job_worker_time_budget_seconds: int = 20
+    db_pool_max_size: int = 4
+    telegram_max_connections: int = 5
 
     @property
     def tz(self) -> ZoneInfo:
@@ -76,6 +88,11 @@ def get_settings() -> Settings:
         admin_chat_id=_int_env("ADMIN_CHAT_ID", DEFAULT_ADMIN_CHAT_ID),
         timezone=_env("TIMEZONE", "TZ", "DEFAULT_TIMEZONE", default=DEFAULT_TIMEZONE) or DEFAULT_TIMEZONE,
         bootstrap_superadmin_ids=_int_list_env("BOOTSTRAP_SUPERADMIN_IDS", "ALLOWED_TELEGRAM_USER_IDS"),
+        background_jobs_enabled=_bool_env("BACKGROUND_JOBS_ENABLED", True),
+        job_worker_batch_size=max(1, min(20, _int_env("JOB_WORKER_BATCH_SIZE", 20))),
+        job_worker_time_budget_seconds=max(1, min(20, _int_env("JOB_WORKER_TIME_BUDGET_SECONDS", 20))),
+        db_pool_max_size=max(1, min(10, _int_env("DB_POOL_MAX_SIZE", 4))),
+        telegram_max_connections=max(1, min(100, _int_env("TELEGRAM_MAX_CONNECTIONS", 5))),
     )
 
 

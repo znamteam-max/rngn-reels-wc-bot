@@ -22,6 +22,7 @@ COMMANDS = [
     ("chatid", "Показать ID текущего чата"),
     ("resend_pending", "Восстановить текущую FIFO-карточку"),
     ("return_missing_dates", "Вернуть заявки без даты"),
+    ("jobs_status", "Статус фоновых заданий"),
     ("test_admin_chat", "Проверить админский чат"),
     ("sync_youtube_metrics", "Обновить YouTube-метрики"),
     ("metrics_youtube_today", "YouTube сегодня"),
@@ -32,6 +33,7 @@ SUPERADMIN_COMMANDS = [
     *COMMANDS,
     ("add_znambo", "Быстро добавить мой ролик"),
     ("reset_admin_queue", "Сбросить и восстановить FIFO-очередь"),
+    ("retry_failed_jobs", "Повторить временно упавшие задания"),
 ]
 
 
@@ -110,6 +112,34 @@ def main() -> int:
             },
         )
     telegram_post(token, "setChatMenuButton", {"menu_button": {"type": "commands"}})
+
+    webhook_base_url = (
+        os.environ.get("WEBHOOK_URL")
+        or os.environ.get("APP_BASE_URL")
+        or os.environ.get("VERCEL_PROJECT_PRODUCTION_URL")
+        or ""
+    ).strip().rstrip("/")
+    webhook_secret = (os.environ.get("WEBHOOK_SECRET") or "").strip()
+    if webhook_base_url and webhook_secret:
+        if not webhook_base_url.startswith(("http://", "https://")):
+            webhook_base_url = f"https://{webhook_base_url}"
+        try:
+            max_connections = int(os.environ.get("TELEGRAM_MAX_CONNECTIONS", "5"))
+        except ValueError:
+            max_connections = 5
+        telegram_post(
+            token,
+            "setWebhook",
+            {
+                "url": f"{webhook_base_url}/api/webhook",
+                "secret_token": webhook_secret,
+                "max_connections": max(1, min(100, max_connections)),
+                "allowed_updates": ["message", "callback_query"],
+            },
+        )
+        print(f"Telegram webhook configured with max_connections={max_connections}.")
+    else:
+        print("Webhook unchanged: WEBHOOK_URL/APP_BASE_URL or WEBHOOK_SECRET is missing.")
 
     print("Telegram bot commands and menu button are configured.")
     return 0

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 
 from bot import db
-from bot.config import missing_env_names, optional_missing_env_names
+from bot.config import get_settings, missing_env_names, optional_missing_env_names
 from bot.runtime_migrations import ensure_runtime_migrations
 from bot.version import VERSION
 
@@ -124,12 +124,111 @@ def _egor_montage_debug() -> dict[str, int]:
     }
 
 
+def _jobs_debug() -> dict[str, object]:
+    row = db.fetch_one(
+        """
+        SELECT
+            count(*) FILTER (WHERE status = 'queued') AS queued,
+            count(*) FILTER (WHERE status = 'processing') AS processing,
+            count(*) FILTER (WHERE status = 'failed') AS failed,
+            count(*) FILTER (WHERE status = 'dead') AS dead,
+            EXTRACT(EPOCH FROM now() - min(created_at) FILTER (WHERE status = 'queued'))::bigint
+                AS oldest_queued_age_seconds,
+            count(*) FILTER (
+                WHERE status = 'processing' AND locked_at < now() - interval '5 minutes'
+            ) AS stale_processing,
+            max(finished_at) FILTER (WHERE status = 'done') AS last_done_at
+        FROM background_jobs
+        """
+    ) or {}
+    return {
+        "enabled": get_settings().background_jobs_enabled,
+        "queued": int(row.get("queued") or 0),
+        "processing": int(row.get("processing") or 0),
+        "failed": int(row.get("failed") or 0),
+        "dead": int(row.get("dead") or 0),
+        "oldest_queued_age_seconds": max(0, int(row["oldest_queued_age_seconds"]))
+        if row.get("oldest_queued_age_seconds") is not None
+        else None,
+        "stale_processing": int(row.get("stale_processing") or 0),
+        "last_done_at": row["last_done_at"].isoformat() if row.get("last_done_at") else None,
+    }
+
+
+def _sheets_debug() -> dict[str, int]:
+    row = db.fetch_one(
+        """
+        SELECT
+            count(*) FILTER (WHERE sheet_sync_status IN ('queued', 'syncing')) AS queued_videos,
+            count(*) FILTER (WHERE sheet_sync_status = 'failed') AS failed_videos
+        FROM videos
+        """
+    ) or {}
+    return {
+        "queued_videos": int(row.get("queued_videos") or 0),
+        "failed_videos": int(row.get("failed_videos") or 0),
+    }
+
+
+def _telegram_updates_debug() -> dict[str, int]:
+    row = db.fetch_one(
+        """
+        SELECT
+            count(*) FILTER (
+                WHERE status = 'failed' AND finished_at >= now() - interval '1 hour'
+            ) AS failed_last_hour,
+            count(*) FILTER (
+                WHERE status = 'processing'
+                  AND processing_started_at < now() - interval '5 minutes'
+            ) AS processing_stale
+        FROM telegram_updates
+        """
+    ) or {}
+    return {
+        "failed_last_hour": int(row.get("failed_last_hour") or 0),
+        "processing_stale": int(row.get("processing_stale") or 0),
+    }
+
+
+def _bulk_operations_debug() -> dict[str, int]:
+    row = db.fetch_one(
+        "SELECT count(*) AS active FROM bulk_operations WHERE status IN ('queued', 'processing')"
+    ) or {}
+    return {"active": int(row.get("active") or 0)}
+
+
+def _webhook_performance_debug() -> dict[str, object]:
+    row = db.fetch_one(
+        """
+        WITH timings AS (
+            SELECT (after_data->>'duration_ms')::numeric AS duration_ms
+            FROM logs
+            WHERE action = 'webhook_done'
+              AND created_at >= now() - interval '1 hour'
+              AND COALESCE(after_data->>'duration_ms', '') ~ '^[0-9]+$'
+        )
+        SELECT
+            count(*) AS samples,
+            percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms) AS p50_ms,
+            percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95_ms
+        FROM timings
+        """
+    ) or {}
+    return {
+        "window_minutes": 60,
+        "samples": int(row.get("samples") or 0),
+        "p50_ms": round(float(row["p50_ms"]), 1) if row.get("p50_ms") is not None else None,
+        "p95_ms": round(float(row["p95_ms"]), 1) if row.get("p95_ms") is not None else None,
+        "target_p95_ms": 3000,
+    }
+
+
 class handler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         self.do_GET()
 
     def do_GET(self) -> None:
-        runtime_migration = ensure_runtime_migrations()
+        ensure_runtime_migrations()
         payload = {
             "ok": True,
             "service": "rngn-reels-wc-bot",
@@ -138,7 +237,13 @@ class handler(BaseHTTPRequestHandler):
             "time": datetime.now(timezone.utc).isoformat(),
             "missing_env": missing_env_names(),
             "optional_missing_env": optional_missing_env_names(),
-            "runtime_migration": runtime_migration,
+            "schema_version": db.current_schema_version(),
+            "database": db.pool_diagnostics(),
+            "jobs": _jobs_debug(),
+            "sheets": _sheets_debug(),
+            "telegram_updates": _telegram_updates_debug(),
+            "bulk_operations": _bulk_operations_debug(),
+            "webhook_performance": _webhook_performance_debug(),
             "projects": _projects_debug(),
             "admin_queue": _admin_queue_debug(),
             "daily_report": _daily_report_debug(),

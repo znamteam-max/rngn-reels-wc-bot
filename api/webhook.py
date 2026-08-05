@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
+from bot import db, jobs
 from bot.public_patch import handle_update, record_system_log
-from bot.runtime_migrations import ensure_runtime_migrations
+from bot.version import VERSION
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
@@ -48,6 +50,7 @@ class handler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
+        started = time.monotonic()
         settings = get_settings()
         if not settings.webhook_secret:
             self._send_json(500, {"ok": False, "error": "WEBHOOK_SECRET is not configured"})
@@ -58,10 +61,8 @@ class handler(BaseHTTPRequestHandler):
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
 
-        try:
-            ensure_runtime_migrations()
-        except Exception:
-            self._send_json(500, {"ok": False, "error": "runtime migration failed"})
+        if db.current_schema_version() != VERSION:
+            self._send_json(503, {"ok": False, "error": "schema migration required"})
             return
 
         try:
@@ -79,17 +80,85 @@ class handler(BaseHTTPRequestHandler):
             self._send_json(400, {"ok": False, "error": "invalid json"})
             return
 
+        update_id = update.get("update_id")
         try:
-            handle_update(update)
+            claim = jobs.claim_telegram_update(update)
+        except (TypeError, ValueError):
+            self._send_json(400, {"ok": False, "error": "invalid update_id"})
+            return
         except Exception as exc:
             detail = _safe_exception_detail(exc)
+            self._send_json(503, {"ok": False, "error": "update claim failed", "detail": detail})
+            return
+
+        try:
             record_system_log(
-                "webhook_update_failed",
+                "webhook_received",
                 "telegram_update",
-                None,
-                {"error": detail},
+                int(update_id),
+                {"claim": claim},
             )
+        except Exception:
+            pass
+
+        if claim.startswith("duplicate"):
+            duration_ms = int((time.monotonic() - started) * 1000)
+            try:
+                record_system_log(
+                    "webhook_duplicate",
+                    "telegram_update",
+                    int(update_id),
+                    {"claim": claim, "duration_ms": duration_ms},
+                )
+            except Exception:
+                pass
+            self._send_json(200, {"ok": True, "duplicate": True})
+            return
+
+        try:
+            handle_update(update)
+            jobs.finish_telegram_update(int(update_id))
+        except Exception as exc:
+            detail = _safe_exception_detail(exc)
+            try:
+                jobs.finish_telegram_update(int(update_id), error=detail)
+            except Exception:
+                pass
+            duration_ms = int((time.monotonic() - started) * 1000)
+            try:
+                record_system_log(
+                    "webhook_failed",
+                    "telegram_update",
+                    int(update_id),
+                    {"error": detail, "duration_ms": duration_ms},
+                )
+                if duration_ms > 2500:
+                    record_system_log(
+                        "webhook_slow",
+                        "telegram_update",
+                        int(update_id),
+                        {"duration_ms": duration_ms, "failed": True},
+                    )
+            except Exception:
+                pass
             self._send_json(200, {"ok": False, "error": "handler failed", "detail": detail})
             return
 
-        self._send_json(200, {"ok": True})
+        duration_ms = int((time.monotonic() - started) * 1000)
+        try:
+            record_system_log(
+                "webhook_done",
+                "telegram_update",
+                int(update_id),
+                {"duration_ms": duration_ms},
+            )
+            if duration_ms > 2500:
+                record_system_log(
+                    "webhook_slow",
+                    "telegram_update",
+                    int(update_id),
+                    {"duration_ms": duration_ms},
+                )
+        except Exception:
+            pass
+        self._send_json(200, {"ok": True, "duration_ms": duration_ms})

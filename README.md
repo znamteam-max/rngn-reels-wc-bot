@@ -38,6 +38,11 @@ YOUTUBE_API_KEY=optional YouTube Data API v3 key for metrics
 CRON_SECRET=optional secret for protected /api/cron/* endpoints
 TZ=Europe/Helsinki
 BOOTSTRAP_SUPERADMIN_IDS=comma-separated Telegram IDs for first setup
+BACKGROUND_JOBS_ENABLED=true
+JOB_WORKER_BATCH_SIZE=20
+JOB_WORKER_TIME_BUDGET_SECONDS=20
+DB_POOL_MAX_SIZE=4
+TELEGRAM_MAX_CONNECTIONS=5
 ```
 
 `BOT_TOKEN`, `DATABASE_URL`, `WEBHOOK_SECRET`, `GOOGLE_SERVICE_ACCOUNT_JSON_B64`, `YOUTUBE_API_KEY`, and `CRON_SECRET` must never be printed or committed.
@@ -78,7 +83,7 @@ Check env presence without printing secret values:
 python scripts/check_env.py
 ```
 
-Configure Telegram commands and the bot menu:
+Configure Telegram commands, menu, and (when `WEBHOOK_URL` plus `WEBHOOK_SECRET` are set) the webhook:
 
 ```powershell
 python scripts/setup_bot_ui.py
@@ -117,8 +122,16 @@ captured_at,video_id,platform,platform_video_id,views,likes,comments,shares,sour
 
 ## Vercel Deploy
 
-The project uses `api/webhook.py`, `api/health.py`, `api/cron/youtube-metrics.py`, and `api/cron/daily-report.py` as Python functions. `vercel.json` excludes the old Cloudflare/Node assets from the Python bundle, schedules YouTube metrics sync at `0 3 * * *`, and sends the previous-day admin report at `0 6 * * *` (09:00 for the production UTC+3 timezone).
-`/api/health`, `/api/webhook`, and the daily report endpoint run idempotent runtime migrations on cold start, including queue filters and the `daily_reports` delivery ledger.
+The project uses Python Vercel Functions for the webhook, read-only health, protected migration, and cron endpoints. `vercel.json` schedules the background worker every minute, YouTube metrics at `0 3 * * *`, and the previous-day admin report at `0 6 * * *` (09:00 for production UTC+3). Minute cron requires a Vercel Pro plan; otherwise call the protected worker endpoint every minute from an external scheduler.
+
+The webhook never runs DDL. Apply schema changes separately before enabling a new webhook version:
+
+```text
+POST /api/admin/migrate
+Authorization: Bearer <CRON_SECRET>
+```
+
+Then verify `schema_version` in `/api/health`. A webhook running against an older schema returns `503` instead of migrating during a Telegram update.
 
 Deploy:
 
@@ -149,6 +162,15 @@ GET /api/cron/daily-report
 Authorization: Bearer <CRON_SECRET>
 ```
 
+Background worker endpoint:
+
+```text
+GET /api/cron/process-jobs
+Authorization: Bearer <CRON_SECRET>
+```
+
+One invocation claims at most 20 jobs with `FOR UPDATE SKIP LOCKED`, runs for at most 20 seconds, sends at most 10 Telegram messages, and synchronizes at most 10 Sheets videos. Stale jobs are recovered after five minutes and transient failures use delayed retries.
+
 If `CRON_SECRET` is missing, the endpoint returns `500` with `CRON_SECRET not configured`. If the authorization header is wrong, it returns `401`.
 
 ## Telegram Webhook
@@ -159,6 +181,7 @@ Set webhook with secret token:
 curl "https://api.telegram.org/bot$env:BOT_TOKEN/setWebhook" `
   -d "url=https://YOUR-VERCEL-DOMAIN.vercel.app/api/webhook" `
   -d "secret_token=$env:WEBHOOK_SECRET" `
+  -d "max_connections=5" `
   -d "allowed_updates=[\"message\",\"callback_query\"]"
 ```
 
@@ -190,6 +213,8 @@ Admin commands:
 /sync_sheets
 /queue_status
 /resend_pending
+/return_missing_dates
+/jobs_status
 /sync_youtube_metrics
 /metrics_youtube_today
 /metrics_youtube_all
@@ -204,6 +229,7 @@ Superadmin commands:
 /activate_person id
 /deactivate_person id
 /reset_admin_queue
+/retry_failed_jobs
 ```
 
 Roles: `author`, `montage`, `voice`, `admin`, `superadmin`.
@@ -230,11 +256,13 @@ After approval:
 
 1. `videos.status` becomes `approved`.
 2. `checked_by_*` and `checked_at` are set.
-3. The `Videos` sheet row and its project sheet are inserted or updated by `id`.
+3. A durable `sheets_sync_video` job is queued; the webhook does not wait for Google Sheets.
 4. The active card is edited to a compact final result without buttons.
 5. The next oldest pending video is sent as the only new actionable card.
 
-If Google Sheets is temporarily unavailable, the video remains `approved`; the failure is recorded in `logs` as `sync_sheets_failed`. Run `/sync_sheets` later to upsert approved videos again.
+If Google Sheets is temporarily unavailable, the video remains `approved`. `sheet_sync_status` moves through `queued`, `syncing`, `synced`, or `failed`, and retries happen in the worker. `/sync_sheets` queues a full approved-video resync without waiting for Google APIs.
+
+Dashboard refreshes, project statistics, non-critical Telegram notifications, daily reports, YouTube metrics, and `/return_missing_dates` are durable background jobs. Dashboard and queue-pump jobs coalesce by dedupe key. Bulk missing-date returns process at most 10 videos per chunk and expose progress through `/jobs_status`.
 
 Project reporting also maintains `Project Stats` and `People × Projects`. Project-sheet synchronization removes a video ID from its previous project sheet before upserting it into the current one.
 

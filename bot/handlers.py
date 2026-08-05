@@ -6,9 +6,9 @@ from typing import Any
 
 import psycopg
 
-from bot import db, metrics, sheets
+from bot import db, jobs, metrics
 from bot.config import get_settings
-from bot.daily_reports import preview_daily_report, previous_report_date, send_daily_report
+from bot.daily_reports import preview_daily_report, previous_report_date
 from bot.links import (
     extract_youtube_id,
     is_skip_text,
@@ -181,6 +181,7 @@ def telegram_failure_payload(
     if isinstance(exc, TelegramAPIError):
         payload["telegram_status_code"] = exc.status_code
         payload["telegram_description"] = exc.description
+        payload["telegram_retry_after"] = exc.retry_after
     return payload
 
 
@@ -342,6 +343,10 @@ def handle_message(message: dict[str, Any]) -> None:
             reset_admin_queue_command(tg, actor)
         elif command == "/return_missing_dates":
             return_missing_dates_command(tg, actor)
+        elif command == "/jobs_status":
+            jobs_status_command(tg, actor)
+        elif command == "/retry_failed_jobs":
+            retry_failed_jobs_command(tg, actor)
         elif command == "/add_person":
             add_person_command(tg, actor, rest)
         elif command == "/activate_person":
@@ -385,6 +390,9 @@ def handle_callback(callback: dict[str, Any]) -> None:
         return
     if data.startswith("missingdate:"):
         handle_missing_date_callback(tg, actor, data, callback_id)
+        return
+    if data.startswith("jobretry:"):
+        handle_retry_failed_jobs_callback(tg, actor, data, callback_id)
         return
     if data.startswith("adm:"):
         handle_stale_admin_callback(tg, actor, callback_id)
@@ -556,6 +564,7 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
         "/sync_sheets — повторная синхронизация Google Sheets",
         "/resend_pending — восстановить текущую FIFO-карточку",
         "/return_missing_dates — вернуть авторам заявки без даты",
+        "/jobs_status — состояние фоновых заданий",
         "/sync_youtube_metrics — обновить YouTube-метрики",
         "/metrics_youtube_today — YouTube сегодня",
         "/metrics_youtube_all — YouTube всего",
@@ -568,6 +577,7 @@ def send_help(tg: TelegramClient, actor: Actor) -> None:
                 "Для суперадминов:",
                 "/add_znambo — быстро добавить мой ролик",
                 "/reset_admin_queue — сбросить и восстановить FIFO-очередь",
+                "/retry_failed_jobs — повторить временно упавшие задания",
                 "/add_person role name [tg_id] [@username]",
                 "/activate_person id",
                 "/deactivate_person id",
@@ -894,15 +904,7 @@ def handle_add_znambo_date(tg: TelegramClient, actor: Actor, text: str) -> None:
 
     video = result["video"]
     db.clear_session(actor.tg_id)
-    sheet_ok, sheet_error = sync_znambo_quick_to_sheets(video, actor)
-    if not sheet_ok:
-        tg.send_message(
-            actor.chat_id,
-            "⚠️ Ролик добавлен в базу, но не синхронизирован с Google Sheets.\n"
-            f"ID: {video['id']}\n"
-            f"Ошибка: {sheet_error or 'unknown'}",
-        )
-        return
+    sync_znambo_quick_to_sheets(video, actor)
     tg.send_message(actor.chat_id, format_add_znambo_success(video))
 
 
@@ -1049,6 +1051,8 @@ def upsert_znambo_quick_video(
                     """
                     UPDATE videos
                     SET status = 'approved',
+                        sheet_sync_status = 'queued',
+                        sheet_sync_error = NULL,
                         video_type = %s,
                         project_id = %s,
                         project_code = %s,
@@ -1142,7 +1146,7 @@ def upsert_znambo_quick_video(
                         added_by_tg_id, added_by_username,
                         checked_by_tg_id, checked_by_username, checked_at,
                         publish_date_set_by_tg_id, publish_date_set_by_username, publish_date_set_at,
-                        batch_id, comment
+                        batch_id, comment, sheet_sync_status
                     )
                     VALUES (
                         'approved', %s, %s, %s, %s, %s,
@@ -1154,7 +1158,7 @@ def upsert_znambo_quick_video(
                         %s, %s,
                         %s, %s, now(),
                         %s, %s, now(),
-                        %s, NULL
+                        %s, NULL, 'queued'
                     )
                     RETURNING id
                     """,
@@ -1214,23 +1218,22 @@ def upsert_znambo_quick_video(
 
 def sync_znambo_quick_to_sheets(video: dict[str, Any], actor: Actor) -> tuple[bool, str | None]:
     try:
-        row_number = sheets.upsert_video(video)
-        if row_number:
-            db.execute("UPDATE videos SET sheet_row = %s, updated_at = now() WHERE id = %s", (row_number, video["id"]))
-            video["sheet_row"] = row_number
-        sheets.sync_project_reports(db.fetch_all(VIDEO_SELECT + " WHERE v.status <> 'deleted'"))
+        job_id = jobs.enqueue_sheet_sync(
+            int(video["id"]),
+            version=_sheet_sync_version(video),
+        )
         record_system_log(
-            "sync_sheets_ok",
+            "sheets_sync_queued",
             "video",
             int(video["id"]),
-            {"flow": "add_znambo", "sheet_row": row_number},
+            {"flow": "add_znambo", "job_id": job_id},
             actor,
         )
-        return True, None
+        return job_id is not None, None if job_id is not None else "background jobs disabled"
     except Exception as exc:
         error = _safe_error(exc)
         record_system_log(
-            "sync_sheets_failed",
+            "sheets_sync_queue_failed",
             "video",
             int(video["id"]),
             {"flow": "add_znambo", "error": error},
@@ -2125,17 +2128,24 @@ def notify_admin_queue(
     video: dict[str, Any],
     actor: Actor | None = None,
 ) -> bool:
-    _safe_refresh_admin_dashboard(tg, actor)
+    if not jobs.background_jobs_enabled():
+        _safe_refresh_admin_dashboard(tg, actor, immediate=True)
+        try:
+            pump_admin_queue(tg, actor)
+            return True
+        except Exception:
+            return False
     try:
-        result = pump_admin_queue(tg, actor)
-        record_system_log(
-            "admin_queue_pumped",
-            "admin_queue",
-            result.get("active_video_id"),
-            {"source": "submission", **result},
-            actor,
-        )
-        _safe_refresh_admin_dashboard(tg, actor)
+        with db.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT active_video_id FROM admin_queue_state WHERE queue_name = %s FOR UPDATE",
+                    (ADMIN_QUEUE_NAME,),
+                )
+                state = cur.fetchone() or {}
+            jobs.enqueue_dashboard_refresh(conn=conn)
+            if not state.get("active_video_id"):
+                jobs.enqueue_admin_queue_pump(conn=conn)
         return True
     except Exception as exc:
         record_system_log(
@@ -2160,7 +2170,7 @@ def send_admin_review_card(
 def resend_pending_command(tg: TelegramClient, actor: Actor) -> None:
     if not require_admin(tg, actor):
         return
-    _safe_refresh_admin_dashboard(tg, actor)
+    _safe_refresh_admin_dashboard(tg, actor, immediate=True)
     result = pump_admin_queue(tg, actor, force_repost=True)
     record_system_log(
         "admin_queue_pumped",
@@ -2347,7 +2357,7 @@ def handle_dashboard_callback(
     action = data.split(":", 1)[1] if ":" in data else ""
     try:
         if action == "open":
-            _safe_refresh_admin_dashboard(tg, actor)
+            _safe_refresh_admin_dashboard(tg, actor, immediate=True)
             result = pump_admin_queue(tg, actor, force_repost=True)
             record_system_log(
                 "admin_queue_pumped",
@@ -2356,7 +2366,7 @@ def handle_dashboard_callback(
                 {"source": "dashboard_open", **result},
                 actor,
             )
-            _safe_refresh_admin_dashboard(tg, actor)
+            _safe_refresh_admin_dashboard(tg, actor, immediate=True)
         elif action == "projects":
             _show_admin_queue_filters(tg, actor)
         elif action == "people":
@@ -2364,7 +2374,7 @@ def handle_dashboard_callback(
         elif action == "search":
             start_admin_search(tg, actor)
         elif action == "refresh":
-            _safe_refresh_admin_dashboard(tg, actor)
+            _safe_refresh_admin_dashboard(tg, actor, immediate=True)
         elif action.startswith("filter:"):
             parts = action.split(":")
             filter_type = parts[1] if len(parts) > 1 else ""
@@ -2840,7 +2850,21 @@ def refresh_admin_dashboard(
 def _safe_refresh_admin_dashboard(
     tg: TelegramClient,
     actor: Actor | None = None,
+    *,
+    immediate: bool = False,
 ) -> dict[str, Any] | None:
+    if jobs.background_jobs_enabled() and not immediate:
+        try:
+            job_id = jobs.enqueue_dashboard_refresh()
+            return {"queued": True, "job_id": job_id}
+        except Exception as exc:
+            record_system_log(
+                "admin_dashboard_queue_failed",
+                "admin_dashboard",
+                None,
+                {"error": _safe_error(exc)},
+                actor,
+            )
     try:
         return refresh_admin_dashboard(tg, actor)
     except Exception as exc:
@@ -3585,13 +3609,15 @@ def _process_admin_queue_action(
                 """
                 UPDATE videos
                 SET status = %s,
+                    sheet_sync_status = CASE WHEN %s = 'approved' THEN 'queued' ELSE sheet_sync_status END,
+                    sheet_sync_error = CASE WHEN %s = 'approved' THEN NULL ELSE sheet_sync_error END,
                     checked_by_tg_id = %s,
                     checked_by_username = %s,
                     checked_at = now(),
                     updated_at = now()
                 WHERE id = %s AND status = 'pending'
                 """,
-                (status, actor.tg_id, actor.username, video_id),
+                (status, status, status, actor.tg_id, actor.username, video_id),
             )
             cur.execute("DELETE FROM admin_locks WHERE video_id = %s", (video_id,))
         _clear_queue_state(conn)
@@ -3625,7 +3651,28 @@ def _process_admin_queue_action(
             telegram_failure_payload(exc, actor.chat_id, "finalize_queue_card"),
             actor,
         )
-    _notify_submitter_of_queue_result(tg, video, status)
+    chat_id = video.get("added_by_tg_id")
+    if chat_id:
+        messages = {
+            "approved": f"✅ Заявка #{video['id']} одобрена.",
+            "needs_revision": f"🛠 Заявка #{video['id']} возвращена на правку.",
+            "duplicate": f"♻️ Заявка #{video['id']} отмечена как дубль.",
+            "deleted": f"🗑 Заявка #{video['id']} удалена.",
+        }
+        try:
+            jobs.enqueue_telegram_notification(
+                int(chat_id),
+                messages[status],
+                event_key=f"queue-result:{status}:{video_id}:{chat_id}",
+            )
+        except Exception as exc:
+            record_system_log(
+                "queue_result_notification_queue_failed",
+                "video",
+                video_id,
+                {"error": _safe_error(exc)},
+                actor,
+            )
     _safe_refresh_admin_dashboard(tg, actor)
     try:
         result = pump_admin_queue(tg, actor)
@@ -3644,6 +3691,10 @@ def _process_admin_queue_action(
             telegram_failure_payload(exc, get_settings().admin_chat_id, "pump_after_action"),
             actor,
         )
+        try:
+            jobs.enqueue_admin_queue_pump()
+        except Exception:
+            pass
     _safe_refresh_admin_dashboard(tg, actor)
     return None
 
@@ -3806,6 +3857,9 @@ def reset_admin_queue_command(tg: TelegramClient, actor: Actor) -> None:
 def return_missing_dates_command(tg: TelegramClient, actor: Actor) -> None:
     if not require_admin(tg, actor):
         return
+    if not jobs.background_jobs_enabled():
+        tg.send_message(actor.chat_id, "Фоновые задания временно отключены.")
+        return
     row = db.fetch_one(
         "SELECT count(*) AS count FROM videos WHERE status = 'pending' AND publish_date IS NULL"
     ) or {}
@@ -3820,6 +3874,48 @@ def return_missing_dates_command(tg: TelegramClient, actor: Actor) -> None:
             ]
         ),
     )
+
+
+def jobs_status_command(tg: TelegramClient, actor: Actor) -> None:
+    if not require_admin(tg, actor):
+        return
+    tg.send_message(actor.chat_id, jobs.format_jobs_status(jobs.jobs_status_snapshot()))
+
+
+def retry_failed_jobs_command(tg: TelegramClient, actor: Actor) -> None:
+    if not is_superadmin(actor.tg_id):
+        tg.send_message(actor.chat_id, "Команда доступна только суперадмину.")
+        return
+    tg.send_message(
+        actor.chat_id,
+        "Повторить временно упавшие фоновые задания? Dead и permanent jobs не изменятся.",
+        inline_keyboard(
+            [
+                [("Повторить", "jobretry:confirm")],
+                [("Отмена", "jobretry:cancel")],
+            ]
+        ),
+    )
+
+
+def handle_retry_failed_jobs_callback(
+    tg: TelegramClient,
+    actor: Actor,
+    data: str,
+    callback_id: str,
+) -> None:
+    if not is_superadmin(actor.tg_id):
+        _answer_queue_callback(tg, callback_id, "Только для суперадмина.", show_alert=True)
+        return
+    if data == "jobretry:cancel":
+        _answer_queue_callback(tg, callback_id, "Отменено.")
+        return
+    if data != "jobretry:confirm":
+        _answer_queue_callback(tg, callback_id, "Действие устарело.", show_alert=True)
+        return
+    count = jobs.retry_failed_jobs()
+    _answer_queue_callback(tg, callback_id, f"Поставлено в очередь: {count}.", show_alert=True)
+    tg.send_message(actor.chat_id, jobs.format_jobs_status(jobs.jobs_status_snapshot()))
 
 
 def handle_missing_date_callback(
@@ -3857,138 +3953,71 @@ def _missing_date_notification_text(video: dict[str, Any]) -> str:
 
 
 def bulk_return_missing_dates(tg: TelegramClient, actor: Actor) -> dict[str, Any]:
-    old_active_card: tuple[int, int, int] | None = None
+    if not jobs.background_jobs_enabled():
+        tg.send_message(actor.chat_id, "Фоновые задания временно отключены.")
+        return {"operation_id": None, "returned_count": 0, "total_count": 0}
     with db.transaction() as conn:
-        state = _queue_state_for_update(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, batch_id, added_by_tg_id, added_by_username,
-                       project_name, instagram_url, youtube_url
-                FROM videos
-                WHERE status = 'pending' AND publish_date IS NULL
-                ORDER BY created_at ASC, id ASC
+                SELECT *
+                FROM bulk_operations
+                WHERE kind = 'return_missing_dates'
+                  AND status IN ('queued', 'processing')
+                ORDER BY created_at DESC
+                LIMIT 1
                 FOR UPDATE
                 """
             )
-            rows = list(cur.fetchall())
-            video_ids = [int(row["id"]) for row in rows]
-            if video_ids:
+            operation = cur.fetchone()
+            if not operation:
+                cur.execute(
+                    "SELECT count(*) AS count FROM videos WHERE status = 'pending' AND publish_date IS NULL"
+                )
+                total_count = int(cur.fetchone()["count"])
                 cur.execute(
                     """
-                    UPDATE videos
-                    SET status = 'needs_revision',
-                        checked_by_tg_id = %s,
-                        checked_by_username = %s,
-                        checked_at = now(),
-                        updated_at = now()
-                    WHERE id = ANY(%s)
-                      AND status = 'pending'
-                      AND publish_date IS NULL
+                    INSERT INTO bulk_operations (
+                        kind, status, total_count, created_by_tg_id, created_by_username
+                    )
+                    VALUES ('return_missing_dates', 'queued', %s, %s, %s)
+                    RETURNING *
                     """,
-                    (actor.tg_id, actor.username, video_ids),
+                    (total_count, actor.tg_id, actor.username),
                 )
-
-        for row in rows:
+                operation = cur.fetchone()
+                jobs.enqueue_job(
+                    "bulk_return_missing_dates",
+                    {"operation_id": int(operation["id"])},
+                    dedupe_key=f"bulk:{operation['id']}:chunk:0",
+                    priority=30,
+                    conn=conn,
+                )
+            else:
+                total_count = int(operation["total_count"])
             db.log_event(
                 conn,
-                entity_type="video",
-                entity_id=int(row["id"]),
-                action="missing_date_returned",
+                entity_type="bulk_operation",
+                entity_id=int(operation["id"]),
+                action="bulk_operation_started",
                 actor_tg_id=actor.tg_id,
                 actor_username=actor.username,
-                before_data={"status": "pending", "publish_date": None},
-                after_data={"status": "needs_revision"},
+                after_data={"total_count": total_count},
             )
-        for batch_id in sorted({int(row["batch_id"]) for row in rows if row.get("batch_id")}):
-            recalculate_batch(conn, batch_id)
-
-        active_id = int(state["active_video_id"]) if state.get("active_video_id") else None
-        if active_id and active_id in video_ids:
-            if state.get("active_chat_id") and state.get("active_message_id"):
-                old_active_card = (
-                    int(state["active_chat_id"]),
-                    int(state["active_message_id"]),
-                    active_id,
-                )
-            _clear_queue_state(conn)
-        db.log_event(
-            conn,
-            entity_type="admin_queue",
-            entity_id=None,
-            action="missing_dates_bulk_returned",
-            actor_tg_id=actor.tg_id,
-            actor_username=actor.username,
-            after_data={"returned_count": len(rows), "active_video_returned": bool(old_active_card)},
-        )
-
-    if old_active_card:
-        _archive_queue_message(
-            tg,
-            old_active_card[0],
-            old_active_card[1],
-            f"Заявка #{old_active_card[2]} возвращена автору на заполнение даты.",
-            actor,
-        )
-
-    notified = 0
-    failed = 0
-    for row in rows:
-        chat_id = row.get("added_by_tg_id")
-        if not chat_id:
-            failed += 1
-            record_system_log(
-                "missing_date_notification_failed",
-                "video",
-                int(row["id"]),
-                {"reason": "submitter_chat_id_missing"},
-                actor,
-            )
-            continue
-        try:
-            tg.send_message(
-                int(chat_id),
-                _missing_date_notification_text(row),
-                inline_keyboard([[("Указать дату", f"revdate:{row['id']}")]]),
-            )
-            notified += 1
-        except Exception as exc:
-            failed += 1
-            record_system_log(
-                "missing_date_notification_failed",
-                "video",
-                int(row["id"]),
-                telegram_failure_payload(exc, int(chat_id), "notify_missing_date"),
-                actor,
-            )
-
-    _safe_refresh_admin_dashboard(tg, actor)
-    try:
-        queue_result = pump_admin_queue(tg, actor)
-    except Exception as exc:
-        record_system_log(
-            "admin_queue_pump_failed",
-            "admin_queue",
-            None,
-            telegram_failure_payload(exc, get_settings().admin_chat_id, "pump_after_missing_dates"),
-            actor,
-        )
-        pending_row = db.fetch_one("SELECT count(*) AS count FROM videos WHERE status = 'pending'") or {}
-        queue_result = {"global_pending_count": int(pending_row.get("count") or 0)}
-    _safe_refresh_admin_dashboard(tg, actor)
-    pending_count = int(queue_result.get("global_pending_count", queue_result.get("pending_count", 0)) or 0)
+    operation_id = int(operation["id"])
     tg.send_message(
         actor.chat_id,
-        "Готово.\n\n"
-        f"Возвращено авторам: {notified}\n"
-        f"Не удалось уведомить: {failed}\n"
-        f"Осталось pending в очереди: {pending_count}",
+        "Возврат заявок запущен.\n\n"
+        f"Операция #{operation_id}\n"
+        f"Найдено заявок: {total_count}\n"
+        "Прогресс: /jobs_status",
     )
     return {
-        "returned_count": len(rows),
-        "notified_count": notified,
-        "failed_count": failed,
-        "pending_count": pending_count,
+        "operation_id": operation_id,
+        "returned_count": 0,
+        "notified_count": 0,
+        "failed_count": 0,
+        "total_count": total_count,
     }
 
 
@@ -4256,7 +4285,7 @@ def start_revision(tg: TelegramClient, actor: Actor, video_id: int) -> None:
 def show_admin(tg: TelegramClient, actor: Actor) -> None:
     if not require_admin(tg, actor):
         return
-    _safe_refresh_admin_dashboard(tg, actor)
+    _safe_refresh_admin_dashboard(tg, actor, immediate=True)
     result = pump_admin_queue(tg, actor, force_repost=True)
     record_system_log(
         "admin_queue_pumped",
@@ -4265,7 +4294,7 @@ def show_admin(tg: TelegramClient, actor: Actor) -> None:
         {"source": "admin", **result},
         actor,
     )
-    _safe_refresh_admin_dashboard(tg, actor)
+    _safe_refresh_admin_dashboard(tg, actor, immediate=True)
     if result["pending_count"] == 0:
         tg.send_message(actor.chat_id, "Очередь пуста. Pending-заявок: 0.")
 
@@ -4600,6 +4629,8 @@ def approve_video_in_db(video_id: int, actor: Actor) -> dict[str, Any] | None:
                 """
                 UPDATE videos
                 SET status = 'approved',
+                    sheet_sync_status = 'queued',
+                    sheet_sync_error = NULL,
                     checked_by_tg_id = %s,
                     checked_by_username = %s,
                     checked_at = now(),
@@ -4631,28 +4662,42 @@ def approve_video_in_db(video_id: int, actor: Actor) -> dict[str, Any] | None:
 
 def sync_video_after_approval(video: dict[str, Any], actor: Actor) -> bool:
     try:
-        row_number = sheets.upsert_video(video)
-        if row_number:
-            db.execute("UPDATE videos SET sheet_row = %s, updated_at = now() WHERE id = %s", (row_number, video["id"]))
-            video["sheet_row"] = row_number
-        sheets.sync_project_reports(db.fetch_all(VIDEO_SELECT + " WHERE v.status <> 'deleted'"))
+        db.execute(
+            """
+            UPDATE videos
+            SET sheet_sync_status = 'queued', sheet_sync_error = NULL, updated_at = now()
+            WHERE id = %s
+            """,
+            (int(video["id"]),),
+        )
+        job_id = jobs.enqueue_sheet_sync(
+            int(video["id"]),
+            version=_sheet_sync_version(video),
+        )
         record_system_log(
-            "sync_sheets_ok",
+            "sheets_sync_queued",
             "video",
             int(video["id"]),
-            {"sheet_row": row_number},
+            {"job_id": job_id},
             actor,
         )
-        return True
+        return job_id is not None
     except Exception as exc:
         record_system_log(
-            "sync_sheets_failed",
+            "sheets_sync_queue_failed",
             "video",
             int(video["id"]),
             {"error": _safe_error(exc)},
             actor,
         )
         return False
+
+
+def _sheet_sync_version(video: dict[str, Any]) -> str:
+    value = video.get("updated_at")
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat()
+    return str(value or "current")
 
 
 def send_admin_approved_card(
@@ -5449,13 +5494,17 @@ def handle_daily_report_callback(
         if action != "send":
             raise ValueError("unknown daily report action")
         report_date = date.fromisoformat(raw_date)
-        result = send_daily_report(
-            report_date,
-            tg=tg,
-            actor_tg_id=actor.tg_id,
-            actor_username=actor.username,
+        job_id = jobs.enqueue_job(
+            "daily_report",
+            {
+                "report_date": report_date.isoformat(),
+                "actor_tg_id": actor.tg_id,
+                "actor_username": actor.username,
+            },
+            dedupe_key=f"daily-report:{report_date.isoformat()}",
+            priority=70,
         )
-        text = "Отчёт отправлен в admin chat." if result["sent"] else "Отчёт за эту дату уже отправлялся."
+        text = "Отчёт поставлен в очередь." if job_id else "Фоновые задания временно отключены."
         _answer_queue_callback(tg, callback_id, text, show_alert=True)
     except (TypeError, ValueError):
         _answer_queue_callback(tg, callback_id, "Кнопка отчёта устарела.", show_alert=True)
@@ -5474,45 +5523,26 @@ def sync_sheets_command(tg: TelegramClient, actor: Actor) -> None:
         LIMIT 200
         """
     )
-    ok = 0
-    failed = 0
+    queued = 0
     for row in rows:
-        try:
-            row_number = sheets.upsert_video(row)
-            if row_number:
-                db.execute("UPDATE videos SET sheet_row = %s, updated_at = now() WHERE id = %s", (row_number, row["id"]))
-            ok += 1
-        except Exception as exc:
-            failed += 1
-            record_system_log(
-                "sync_sheets_failed",
-                "video",
-                int(row["id"]),
-                {"error": _safe_error(exc)},
-                actor,
-            )
-    try:
-        sheets.sync_project_reports(db.fetch_all(VIDEO_SELECT + " WHERE v.status <> 'deleted'"))
-    except Exception as exc:
-        failed += 1
-        record_system_log(
-            "sync_project_reports_failed",
-            "spreadsheet",
-            None,
-            {"error": _safe_error(exc)},
-            actor,
+        queued += int(
+            jobs.enqueue_sheet_sync(int(row["id"]), version=_sheet_sync_version(row)) is not None
         )
-    tg.send_message(actor.chat_id, f"Синхронизация завершена. Успешно: {ok}, ошибок: {failed}.")
+    jobs.enqueue_job("sheets_sync_stats", {}, dedupe_key="stats:projects", priority=80)
+    tg.send_message(actor.chat_id, f"Синхронизация поставлена в очередь. Видео: {queued}.")
 
 
 def sync_youtube_metrics_command(tg: TelegramClient, actor: Actor) -> None:
     if not require_admin(tg, actor):
         return
-    result = metrics.sync_youtube_metrics(
-        actor_tg_id=actor.tg_id,
-        actor_username=actor.username,
+    job_id = jobs.enqueue_job(
+        "youtube_metrics",
+        {"actor_tg_id": actor.tg_id, "actor_username": actor.username},
+        dedupe_key=f"youtube-metrics:{date.today().isoformat()}",
+        priority=70,
     )
-    tg.send_message(actor.chat_id, metrics.format_sync_result(result))
+    text = "Обновление YouTube-метрик поставлено в очередь." if job_id else "Фоновые задания временно отключены."
+    tg.send_message(actor.chat_id, text)
 
 
 def metrics_youtube_today_command(tg: TelegramClient, actor: Actor) -> None:

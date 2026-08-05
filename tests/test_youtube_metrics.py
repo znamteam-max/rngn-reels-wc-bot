@@ -107,23 +107,14 @@ class YouTubeMetricsTests(unittest.TestCase):
     def test_sync_youtube_metrics_admin_runs(self) -> None:
         tg = FakeTelegram()
         actor = Actor(tg_id=10, chat_id=10, username="admin")
-        result = YouTubeSyncResult(
-            total_videos=1,
-            success_count=1,
-            total_views=100,
-            total_likes=5,
-            total_comments=2,
-            top_video_id=1,
-            top_views=100,
-            sheet_status="ok",
-        )
         with patch("bot.handlers.is_admin", return_value=True), patch(
-            "bot.handlers.metrics.sync_youtube_metrics",
-            return_value=result,
-        ) as sync_mock:
+            "bot.handlers.jobs.enqueue_job",
+            return_value=42,
+        ) as enqueue:
             sync_youtube_metrics_command(tg, actor)
-        sync_mock.assert_called_once()
-        self.assertIn("YouTube-метрики обновлены", tg.messages[0][1])
+        enqueue.assert_called_once()
+        self.assertEqual(enqueue.call_args.args[0], "youtube_metrics")
+        self.assertIn("поставлено в очередь", tg.messages[0][1])
 
 
 if __name__ == "__main__":

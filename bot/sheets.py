@@ -478,12 +478,12 @@ def _sync_video_project_sheet(
         )
 
 
-def upsert_video(video: dict[str, Any]) -> int:
+def upsert_video(video: dict[str, Any], *, service=None) -> int:
     settings = get_settings()
     if not settings.google_sheets_spreadsheet_id:
         raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured")
 
-    service = _service()
+    service = service or _service()
     spreadsheet_id = settings.google_sheets_spreadsheet_id
     columns = _ensure_video_sheet_columns(service, spreadsheet_id)
     end_column = _column_letter(len(columns))
@@ -526,6 +526,106 @@ def upsert_video(video: dict[str, Any]) -> int:
     found = _find_row_by_id(service, spreadsheet_id, int(video["id"]))
     _sync_video_project_sheet(service, spreadsheet_id, video, columns)
     return int(found or 0)
+
+
+def batch_upsert_videos(
+    videos: list[dict[str, Any]],
+    *,
+    service=None,
+) -> dict[int, int]:
+    if not videos:
+        return {}
+    if len(videos) > 10:
+        raise ValueError("batch_upsert_videos accepts at most 10 videos")
+    settings = get_settings()
+    if not settings.google_sheets_spreadsheet_id:
+        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured")
+
+    service = service or _service()
+    spreadsheet_id = settings.google_sheets_spreadsheet_id
+    columns = _ensure_video_sheet_columns(service, spreadsheet_id)
+    project_sheets = list(PROJECT_SHEET_TITLES.values())
+    _ensure_named_sheets(
+        service,
+        spreadsheet_id,
+        {title: columns for title in project_sheets},
+    )
+    sheet_names = [SHEET_NAME, *project_sheets]
+    response = (
+        service.spreadsheets()
+        .values()
+        .batchGet(
+            spreadsheetId=spreadsheet_id,
+            ranges=[_sheet_range(title, "A2:A") for title in sheet_names],
+            majorDimension="ROWS",
+        )
+        .execute()
+    )
+    value_ranges = response.get("valueRanges", [])
+    rows_by_sheet: dict[str, list[list[Any]]] = {}
+    index_by_sheet: dict[str, dict[int, int]] = {}
+    for index, title in enumerate(sheet_names):
+        rows = value_ranges[index].get("values", []) if index < len(value_ranges) else []
+        rows_by_sheet[title] = rows
+        index_by_sheet[title] = {
+            int(row[0]): row_number
+            for row_number, row in enumerate(rows, start=2)
+            if row and str(row[0]).isdigit()
+        }
+
+    next_row = {title: len(rows_by_sheet[title]) + 2 for title in sheet_names}
+    end_column = _column_letter(len(columns))
+    updates: list[dict[str, Any]] = []
+    clear_ranges: list[str] = []
+    main_rows: dict[int, int] = {}
+    for video in videos:
+        video_id = int(video["id"])
+        row_values = [video_to_row(video, columns)]
+        main_row = int(video.get("sheet_row") or index_by_sheet[SHEET_NAME].get(video_id) or 0)
+        if not main_row:
+            main_row = next_row[SHEET_NAME]
+            next_row[SHEET_NAME] += 1
+        main_rows[video_id] = main_row
+        updates.append(
+            {
+                "range": _sheet_range(SHEET_NAME, f"A{main_row}:{end_column}{main_row}"),
+                "values": row_values,
+            }
+        )
+
+        target_title = project_sheet_title(str(video.get("project_code") or ""))
+        for title in project_sheets:
+            existing_row = index_by_sheet[title].get(video_id)
+            if existing_row and title != target_title:
+                clear_ranges.append(
+                    _sheet_range(title, f"A{existing_row}:{end_column}{existing_row}")
+                )
+        if target_title:
+            project_row = index_by_sheet[target_title].get(video_id)
+            if not project_row:
+                project_row = next_row[target_title]
+                next_row[target_title] += 1
+            updates.append(
+                {
+                    "range": _sheet_range(
+                        target_title,
+                        f"A{project_row}:{end_column}{project_row}",
+                    ),
+                    "values": row_values,
+                }
+            )
+
+    values_api = service.spreadsheets().values()
+    if clear_ranges:
+        values_api.batchClear(
+            spreadsheetId=spreadsheet_id,
+            body={"ranges": clear_ranges},
+        ).execute()
+    values_api.batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"valueInputOption": "USER_ENTERED", "data": updates},
+    ).execute()
+    return main_rows
 
 
 def _report_project(video: dict[str, Any]) -> tuple[str, str]:
@@ -674,11 +774,11 @@ def _replace_named_sheet(
     )
 
 
-def sync_project_reports(videos: list[dict[str, Any]]) -> None:
+def sync_project_reports(videos: list[dict[str, Any]], *, service=None) -> None:
     settings = get_settings()
     if not settings.google_sheets_spreadsheet_id:
         raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured")
-    service = _service()
+    service = service or _service()
     spreadsheet_id = settings.google_sheets_spreadsheet_id
     _ensure_named_sheets(
         service,
