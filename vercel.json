@@ -11,8 +11,8 @@
   },
   "crons": [
     {
-      "path": "/api/cron/process-jobs",
-      "schedule": "1 6 * * *"
+      "path": "/api/cron/youtube-metrics",
+      "schedule": "0 3 * * *"
     },
     {
       "path": "/api/cron/daily-report",

@@ -122,7 +122,7 @@ captured_at,video_id,platform,platform_video_id,views,likes,comments,shares,sour
 
 ## Vercel Deploy
 
-The project uses Python Vercel Functions for the webhook, read-only health, protected migration, and cron endpoints. `vercel.json` schedules the background worker every minute, YouTube metrics at `0 3 * * *`, and the previous-day admin report at `0 6 * * *` (09:00 for production UTC+3). Minute cron requires a Vercel Pro plan; otherwise call the protected worker endpoint every minute from an external scheduler.
+The project uses Python Vercel Functions for the webhook, read-only health, protected migration, and cron endpoints. `vercel.json` schedules YouTube metrics at `0 3 * * *` and the previous-day admin report at `0 6 * * *` (09:00 for production UTC+3). Call the protected background-worker endpoint every minute. Vercel Pro can add it directly to `vercel.json`; the Hobby plan must use an external scheduler with the same `Authorization` header.
 
 The webhook never runs DDL. Apply schema changes separately before enabling a new webhook version:
 
