@@ -16,11 +16,17 @@ PROJECTS: tuple[dict[str, Any], ...] = (
     {"code": "other", "name": "Другой проект", "emoji": "➕", "sort_order": 999},
 )
 
-PROJECT_BY_CODE = {str(project["code"]): project for project in PROJECTS}
+ARCHIVED_PROJECTS: tuple[dict[str, Any], ...] = (
+    {"code": "world_cup_2026", "name": "ЧМ 2026", "emoji": "🏆", "sort_order": 31, "is_active": False},
+)
+REPORTING_PROJECTS = PROJECTS + ARCHIVED_PROJECTS
+
+PROJECT_BY_CODE = {str(project["code"]): project for project in REPORTING_PROJECTS}
 PROJECT_SHEET_TITLES = {
     "vzyal_myach": "Взял Мяч",
     "bolshe": "Больше",
     "ves_sport": "Весь Спорт",
+    "world_cup_2026": "ЧМ 2026",
     "padel_channel": "Padel Channel",
     "home_of_hockey": "Home of Hockey",
     "double_play": "Double Play",
@@ -38,16 +44,17 @@ _LINK_RE = re.compile(
 
 def seed_projects(conn) -> int:
     with conn.cursor() as cur:
-        for project in PROJECTS:
+        for project in REPORTING_PROJECTS:
+            is_active = bool(project.get("is_active", True))
             cur.execute(
                 """
                 INSERT INTO projects (code, name, emoji, is_active, sort_order, updated_at)
-                VALUES (%s, %s, %s, true, %s, now())
+                VALUES (%s, %s, %s, %s, %s, now())
                 ON CONFLICT (code)
                 DO UPDATE SET
                     name = EXCLUDED.name,
                     emoji = EXCLUDED.emoji,
-                    is_active = true,
+                    is_active = EXCLUDED.is_active,
                     sort_order = EXCLUDED.sort_order,
                     updated_at = now()
                 """,
@@ -55,6 +62,7 @@ def seed_projects(conn) -> int:
                     project["code"],
                     project["name"],
                     project["emoji"],
+                    is_active,
                     project["sort_order"],
                 ),
             )

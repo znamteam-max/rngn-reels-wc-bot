@@ -9,7 +9,7 @@ from typing import Any, Iterable
 from psycopg.types.json import Jsonb
 
 from bot import db, jobs
-from bot.projects import PROJECTS, PROJECT_SHEET_TITLES
+from bot.projects import PROJECTS, PROJECT_SHEET_TITLES, REPORTING_PROJECTS
 
 
 ACTIVE_STATUS_SQL = "status <> 'deleted'"
@@ -124,7 +124,7 @@ PROJECT_NAMES = {
     str(project["code"]): (
         "Другие проекты" if project["code"] == "other" else str(project["name"])
     )
-    for project in PROJECTS
+    for project in REPORTING_PROJECTS
 }
 PROJECT_NAMES["unassigned"] = "Без проекта"
 
@@ -265,7 +265,7 @@ def build_project_stats_rows(
     current = updated_at or datetime.now(timezone.utc)
     active = active_videos(videos)
     rows: list[list[str]] = []
-    project_codes = [str(item["code"]) for item in PROJECTS] + ["unassigned"]
+    project_codes = [str(item["code"]) for item in REPORTING_PROJECTS] + ["unassigned"]
     for period in canonical_periods(active):
         period_rows = [video for video in active if _period_matches(video, period)]
         for code in project_codes:

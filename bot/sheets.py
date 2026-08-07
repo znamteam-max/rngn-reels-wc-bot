@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from bot import reconciliation
 from bot.config import get_settings
 from bot.messages import person_value
-from bot.projects import PROJECTS, PROJECT_SHEET_TITLES, project_sheet_title
+from bot.projects import PROJECTS, PROJECT_SHEET_TITLES, REPORTING_PROJECTS, project_sheet_title
 
 
 SHEET_NAME = "Videos"
@@ -763,7 +763,7 @@ def _report_project(video: dict[str, Any]) -> tuple[str, str]:
         return code, "Другие проекты"
     if code == "unassigned":
         return code, "Без проекта"
-    project = next((item for item in PROJECTS if item["code"] == code), None)
+    project = next((item for item in REPORTING_PROJECTS if item["code"] == code), None)
     return code, str(video.get("project_name") or (project or {}).get("name") or code)
 
 
