@@ -1,0 +1,89 @@
+name: One-time report v1.0.20 rebuild
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/report-v1-0-20-once.yml]
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: report-v1-0-20-once
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare permanent report changes
+        shell: bash
+        run: |
+          set -e
+          python scripts/prepare_report_v1_0_20_once.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('bot/github_oidc.py')
+          text = path.read_text(encoding='utf-8')
+          old = 'GITHUB_EVENTS = {"schedule", "workflow_dispatch"}'
+          new = '# Temporary one-time ops allowance for report v1.0.20 rebuild.\nGITHUB_EVENTS = {"schedule", "workflow_dispatch", "push"}'
+          if old not in text:
+              raise SystemExit('OIDC event pattern not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          python -m py_compile bot/reconciliation.py bot/sheets.py bot/sheet_layout.py bot/version.py api/internal/report-v1-0-20-7b4d91.py scripts/run_report_v1_0_20_live.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bot/reconciliation.py bot/sheets.py bot/sheet_layout.py bot/version.py bot/github_oidc.py api/internal/report-v1-0-20-7b4d91.py scripts/prepare_report_v1_0_20_once.py scripts/run_report_v1_0_20_live.py
+          git commit -m "feat: rebuild reporting around authors and video types"
+          git push origin HEAD:main
+
+      - name: Apply database cleanup and rebuild Google Sheets
+        id: migrate
+        shell: bash
+        run: |
+          set +e
+          python scripts/run_report_v1_0_20_live.py
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Remove one-time migration access
+        if: always()
+        shell: bash
+        run: |
+          set -e
+          git pull --rebase origin main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('bot/github_oidc.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              '# Temporary one-time ops allowance for report v1.0.20 rebuild.\nGITHUB_EVENTS = {"schedule", "workflow_dispatch", "push"}',
+              'GITHUB_EVENTS = {"schedule", "workflow_dispatch"}',
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+          git rm -f api/internal/report-v1-0-20-7b4d91.py || true
+          git rm -f scripts/prepare_report_v1_0_20_once.py || true
+          git rm -f scripts/run_report_v1_0_20_live.py || true
+          git rm -f .github/workflows/report-v1-0-20-once.yml || true
+          git add bot/github_oidc.py ops/report_v1_0_20_result.json || true
+          if ! git diff --cached --quiet; then
+            git commit -m "ops: complete report v1.0.20 rebuild"
+            git push origin HEAD:main
+          fi
+
+      - name: Enforce migration result
+        if: always()
+        shell: bash
+        run: |
+          test "${{ steps.migrate.outputs.exit_code }}" = "0"
