@@ -24,6 +24,29 @@ UNFINISHED_SHEET_NAME = "Unfinished Requests"
 UNSUBMITTED_SHEET_NAME = "Unsubmitted Forms"
 RECONCILIATION_SHEET_NAME = "Reconciliation"
 BACKFILL_REVIEW_SHEET_NAME = "Project Backfill Review"
+AUTHOR_WORK_SHEET_NAME = "Работа авторов"
+MONTAGE_WORK_SHEET_NAME = "Монтаж — справочно"
+
+AUTHOR_WORK_COLUMNS = [
+    "period",
+    "author",
+    "username",
+    "project_code",
+    "project_name",
+    "regular_reels",
+    "big_recaps",
+    "total_authored",
+]
+MONTAGE_WORK_COLUMNS = [
+    "period",
+    "montage",
+    "username",
+    "project_code",
+    "project_name",
+    "regular_reels",
+    "big_recaps",
+    "total_montage",
+]
 
 DERIVED_VIDEO_COLUMNS = ["publish_month", "is_published", "is_incomplete", "missing_fields"]
 PROJECT_STATS_COLUMNS = [
@@ -251,12 +274,23 @@ def _period_matches(video: dict[str, Any], period: str) -> bool:
     return publish_month(video) == period
 
 
+EGOR_CANONICAL_NAME = "Егор Петрушков"
+EGOR_CANONICAL_USERNAME = "RayBallPro"
+EGOR_NAME_ALIASES = {"егор", "егор петрушков"}
+
+
 def _person_key(video: dict[str, Any], role: str) -> tuple[str, str] | None:
     name = str(video.get(f"{role}_name") or "").strip()
     if not name:
         return None
     username = str(video.get(f"{role}_username") or "").strip().lstrip("@")
+    if username.casefold() == EGOR_CANONICAL_USERNAME.casefold() or name.casefold() in EGOR_NAME_ALIASES:
+        return EGOR_CANONICAL_NAME, EGOR_CANONICAL_USERNAME
     return name, username
+
+
+def _video_type_key(video: dict[str, Any]) -> str:
+    return "bigrecap" if str(video.get("video_type") or "").lower() == "bigrecap" else "regular"
 
 
 def build_project_stats_rows(
@@ -362,6 +396,65 @@ def build_people_projects_rows(videos: list[dict[str, Any]]) -> list[list[str]]:
     return rows
 
 
+
+def _build_role_work_rows(videos: list[dict[str, Any]], role: str) -> list[list[str]]:
+    active = active_videos(videos)
+    periods = canonical_periods(active)
+    period_order = {period: index for index, period in enumerate(periods)}
+    counts: dict[tuple[str, str, str, str, str], dict[str, int]] = defaultdict(
+        lambda: {"regular": 0, "bigrecap": 0}
+    )
+    for video in active:
+        if video.get("status") != PUBLISHED_STATUS:
+            continue
+        person = _person_key(video, role)
+        if not person:
+            continue
+        person_name, username = person
+        code = project_partition_code(video)
+        project_name = PROJECT_NAMES[code]
+        kind = _video_type_key(video)
+        for period in ("ALL", publish_month(video) or "NO_DATE"):
+            if period not in period_order:
+                continue
+            counts[(period, person_name, username, code, project_name)][kind] += 1
+
+    ordered = sorted(
+        counts.items(),
+        key=lambda item: (
+            period_order.get(item[0][0], 999),
+            -sum(item[1].values()),
+            item[0][1].casefold(),
+            item[0][4].casefold(),
+        ),
+    )
+    rows: list[list[str]] = []
+    for (period, person_name, username, code, project_name), item in ordered:
+        regular = int(item["regular"])
+        bigrecap = int(item["bigrecap"])
+        rows.append(
+            [
+                period,
+                person_name,
+                f"@{username}" if username else "",
+                code,
+                project_name,
+                str(regular),
+                str(bigrecap),
+                str(regular + bigrecap),
+            ]
+        )
+    return rows
+
+
+def build_author_work_rows(videos: list[dict[str, Any]]) -> list[list[str]]:
+    return _build_role_work_rows(videos, "author")
+
+
+def build_montage_work_rows(videos: list[dict[str, Any]]) -> list[list[str]]:
+    return _build_role_work_rows(videos, "montage")
+
+
 def build_unfinished_rows(
     videos: list[dict[str, Any]], *, now: datetime | None = None
 ) -> list[list[str]]:
@@ -447,20 +540,34 @@ def build_unsubmitted_rows(
     return rows
 
 
+SHEET_HEADER_SENTINELS = {"id", "period", "video_id", "tg_id", "metric", "captured_at"}
+
+
+def _sheet_header_index(table: list[list[Any]] | None) -> int:
+    if not table:
+        return 0
+    for index, row in enumerate(table[:8]):
+        if row and str(row[0]).strip() in SHEET_HEADER_SENTINELS:
+            return index
+    return 0
+
+
 def _sheet_rows(table: list[list[Any]] | None) -> tuple[list[str], list[list[str]]]:
     if not table:
         return [], []
-    header = [str(value).strip() for value in table[0]]
-    rows = [[_cell(value) for value in row] for row in table[1:]]
+    header_index = _sheet_header_index(table)
+    header = [str(value).strip() for value in table[header_index]]
+    rows = [[_cell(value) for value in row] for row in table[header_index + 1 :]]
     return header, rows
 
 
 def _sheet_ids(table: list[list[Any]] | None) -> tuple[list[int], list[dict[str, Any]]]:
+    header_index = _sheet_header_index(table)
     header, rows = _sheet_rows(table)
     id_index = header.index("id") if "id" in header else 0
     ids: list[int] = []
     problems: list[dict[str, Any]] = []
-    for offset, row in enumerate(rows, start=2):
+    for offset, row in enumerate(rows, start=header_index + 2):
         raw = row[id_index].strip() if id_index < len(row) else ""
         if not raw:
             if any(cell.strip() for cell in row):
@@ -500,7 +607,13 @@ def audit_sheet_tables(
     *,
     video_columns: list[str],
 ) -> dict[str, Any]:
-    from bot.sheets import PEOPLE_PROJECTS_SHEET_NAME, PROJECT_STATS_SHEET_NAME, SHEET_NAME, video_to_row
+    from bot.sheets import (
+        AUTHOR_WORK_SHEET_NAME,
+        MONTAGE_WORK_SHEET_NAME,
+        PROJECT_STATS_SHEET_NAME,
+        SHEET_NAME,
+        video_to_row,
+    )
 
     active = sorted(active_videos(videos), key=canonical_sort_key)
     by_id = {int(video["id"]): video for video in active}
@@ -605,7 +718,8 @@ def audit_sheet_tables(
     expected_reports = {
         PROJECT_STATS_SHEET_NAME: (PROJECT_STATS_COLUMNS, build_project_stats_rows(active)),
         MONTH_STATS_SHEET_NAME: (MONTH_STATS_COLUMNS, build_month_stats_rows(active)),
-        PEOPLE_PROJECTS_SHEET_NAME: (PEOPLE_PROJECTS_COLUMNS, build_people_projects_rows(active)),
+        AUTHOR_WORK_SHEET_NAME: (AUTHOR_WORK_COLUMNS, build_author_work_rows(active)),
+        MONTAGE_WORK_SHEET_NAME: (MONTAGE_WORK_COLUMNS, build_montage_work_rows(active)),
     }
     for title, (columns, expected_rows) in expected_reports.items():
         header, actual_rows = _sheet_rows(tables.get(title))
@@ -1312,6 +1426,7 @@ def rebuild_sheet_chunk(run_id: int, sheet_index: int, *, service=None) -> dict[
         staging_title(run_id, sheet_index),
         list(columns_by_name[sheet_name]),
         rows,
+        display_name=sheet_name,
         service=service,
     )
     next_index = sheet_index + 1
