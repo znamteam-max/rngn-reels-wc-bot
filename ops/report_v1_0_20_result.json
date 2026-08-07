@@ -1,0 +1,863 @@
+{
+  "ok": false,
+  "started_at": "2026-08-07T11:34:27.695248+00:00",
+  "last_wait_error": "HTTPError: HTTP Error 401: Unauthorized",
+  "initial_status": {
+    "ok": true,
+    "run_id": 3,
+    "run_status": "done",
+    "run_stage": "done",
+    "mismatch_count": 0,
+    "db_active_count": 310,
+    "approved_count": 308,
+    "approved_regular": 295,
+    "approved_bigrecap": 13,
+    "needs_revision": 2,
+    "missing_date": 2,
+    "project_sheet_counts": {
+      "ЧМ 2026": 310,
+      "Music Core": 0,
+      "Sport Core": 0,
+      "Double Play": 0,
+      "Больше": 0,
+      "Padel Channel": 0,
+      "Home of Hockey": 0,
+      "Взял Мяч": 0,
+      "Весь Спорт": 0,
+      "Без проекта": 0,
+      "Другие проекты": 0
+    },
+    "month_sheet_counts": {
+      "2026-05": 0,
+      "2026-06": 146,
+      "2026-07": 162,
+      "2026-08": 0,
+      "Без даты": 2
+    },
+    "egor_people_rows": [
+      {
+        "id": 5,
+        "name": "Егор",
+        "username": "RayBallPro",
+        "role": "author",
+        "is_active": true
+      },
+      {
+        "id": 35,
+        "name": "Егор Петрушков",
+        "username": "RayBallPro",
+        "role": "montage",
+        "is_active": true
+      }
+    ],
+    "author_report_all": [
+      [
+        "ALL",
+        "Знамбо",
+        "@znambo",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "192",
+        "0",
+        "192"
+      ],
+      [
+        "ALL",
+        "Тихонов",
+        "@tikhonov32",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "26",
+        "13",
+        "39"
+      ],
+      [
+        "ALL",
+        "Левченко",
+        "@milovaantseva",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "23",
+        "0",
+        "23"
+      ],
+      [
+        "ALL",
+        "Егор Петрушков",
+        "@RayBallPro",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "22",
+        "0",
+        "22"
+      ],
+      [
+        "ALL",
+        "Прокудин",
+        "@ny_pochemu",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "22",
+        "0",
+        "22"
+      ],
+      [
+        "ALL",
+        "Пойда",
+        "@alexanderpoyda",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "10",
+        "0",
+        "10"
+      ]
+    ],
+    "montage_report_all": [
+      [
+        "ALL",
+        "Знамбо",
+        "@znambo",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "94",
+        "0",
+        "94"
+      ],
+      [
+        "ALL",
+        "Михайлов",
+        "@kirya_mikhaylov",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "39",
+        "4",
+        "43"
+      ],
+      [
+        "ALL",
+        "Каленский",
+        "@usernameisinvaliid",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "28",
+        "0",
+        "28"
+      ],
+      [
+        "ALL",
+        "Егор Петрушков",
+        "@RayBallPro",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "26",
+        "0",
+        "26"
+      ],
+      [
+        "ALL",
+        "Святун",
+        "@sviatoyalexandr",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "17",
+        "0",
+        "17"
+      ],
+      [
+        "ALL",
+        "Жаворонков",
+        "@KosZhavoronkov",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "14",
+        "2",
+        "16"
+      ],
+      [
+        "ALL",
+        "Куликов",
+        "@monsieur_kulikov",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "15",
+        "1",
+        "16"
+      ],
+      [
+        "ALL",
+        "Детков",
+        "@Ageraonly",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "9",
+        "3",
+        "12"
+      ],
+      [
+        "ALL",
+        "Ермаков",
+        "@ermakovv63",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "11",
+        "0",
+        "11"
+      ],
+      [
+        "ALL",
+        "Рябошапка",
+        "@igormoll",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "10",
+        "1",
+        "11"
+      ],
+      [
+        "ALL",
+        "Иванов",
+        "@Skaddii",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "10",
+        "0",
+        "10"
+      ],
+      [
+        "ALL",
+        "Левченко",
+        "@milovaantseva",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "9",
+        "0",
+        "9"
+      ],
+      [
+        "ALL",
+        "Куншин",
+        "@jdayke",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "6",
+        "0",
+        "6"
+      ],
+      [
+        "ALL",
+        "Смоковдин",
+        "@smkvdn",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "4",
+        "0",
+        "4"
+      ],
+      [
+        "ALL",
+        "Бобровницкий",
+        "@Stepagrad",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "0",
+        "2",
+        "2"
+      ],
+      [
+        "ALL",
+        "Филиппов",
+        "@basicdepo",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "2",
+        "0",
+        "2"
+      ],
+      [
+        "ALL",
+        "Левченко",
+        "",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "1",
+        "0",
+        "1"
+      ]
+    ],
+    "finished_at": "2026-08-07T10:45:53.944001+00:00",
+    "last_error": null
+  },
+  "apply": {
+    "ok": true,
+    "run_id": 4,
+    "manual_corrections": {
+      "levchenko_deleted_id": 6,
+      "levchenko_candidate_count": 1,
+      "hamidulin_bigrecap_id": 99,
+      "hamidulin_candidate_count": 1,
+      "hamidulin_applied": {
+        "reason": "single_unfinished_hamidulin",
+        "sheet_status": "needs_revision",
+        "sheet_publish_date": "2026-07-20",
+        "sheet_youtube": true
+      }
+    },
+    "egor_merge": {
+      "roles": {
+        "author": {
+          "matched": 1,
+          "canonical_id": 5,
+          "deactivated_ids": [],
+          "video_rows_updated": 22
+        },
+        "montage": {
+          "matched": 1,
+          "canonical_id": 35,
+          "deactivated_ids": [],
+          "video_rows_updated": 26
+        },
+        "voice": {
+          "matched": 0
+        }
+      }
+    },
+    "status": {
+      "ok": true,
+      "run_id": 4,
+      "run_status": "created",
+      "run_stage": "queued",
+      "mismatch_count": 0,
+      "db_active_count": 309,
+      "approved_count": 308,
+      "approved_regular": 295,
+      "approved_bigrecap": 13,
+      "needs_revision": 1,
+      "missing_date": 0,
+      "project_sheet_counts": {},
+      "month_sheet_counts": {},
+      "egor_people_rows": [
+        {
+          "id": 5,
+          "name": "Егор Петрушков",
+          "username": "RayBallPro",
+          "role": "author",
+          "is_active": true
+        },
+        {
+          "id": 35,
+          "name": "Егор Петрушков",
+          "username": "RayBallPro",
+          "role": "montage",
+          "is_active": true
+        }
+      ],
+      "author_report_all": [
+        [
+          "ALL",
+          "Знамбо",
+          "@znambo",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "192",
+          "0",
+          "192"
+        ],
+        [
+          "ALL",
+          "Тихонов",
+          "@tikhonov32",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "26",
+          "13",
+          "39"
+        ],
+        [
+          "ALL",
+          "Левченко",
+          "@milovaantseva",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "23",
+          "0",
+          "23"
+        ],
+        [
+          "ALL",
+          "Егор Петрушков",
+          "@RayBallPro",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "22",
+          "0",
+          "22"
+        ],
+        [
+          "ALL",
+          "Прокудин",
+          "@ny_pochemu",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "22",
+          "0",
+          "22"
+        ],
+        [
+          "ALL",
+          "Пойда",
+          "@alexanderpoyda",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "10",
+          "0",
+          "10"
+        ]
+      ],
+      "montage_report_all": [
+        [
+          "ALL",
+          "Знамбо",
+          "@znambo",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "94",
+          "0",
+          "94"
+        ],
+        [
+          "ALL",
+          "Михайлов",
+          "@kirya_mikhaylov",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "39",
+          "4",
+          "43"
+        ],
+        [
+          "ALL",
+          "Каленский",
+          "@usernameisinvaliid",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "28",
+          "0",
+          "28"
+        ],
+        [
+          "ALL",
+          "Егор Петрушков",
+          "@RayBallPro",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "26",
+          "0",
+          "26"
+        ],
+        [
+          "ALL",
+          "Святун",
+          "@sviatoyalexandr",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "17",
+          "0",
+          "17"
+        ],
+        [
+          "ALL",
+          "Жаворонков",
+          "@KosZhavoronkov",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "14",
+          "2",
+          "16"
+        ],
+        [
+          "ALL",
+          "Куликов",
+          "@monsieur_kulikov",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "15",
+          "1",
+          "16"
+        ],
+        [
+          "ALL",
+          "Детков",
+          "@Ageraonly",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "9",
+          "3",
+          "12"
+        ],
+        [
+          "ALL",
+          "Ермаков",
+          "@ermakovv63",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "11",
+          "0",
+          "11"
+        ],
+        [
+          "ALL",
+          "Рябошапка",
+          "@igormoll",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "10",
+          "1",
+          "11"
+        ],
+        [
+          "ALL",
+          "Иванов",
+          "@Skaddii",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "10",
+          "0",
+          "10"
+        ],
+        [
+          "ALL",
+          "Левченко",
+          "@milovaantseva",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "9",
+          "0",
+          "9"
+        ],
+        [
+          "ALL",
+          "Куншин",
+          "@jdayke",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "6",
+          "0",
+          "6"
+        ],
+        [
+          "ALL",
+          "Смоковдин",
+          "@smkvdn",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "4",
+          "0",
+          "4"
+        ],
+        [
+          "ALL",
+          "Бобровницкий",
+          "@Stepagrad",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "0",
+          "2",
+          "2"
+        ],
+        [
+          "ALL",
+          "Филиппов",
+          "@basicdepo",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "2",
+          "0",
+          "2"
+        ],
+        [
+          "ALL",
+          "Левченко",
+          "",
+          "world_cup_2026",
+          "ЧМ 2026",
+          "1",
+          "0",
+          "1"
+        ]
+      ],
+      "finished_at": null,
+      "last_error": null
+    }
+  },
+  "last_status": {
+    "ok": true,
+    "run_id": 4,
+    "run_status": "auditing",
+    "run_stage": "reading_snapshot",
+    "mismatch_count": 0,
+    "db_active_count": 309,
+    "approved_count": 308,
+    "approved_regular": 295,
+    "approved_bigrecap": 13,
+    "needs_revision": 1,
+    "missing_date": 0,
+    "project_sheet_counts": {},
+    "month_sheet_counts": {},
+    "egor_people_rows": [
+      {
+        "id": 5,
+        "name": "Егор Петрушков",
+        "username": "RayBallPro",
+        "role": "author",
+        "is_active": true
+      },
+      {
+        "id": 35,
+        "name": "Егор Петрушков",
+        "username": "RayBallPro",
+        "role": "montage",
+        "is_active": true
+      }
+    ],
+    "author_report_all": [
+      [
+        "ALL",
+        "Знамбо",
+        "@znambo",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "192",
+        "0",
+        "192"
+      ],
+      [
+        "ALL",
+        "Тихонов",
+        "@tikhonov32",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "26",
+        "13",
+        "39"
+      ],
+      [
+        "ALL",
+        "Левченко",
+        "@milovaantseva",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "23",
+        "0",
+        "23"
+      ],
+      [
+        "ALL",
+        "Егор Петрушков",
+        "@RayBallPro",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "22",
+        "0",
+        "22"
+      ],
+      [
+        "ALL",
+        "Прокудин",
+        "@ny_pochemu",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "22",
+        "0",
+        "22"
+      ],
+      [
+        "ALL",
+        "Пойда",
+        "@alexanderpoyda",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "10",
+        "0",
+        "10"
+      ]
+    ],
+    "montage_report_all": [
+      [
+        "ALL",
+        "Знамбо",
+        "@znambo",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "94",
+        "0",
+        "94"
+      ],
+      [
+        "ALL",
+        "Михайлов",
+        "@kirya_mikhaylov",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "39",
+        "4",
+        "43"
+      ],
+      [
+        "ALL",
+        "Каленский",
+        "@usernameisinvaliid",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "28",
+        "0",
+        "28"
+      ],
+      [
+        "ALL",
+        "Егор Петрушков",
+        "@RayBallPro",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "26",
+        "0",
+        "26"
+      ],
+      [
+        "ALL",
+        "Святун",
+        "@sviatoyalexandr",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "17",
+        "0",
+        "17"
+      ],
+      [
+        "ALL",
+        "Жаворонков",
+        "@KosZhavoronkov",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "14",
+        "2",
+        "16"
+      ],
+      [
+        "ALL",
+        "Куликов",
+        "@monsieur_kulikov",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "15",
+        "1",
+        "16"
+      ],
+      [
+        "ALL",
+        "Детков",
+        "@Ageraonly",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "9",
+        "3",
+        "12"
+      ],
+      [
+        "ALL",
+        "Ермаков",
+        "@ermakovv63",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "11",
+        "0",
+        "11"
+      ],
+      [
+        "ALL",
+        "Рябошапка",
+        "@igormoll",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "10",
+        "1",
+        "11"
+      ],
+      [
+        "ALL",
+        "Иванов",
+        "@Skaddii",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "10",
+        "0",
+        "10"
+      ],
+      [
+        "ALL",
+        "Левченко",
+        "@milovaantseva",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "9",
+        "0",
+        "9"
+      ],
+      [
+        "ALL",
+        "Куншин",
+        "@jdayke",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "6",
+        "0",
+        "6"
+      ],
+      [
+        "ALL",
+        "Смоковдин",
+        "@smkvdn",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "4",
+        "0",
+        "4"
+      ],
+      [
+        "ALL",
+        "Бобровницкий",
+        "@Stepagrad",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "0",
+        "2",
+        "2"
+      ],
+      [
+        "ALL",
+        "Филиппов",
+        "@basicdepo",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "2",
+        "0",
+        "2"
+      ],
+      [
+        "ALL",
+        "Левченко",
+        "",
+        "world_cup_2026",
+        "ЧМ 2026",
+        "1",
+        "0",
+        "1"
+      ]
+    ],
+    "finished_at": null,
+    "last_error": null
+  },
+  "stage": "exception",
+  "error": "HTTPError: HTTP Error 401: Unauthorized",
+  "traceback": "Traceback (most recent call last):\n  File \"/home/runner/work/rngn-reels-wc-bot/rngn-reels-wc-bot/scripts/run_report_v1_0_20_live.py\", line 85, in main\n    status = drain_until(final, run_id, {\"awaiting_confirmation\", \"done\"}, 180)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/rngn-reels-wc-bot/rngn-reels-wc-bot/scripts/run_report_v1_0_20_live.py\", line 63, in drain_until\n    final[\"last_drain\"] = call(\"drain\", timeout=290)\n                          ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/runner/work/rngn-reels-wc-bot/rngn-reels-wc-bot/scripts/run_report_v1_0_20_live.py\", line 37, in call\n    with urllib.request.urlopen(req, timeout=timeout) as response:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/urllib/request.py\", line 215, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/urllib/request.py\", line 521, in open\n    response = meth(req, response)\n               ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/urllib/request.py\", line 630, in http_response\n    response = self.parent.error(\n               ^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/urllib/request.py\", line 559, in error\n    return self._call_chain(*args)\n           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/urllib/request.py\", line 492, in _call_chain\n    result = func(*args)\n             ^^^^^^^^^^^\n  File \"/usr/lib/python3.12/urllib/request.py\", line 639, in http_error_default\n    raise HTTPError(req.full_url, code, msg, hdrs, fp)\nurllib.error.HTTPError: HTTP Error 401: Unauthorized\n",
+  "finished_at": "2026-08-07T11:37:02.331283+00:00"
+}
