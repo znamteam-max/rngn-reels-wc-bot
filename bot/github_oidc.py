@@ -13,8 +13,7 @@ GITHUB_OIDC_AUDIENCE = "rngn-reels-wc-worker"
 GITHUB_REPOSITORY = "znamteam-max/rngn-reels-wc-bot"
 GITHUB_REPOSITORY_OWNER = "znamteam-max"
 GITHUB_REF = "refs/heads/main"
-# Temporary one-time allowance for sheet layout v1.0.21.
-GITHUB_EVENTS = {"schedule", "workflow_dispatch", "push"}
+GITHUB_EVENTS = {"schedule", "workflow_dispatch"}
 JWKS_TTL_SECONDS = 300
 
 
