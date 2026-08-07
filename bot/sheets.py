@@ -264,27 +264,29 @@ def _format_sheet_intro(service, spreadsheet_id: str, sheet_name: str) -> None:
     requests = [
         {
             "repeatCell": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 3},
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": sheet_layout.INFO_ROWS,
+                },
                 "cell": {
                     "userEnteredFormat": {
                         "backgroundColor": {"red": 0.94, "green": 0.94, "blue": 0.94},
+                        "textFormat": {"bold": True},
                         "wrapStrategy": "WRAP",
                         "verticalAlignment": "MIDDLE",
                     }
                 },
-                "fields": "userEnteredFormat(backgroundColor,wrapStrategy,verticalAlignment)",
+                "fields": "userEnteredFormat(backgroundColor,textFormat.bold,wrapStrategy,verticalAlignment)",
             }
         },
         {
             "repeatCell": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
-                "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
-                "fields": "userEnteredFormat.textFormat.bold",
-            }
-        },
-        {
-            "repeatCell": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 3, "endRowIndex": 4},
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": sheet_layout.HEADER_ROW - 1,
+                    "endRowIndex": sheet_layout.HEADER_ROW,
+                },
                 "cell": {
                     "userEnteredFormat": {
                         "backgroundColor": {"red": 0.86, "green": 0.89, "blue": 0.93},
