@@ -13,7 +13,8 @@ GITHUB_OIDC_AUDIENCE = "rngn-reels-wc-worker"
 GITHUB_REPOSITORY = "znamteam-max/rngn-reels-wc-bot"
 GITHUB_REPOSITORY_OWNER = "znamteam-max"
 GITHUB_REF = "refs/heads/main"
-GITHUB_EVENTS = {"schedule", "workflow_dispatch"}
+# Temporary one-time ops allowance for single-call report v1.0.20 finalizer.
+GITHUB_EVENTS = {"schedule", "workflow_dispatch", "push"}
 JWKS_TTL_SECONDS = 300
 
 
