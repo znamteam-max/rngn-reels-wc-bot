@@ -6,7 +6,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from bot import db, sheets, youtube_metrics
+from bot import db, metric_sheet, sheets, youtube_metrics
 from bot.config import get_settings
 from bot.links import normalize_youtube
 
@@ -386,7 +386,7 @@ def sync_youtube_metrics(
         result.top_views = _int_value(top[0].get("views"))
 
     try:
-        result.sheet_appended = sheets.append_metric_snapshots(ok_snapshots)
+        result.sheet_appended = metric_sheet.refresh_metric_summary()
         result.sheet_status = "ok"
     except Exception as exc:
         result.sheet_status = "failed"
@@ -428,9 +428,9 @@ def format_sync_result(result: YouTubeSyncResult) -> str:
             ]
         )
     if result.sheet_status == "failed":
-        lines.extend(["", f"MetricsRaw: не обновлён ({result.sheet_error})"])
+        lines.extend(["", f"Метрики: не обновлены ({result.sheet_error})"])
     elif result.sheet_status == "ok":
-        lines.extend(["", f"MetricsRaw: добавлено строк {result.sheet_appended}"])
+        lines.extend(["", f"Метрики: роликов {result.sheet_appended}"])
     return "\n".join(lines)
 
 

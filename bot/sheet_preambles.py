@@ -15,7 +15,8 @@ MONTH_RE = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])$")
 IMPORTANT_FILLED_ORDER = {
     "Работа авторов": 0,
     "ЧМ 2026": 1,
-    "Монтаж — справочно": 2,
+    "Метрики": 2,
+    "Монтаж — справочно": 3,
     "Videos": 20,
     "Project Stats": 30,
     "Month Stats": 31,
@@ -179,7 +180,10 @@ def normalize_all_existing_sheet_preambles(*, service=None) -> dict[str, Any]:
             properties.items(),
             key=lambda item: int(item[1].get("index") or 0),
         )
-        if title and not title.startswith("__tmp__") and not title.startswith("__old__")
+        if title
+        and not bool(props.get("hidden"))
+        and not title.startswith("__tmp__")
+        and not title.startswith("__old__")
     ]
     before = _tables(service, spreadsheet_id, titles, cells="A1:AZ8")
 
