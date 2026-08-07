@@ -1,0 +1,77 @@
+name: Final World Cup 2026 archive migration
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/archive-world-cup-2026-final.yml
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: final-world-cup-2026-archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run production migration and reconciliation
+        id: migration
+        shell: bash
+        run: |
+          set +e
+          python scripts/run_world_cup_2026_archive_final.py
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Cleanup one-time migration access
+        if: always()
+        shell: bash
+        run: |
+          set -e
+          git pull --rebase origin main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          oidc = Path('bot/github_oidc.py')
+          text = oidc.read_text(encoding='utf-8')
+          text = text.replace(
+              '# Temporary one-time ops allowance for World Cup 2026 archive migration.\nGITHUB_EVENTS = {"schedule", "workflow_dispatch", "push"}',
+              'GITHUB_EVENTS = {"schedule", "workflow_dispatch"}',
+          )
+          oidc.write_text(text, encoding='utf-8')
+
+          vercel = Path('vercel.json')
+          data = json.loads(vercel.read_text(encoding='utf-8'))
+          data.pop('rewrites', None)
+          vercel.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          PY
+          git rm -f api/internal/archive-world-cup-2026-5d9f7a2c91.py || true
+          git rm -f scripts/run_world_cup_2026_archive_final.py || true
+          git rm -f .github/workflows/archive-world-cup-2026-final.yml || true
+          git add bot/github_oidc.py vercel.json ops/world_cup_2026_archive_result.json || true
+          git commit -m "ops: finalize World Cup 2026 archive report"
+          git push origin HEAD:main
+
+      - name: Enforce final validation
+        if: always()
+        shell: bash
+        run: |
+          code="${{ steps.migration.outputs.exit_code }}"
+          if [ "$code" != "0" ]; then
+            echo "World Cup 2026 archive migration failed validation"
+            exit 1
+          fi
