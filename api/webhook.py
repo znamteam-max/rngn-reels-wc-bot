@@ -9,7 +9,7 @@ from typing import Any
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
 from bot import db, jobs
 from bot.public_patch import handle_update, record_system_log
-from bot.version import VERSION
+from bot.version import REQUIRED_SCHEMA_VERSION, VERSION
 from bot.worker_kick import kick_worker_if_ready
 
 
@@ -51,6 +51,10 @@ class handler(BaseHTTPRequestHandler):
             {
                 "ok": True,
                 "service": "rngn-reels-wc-bot",
+                "version": VERSION,
+                "required_schema_version": REQUIRED_SCHEMA_VERSION,
+                "schema_ready": db.schema_version_applied(REQUIRED_SCHEMA_VERSION),
+                "current_schema_version": db.current_schema_version(),
                 "time": datetime.now(timezone.utc).isoformat(),
                 "missing_env": missing_env_names(),
                 "optional_missing_env": optional_missing_env_names(),
@@ -69,8 +73,16 @@ class handler(BaseHTTPRequestHandler):
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
 
-        if db.current_schema_version() != VERSION:
-            self._send_json(503, {"ok": False, "error": "schema migration required"})
+        if not db.schema_version_applied(REQUIRED_SCHEMA_VERSION):
+            self._send_json(
+                503,
+                {
+                    "ok": False,
+                    "error": "schema migration required",
+                    "required_schema_version": REQUIRED_SCHEMA_VERSION,
+                    "current_schema_version": db.current_schema_version(),
+                },
+            )
             return
 
         try:
