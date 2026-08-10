@@ -179,3 +179,14 @@ def current_schema_version() -> str | None:
     except psycopg.Error:
         return None
     return str(row["version"]) if row and row.get("version") else None
+
+
+def schema_version_applied(version: str) -> bool:
+    try:
+        row = fetch_one(
+            "SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = %s) AS applied",
+            (version,),
+        )
+    except psycopg.Error:
+        return False
+    return bool(row and row.get("applied"))
