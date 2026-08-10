@@ -1,0 +1,1 @@
+Temporary marker for schema-guard hotfix. Safe to delete after deployment verification.
