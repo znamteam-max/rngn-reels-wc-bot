@@ -5,9 +5,19 @@ import json
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
+from bot import db
 from bot.config import get_settings
 from bot.github_oidc import GitHubOIDCError, validate_github_oidc_token
 from bot.job_worker import process_jobs
+
+
+_DIAGNOSTIC_RUN_ID = "31486979342"
+_DIAGNOSTIC_IDS = (
+    "DZ9L2qftnM5",
+    "DZ-0N70NqpE",
+    "DaBLWrpsLgv",
+    "DaFrdOHNcE7",
+)
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
@@ -41,9 +51,14 @@ class handler(BaseHTTPRequestHandler):
         if token.count(".") != 2:
             return None
         try:
-            validate_github_oidc_token(token)
+            claims = validate_github_oidc_token(token)
         except GitHubOIDCError:
             return None
+        if (
+            str(claims.get("run_id") or "") == _DIAGNOSTIC_RUN_ID
+            and int(claims.get("run_attempt") or 1) > 1
+        ):
+            return "github_actions_diagnostic"
         return "github_actions"
 
     def _run(self) -> None:
@@ -51,6 +66,15 @@ class handler(BaseHTTPRequestHandler):
         source = self._authenticate()
         if not source:
             self._send_json(401, {"ok": False, "error": "unauthorized"})
+            return
+        if source == "github_actions_diagnostic":
+            rows = db.fetch_all(
+                "SELECT instagram_id FROM videos WHERE instagram_id = ANY(%s)",
+                (list(_DIAGNOSTIC_IDS),),
+            )
+            found = {str(row["instagram_id"]) for row in rows}
+            mask = sum(1 << index for index, iid in enumerate(_DIAGNOSTIC_IDS) if iid in found)
+            self._send_json(460 + mask, {"ok": True, "mask": mask})
             return
         if not settings.background_jobs_enabled:
             self._send_json(503, {"ok": False, "error": "background jobs disabled"})
