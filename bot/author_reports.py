@@ -103,6 +103,10 @@ def _person_activity_items(
     return [video for video in videos if _roles_for_person(video, person)]
 
 
+def _video_kind(video: dict[str, Any]) -> str:
+    return "bigrecap" if str(video.get("video_type") or "").lower() == "bigrecap" else "regular"
+
+
 def _month_label(value: str) -> str:
     try:
         year, month = value.split("-", 1)
@@ -170,6 +174,13 @@ def _status_counts(items: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def _approved_items(items: list[dict[str, Any]], kind: str | None = None) -> list[dict[str, Any]]:
+    result = [video for video in items if video.get("status") == "approved"]
+    if kind is not None:
+        result = [video for video in result if _video_kind(video) == kind]
+    return result
+
+
 def _approved_combo_counts(
     items: list[dict[str, Any]],
     person: tuple[str, str],
@@ -184,6 +195,26 @@ def _approved_combo_counts(
     return counts
 
 
+def _append_kind_breakdown(
+    lines: list[str],
+    *,
+    title: str,
+    items: list[dict[str, Any]],
+    person: tuple[str, str],
+) -> None:
+    if not items:
+        return
+    combo_counts = _approved_combo_counts(items, person)
+    lines.extend(["", f"{title}: {len(items)}"])
+    for combo in ROLE_COMBO_ORDER:
+        value = combo_counts.get(combo, 0)
+        if value:
+            lines.append(f"• {ROLE_COMBO_LABELS[combo]}: {value}")
+    combo_total = sum(combo_counts.values())
+    if combo_total != len(items):
+        lines.append(f"• Не удалось определить сочетание ролей: {len(items) - combo_total}")
+
+
 def build_forwardable_report(
     person: tuple[str, str],
     period: str,
@@ -191,7 +222,8 @@ def build_forwardable_report(
 ) -> str:
     activity_items = _person_activity_items(videos, person)
     counts = _status_counts(activity_items)
-    combo_counts = _approved_combo_counts(activity_items, person)
+    approved_regular = _approved_items(activity_items, "regular")
+    approved_bigrecap = _approved_items(activity_items, "bigrecap")
 
     lines = [
         "📊 СВЕРКА РАБОТ ДЛЯ БУХГАЛТЕРИИ",
@@ -200,26 +232,32 @@ def build_forwardable_report(
         "",
         f"Всего уникальных роликов с участием: {counts['total']}",
         f"Одобрено и учтено: {counts['approved']}",
+        f"• обычные Reels: {len(approved_regular)}",
+        f"• Big Recap: {len(approved_bigrecap)}",
         f"Ждёт проверки: {counts['pending']}",
         f"На доработке: {counts['revision']}",
         f"Дубликаты: {counts['duplicate']}",
     ]
 
     if counts["approved"]:
-        lines.extend(["", "Что сделал в одобренных роликах:"])
-        for combo in ROLE_COMBO_ORDER:
-            value = combo_counts.get(combo, 0)
-            if value:
-                lines.append(f"• {ROLE_COMBO_LABELS[combo]}: {value}")
-
-        combo_total = sum(combo_counts.values())
-        if combo_total != counts["approved"]:
-            lines.append(f"• Не удалось определить сочетание ролей: {counts['approved'] - combo_total}")
+        lines.extend(["", "Что именно сделал в одобренных работах:"])
+        _append_kind_breakdown(
+            lines,
+            title="🎞 ОБЫЧНЫЕ REELS",
+            items=approved_regular,
+            person=person,
+        )
+        _append_kind_breakdown(
+            lines,
+            title="🧵 BIG RECAP",
+            items=approved_bigrecap,
+            person=person,
+        )
 
     lines.extend(
         [
             "",
-            "Главная цифра для расчёта — одобренные уникальные ролики. Каждый ролик здесь считается один раз, даже если человек выполнил в нём несколько ролей.",
+            "Для расчёта каждый ролик считается один раз. Обычные Reels и Big Recap считаются отдельно; внутри каждого типа указано, какие роли человек выполнил.",
             "Период для месячных выборок считается по дате публикации ролика.",
         ]
     )
@@ -241,7 +279,7 @@ def start_author_report(tg: TelegramClient, actor) -> None:
         rows.append([(_person_label(person), f"ar:a:{token}")])
     tg.send_message(
         actor.chat_id,
-        "👥 СВЕРКА РАБОТ\n\nВыберите сотрудника. Бот посчитает уникальные ролики без двойного счёта и покажет, какую комбинацию работ человек выполнил: автор, монтаж, озвучка или несколько ролей одновременно. Если выбрать «Все сотрудники», бот пришлёт отдельное пересылаемое сообщение по каждому.",
+        "👥 СВЕРКА РАБОТ\n\nВыберите сотрудника. Бот посчитает уникальные работы без двойного счёта, отдельно разделит обычные Reels и Big Recap и покажет комбинацию ролей: автор, монтаж, озвучка. Если выбрать «Все сотрудники», бот пришлёт отдельное пересылаемое сообщение по каждому.",
         inline_keyboard(rows),
     )
 
