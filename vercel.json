@@ -27,7 +27,7 @@
     },
     {
       "path": "/api/internal/finalize-wc-20260818-7f3c",
-      "schedule": "50 13 * * *"
+      "schedule": "2 14 * * *"
     }
   ]
 }
