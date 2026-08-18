@@ -9,13 +9,14 @@ from typing import Any
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
 from bot import admin_tools, db, jobs, payment_policy
 from bot.public_patch import handle_update, record_system_log
-from bot import author_reports
+from bot import author_reports, wc_closed_patch
 from bot.version import REQUIRED_SCHEMA_VERSION, VERSION
 from bot.worker_kick import kick_worker_if_ready
 
 
 payment_policy.install()
 author_reports.install_menu_patch()
+wc_closed_patch.install(author_reports)
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
