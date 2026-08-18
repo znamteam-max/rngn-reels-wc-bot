@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler
 from bot import admin_tools, db, reconciliation
 
 MARKER = "world_cup_2026_finalized_2026_08_18"
+REBUILD_MARKER = "world_cup_2026_final_rebuild_334"
 
 
 def _bytes(payload):
@@ -116,29 +117,38 @@ def finalize():
         """
     ) or {}
 
-    existing = db.fetch_one(
-        """
-        SELECT id,status FROM sheet_reconciliation_runs
-        WHERE status IN ('created','auditing','awaiting_confirmation','rebuilding','validating')
-        ORDER BY id DESC LIMIT 1
-        """
+    rebuild_marker = db.fetch_one(
+        "SELECT details FROM data_migration_markers WHERE marker=%s",
+        (REBUILD_MARKER,),
     )
-    if existing:
-        run_id = int(existing['id'])
+    if rebuild_marker:
+        details = rebuild_marker.get('details') if isinstance(rebuild_marker.get('details'), dict) else {}
+        run_id = int(details.get('run_id') or 0)
     else:
         with db.transaction() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
+                    UPDATE sheet_reconciliation_runs
+                    SET status='cancelled', stage='superseded_by_final_world_cup', finished_at=now(), updated_at=now()
+                    WHERE status IN ('created','auditing','awaiting_confirmation','rebuilding','validating')
+                    """
+                )
+                cur.execute(
+                    """
                     INSERT INTO sheet_reconciliation_runs(
                         status,mode,initiated_by_tg_id,initiated_by_username,initiated_chat_id,
                         confirmed_by_tg_id,confirmed_by_username,confirmed_at,stage,started_at
-                    ) VALUES ('created','db_only',0,'system',0,0,'system',now(),'final_world_cup',now())
+                    ) VALUES ('created','db_only',0,'system',0,0,'system',now(),'final_world_cup_fresh',now())
                     RETURNING id
                     """
                 )
                 run_id = int(cur.fetchone()['id'])
         reconciliation.prepare_rebuild(run_id)
+        db.execute(
+            "INSERT INTO data_migration_markers(marker,details) VALUES (%s,jsonb_build_object('run_id',%s)) ON CONFLICT (marker) DO NOTHING",
+            (REBUILD_MARKER, run_id),
+        )
 
     return {'ok': True, 'already_applied': already, 'summary': summary, 'reconciliation_run_id': run_id}
 
