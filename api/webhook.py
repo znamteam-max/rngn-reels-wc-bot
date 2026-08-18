@@ -9,8 +9,12 @@ from typing import Any
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
 from bot import admin_tools, db, jobs
 from bot.public_patch import handle_update, record_system_log
+from bot import author_reports
 from bot.version import REQUIRED_SCHEMA_VERSION, VERSION
 from bot.worker_kick import kick_worker_if_ready
+
+
+author_reports.install_menu_patch()
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
@@ -140,7 +144,12 @@ class handler(BaseHTTPRequestHandler):
             handled = False
             message = update.get("message")
             if isinstance(message, dict):
-                handled = admin_tools.handle_message(message)
+                handled = author_reports.handle_message(message)
+                if not handled:
+                    handled = admin_tools.handle_message(message)
+            callback = update.get("callback_query")
+            if not handled and isinstance(callback, dict):
+                handled = author_reports.handle_callback(callback)
             if not handled:
                 handle_update(update)
             jobs.finish_telegram_update(int(update_id))
