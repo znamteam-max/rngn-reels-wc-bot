@@ -69,19 +69,40 @@ def _role_key(video: dict[str, Any], role: str) -> tuple[str, str] | None:
     return name, username
 
 
+def _person_identity(person: tuple[str, str]) -> str:
+    name, username = person
+    if username:
+        return f"u:{username.casefold()}"
+    return f"n:{name.casefold()}"
+
+
+def _same_person(left: tuple[str, str] | None, right: tuple[str, str]) -> bool:
+    if left is None:
+        return False
+    left_name, left_username = left
+    right_name, right_username = right
+    if left_username and right_username:
+        return left_username.casefold() == right_username.casefold()
+    return left_name.casefold() == right_name.casefold()
+
+
 def _person_token(person: tuple[str, str]) -> str:
-    raw = f"{person[0].casefold()}|{person[1].casefold()}".encode("utf-8")
+    raw = _person_identity(person).encode("utf-8")
     return hashlib.blake2s(raw, digest_size=5).hexdigest()
 
 
 def _person_map(videos: list[dict[str, Any]]) -> dict[str, tuple[str, str]]:
+    by_identity: dict[str, tuple[str, str]] = {}
+    for video in videos:
+        for role in ROLES:
+            person = _role_key(video, role)
+            if not person:
+                continue
+            identity = _person_identity(person)
+            if identity not in by_identity:
+                by_identity[identity] = person
     people = sorted(
-        {
-            person
-            for video in videos
-            for role in ROLES
-            if (person := _role_key(video, role))
-        },
+        by_identity.values(),
         key=lambda item: (item[0].casefold(), item[1].casefold()),
     )
     return {_person_token(person): person for person in people}
@@ -93,7 +114,11 @@ def _person_label(person: tuple[str, str]) -> str:
 
 
 def _roles_for_person(video: dict[str, Any], person: tuple[str, str]) -> tuple[str, ...]:
-    return tuple(role for role in ROLES if _role_key(video, role) == person)
+    return tuple(
+        role
+        for role in ROLES
+        if _same_person(_role_key(video, role), person)
+    )
 
 
 def _person_activity_items(
