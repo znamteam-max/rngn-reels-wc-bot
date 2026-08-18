@@ -18,6 +18,10 @@
       "schedule": "0 3 * * *"
     },
     {
+      "path": "/api/cron/reporting",
+      "schedule": "15 4 * * *"
+    },
+    {
       "path": "/api/cron/daily-report",
       "schedule": "0 6 * * *"
     }
