@@ -7,7 +7,7 @@ on:
       - '.github/workflows/finalize-world-cup.yml'
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
+      - uses: actions/checkout@v4
+
       - name: Finalize World Cup dataset
         run: |
           set -euo pipefail
@@ -50,3 +52,12 @@ jobs:
             if [ "${remaining}" = "0" ]; then break; fi
             sleep 3
           done
+
+      - name: Write completion marker
+        run: |
+          cp finalize.json .world-cup-2026-finalized.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .world-cup-2026-finalized.json
+          git commit -m 'Mark World Cup 2026 finalization complete' || exit 0
+          git push
