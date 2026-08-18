@@ -1,6 +1,9 @@
 name: Process background jobs
 
 on:
+  push:
+    paths:
+      - "ops/world_cup_close.trigger"
   schedule:
     - cron: "2-57/5 * * * *"
   workflow_dispatch:
@@ -58,6 +61,7 @@ jobs:
               if [[ "${status}" == "429" || "${status}" =~ ^5 ]]; then
                 if (( attempt >= 3 )); then
                   echo "Worker failed with HTTP ${status} after ${attempt} attempts." >&2
+                  cat worker-response.json >&2 || true
                   exit 1
                 fi
                 sleep $((attempt * 3))
@@ -66,6 +70,7 @@ jobs:
               fi
               if [[ ! "${status}" =~ ^2 ]]; then
                 echo "Worker failed with HTTP ${status}." >&2
+                cat worker-response.json >&2 || true
                 exit 1
               fi
               break
