@@ -56,7 +56,14 @@ class handler(BaseHTTPRequestHandler):
             self._send_json(503, {"ok": False, "error": "background jobs disabled"})
             return
         try:
+            closeout = None
+            if source == "github_actions":
+                from bot.world_cup_finalize import finalize_world_cup_2026
+
+                closeout = finalize_world_cup_2026()
             result = process_jobs(source=source)
+            if closeout is not None:
+                result["world_cup_finalize"] = closeout
         except Exception as exc:
             self._send_json(
                 500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
