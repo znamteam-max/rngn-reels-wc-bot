@@ -4,8 +4,11 @@ import json
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from bot.admin_tools import sync_reporting_sheets
+from bot import admin_tools, payment_policy
 from bot.config import get_settings
+
+
+payment_policy.install()
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
@@ -31,7 +34,7 @@ class handler(BaseHTTPRequestHandler):
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
         try:
-            result = sync_reporting_sheets()
+            result = admin_tools.sync_reporting_sheets()
         except Exception as exc:
             self._send_json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]})
             return
