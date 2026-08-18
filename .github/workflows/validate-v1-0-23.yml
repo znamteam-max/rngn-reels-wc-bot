@@ -1,0 +1,20 @@
+name: Validate v1.0.23
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/validate-v1-0-23.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m py_compile bot/admin_tools.py api/webhook.py api/cron/reporting.py bot/sheet_layout.py
