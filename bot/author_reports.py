@@ -69,13 +69,6 @@ def _role_key(video: dict[str, Any], role: str) -> tuple[str, str] | None:
     return name, username
 
 
-def _person_identity(person: tuple[str, str]) -> str:
-    name, username = person
-    if username:
-        return f"u:{username.casefold()}"
-    return f"n:{name.casefold()}"
-
-
 def _same_person(left: tuple[str, str] | None, right: tuple[str, str]) -> bool:
     if left is None:
         return False
@@ -86,26 +79,43 @@ def _same_person(left: tuple[str, str] | None, right: tuple[str, str]) -> bool:
     return left_name.casefold() == right_name.casefold()
 
 
+def _merge_person(current: tuple[str, str], candidate: tuple[str, str]) -> tuple[str, str]:
+    current_name, current_username = current
+    candidate_name, candidate_username = candidate
+    if not current_username and candidate_username:
+        return candidate
+    if current_username and candidate_username and current_username.casefold() == candidate_username.casefold():
+        # Keep the first role's display name, but never lose the username.
+        return current_name, current_username
+    return current
+
+
+def _canonical_people(videos: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    people: list[tuple[str, str]] = []
+    for video in videos:
+        for role in ROLES:
+            candidate = _role_key(video, role)
+            if not candidate:
+                continue
+            matched_index = next(
+                (index for index, person in enumerate(people) if _same_person(candidate, person)),
+                None,
+            )
+            if matched_index is None:
+                people.append(candidate)
+            else:
+                people[matched_index] = _merge_person(people[matched_index], candidate)
+    return sorted(people, key=lambda item: (item[0].casefold(), item[1].casefold()))
+
+
 def _person_token(person: tuple[str, str]) -> str:
-    raw = _person_identity(person).encode("utf-8")
-    return hashlib.blake2s(raw, digest_size=5).hexdigest()
+    name, username = person
+    identity = f"u:{username.casefold()}" if username else f"n:{name.casefold()}"
+    return hashlib.blake2s(identity.encode("utf-8"), digest_size=5).hexdigest()
 
 
 def _person_map(videos: list[dict[str, Any]]) -> dict[str, tuple[str, str]]:
-    by_identity: dict[str, tuple[str, str]] = {}
-    for video in videos:
-        for role in ROLES:
-            person = _role_key(video, role)
-            if not person:
-                continue
-            identity = _person_identity(person)
-            if identity not in by_identity:
-                by_identity[identity] = person
-    people = sorted(
-        by_identity.values(),
-        key=lambda item: (item[0].casefold(), item[1].casefold()),
-    )
-    return {_person_token(person): person for person in people}
+    return {_person_token(person): person for person in _canonical_people(videos)}
 
 
 def _person_label(person: tuple[str, str]) -> str:
@@ -114,16 +124,37 @@ def _person_label(person: tuple[str, str]) -> str:
 
 
 def _roles_for_person(video: dict[str, Any], person: tuple[str, str]) -> tuple[str, ...]:
-    return tuple(
-        role
-        for role in ROLES
-        if _same_person(_role_key(video, role), person)
-    )
+    return tuple(role for role in ROLES if _same_person(_role_key(video, role), person))
+
+
+def _has_role(videos: list[dict[str, Any]], person: tuple[str, str], role: str) -> bool:
+    return any(_same_person(_role_key(video, role), person) for video in videos)
+
+
+def _author_people(videos: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return [person for person in _canonical_people(videos) if _has_role(videos, person, "author")]
+
+
+def _montage_only_people(videos: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return [
+        person
+        for person in _canonical_people(videos)
+        if _has_role(videos, person, "montage") and not _has_role(videos, person, "author")
+    ]
+
+
+def _voice_only_people(videos: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return [
+        person
+        for person in _canonical_people(videos)
+        if _has_role(videos, person, "voice")
+        and not _has_role(videos, person, "author")
+        and not _has_role(videos, person, "montage")
+    ]
 
 
 def _person_activity_items(
-    videos: list[dict[str, Any]],
-    person: tuple[str, str],
+    videos: list[dict[str, Any]], person: tuple[str, str]
 ) -> list[dict[str, Any]]:
     return [video for video in videos if _roles_for_person(video, person)]
 
@@ -140,13 +171,31 @@ def _month_label(value: str) -> str:
         return value
 
 
+def _group_people(videos: list[dict[str, Any]], token: str) -> list[tuple[str, str]]:
+    if token in {"all", "authors"}:
+        return _author_people(videos)
+    if token == "montage":
+        return _montage_only_people(videos)
+    if token == "voice":
+        return _voice_only_people(videos)
+    return []
+
+
 def _period_options(
     videos: list[dict[str, Any]],
     person: tuple[str, str] | None,
+    group_token: str | None = None,
 ) -> list[tuple[str, str]]:
     selected = videos
     if person is not None:
         selected = _person_activity_items(videos, person)
+    elif group_token:
+        group_people = _group_people(videos, group_token)
+        selected = [
+            video
+            for video in videos
+            if any(_roles_for_person(video, group_person) for group_person in group_people)
+        ]
     months = sorted(
         {month for video in selected if (month := reconciliation.publish_month(video))},
         reverse=True,
@@ -207,8 +256,7 @@ def _approved_items(items: list[dict[str, Any]], kind: str | None = None) -> lis
 
 
 def _approved_combo_counts(
-    items: list[dict[str, Any]],
-    person: tuple[str, str],
+    items: list[dict[str, Any]], person: tuple[str, str]
 ) -> Counter[tuple[str, ...]]:
     counts: Counter[tuple[str, ...]] = Counter()
     for video in items:
@@ -241,9 +289,7 @@ def _append_kind_breakdown(
 
 
 def build_forwardable_report(
-    person: tuple[str, str],
-    period: str,
-    videos: list[dict[str, Any]],
+    person: tuple[str, str], period: str, videos: list[dict[str, Any]]
 ) -> str:
     activity_items = _person_activity_items(videos, person)
     counts = _status_counts(activity_items)
@@ -289,39 +335,89 @@ def build_forwardable_report(
     return "\n".join(lines)
 
 
+def _append_people_buttons(
+    rows: list[list[tuple[str, str]]],
+    *,
+    title: str,
+    all_label: str,
+    all_token: str,
+    people: list[tuple[str, str]],
+) -> None:
+    if not people:
+        return
+    rows.append([(title, "ar:noop")])
+    rows.append([(all_label, f"ar:a:{all_token}")])
+    for person in people:
+        rows.append([(_person_label(person), f"ar:a:{_person_token(person)}")])
+
+
 def start_author_report(tg: TelegramClient, actor) -> None:
     from bot import handlers as h
 
     if not h.require_admin(tg, actor):
         return
     videos = _active_videos()
-    people = _person_map(videos)
-    if not people:
+    authors = _author_people(videos)
+    montage_only = _montage_only_people(videos)
+    voice_only = _voice_only_people(videos)
+    if not authors and not montage_only and not voice_only:
         tg.send_message(actor.chat_id, "Участников работ в базе пока нет.")
         return
-    rows: list[list[tuple[str, str]]] = [[("👥 Все сотрудники", "ar:a:all")]]
-    for token, person in people.items():
-        rows.append([(_person_label(person), f"ar:a:{token}")])
+
+    rows: list[list[tuple[str, str]]] = []
+    _append_people_buttons(
+        rows,
+        title="✍️ АВТОРЫ",
+        all_label="👥 Все авторы",
+        all_token="authors",
+        people=authors,
+    )
+    _append_people_buttons(
+        rows,
+        title="🎬 МОНТАЖЁРЫ",
+        all_label="🎬 Все монтажёры",
+        all_token="montage",
+        people=montage_only,
+    )
+    _append_people_buttons(
+        rows,
+        title="🎙 ОЗВУЧКА",
+        all_label="🎙 Все по озвучке",
+        all_token="voice",
+        people=voice_only,
+    )
+
     tg.send_message(
         actor.chat_id,
-        "👥 СВЕРКА РАБОТ\n\nВыберите сотрудника. Бот посчитает уникальные работы без двойного счёта, отдельно разделит обычные Reels и Big Recap и покажет комбинацию ролей: автор, монтаж, озвучка. Если выбрать «Все сотрудники», бот пришлёт отдельное пересылаемое сообщение по каждому.",
+        "👥 СВЕРКА РАБОТ\n\nСначала идут авторы. Ниже отдельно — люди, которые занимались монтажом, но ни разу не были авторами. Если есть сотрудники только на озвучке, они вынесены в третий блок.",
         inline_keyboard(rows),
     )
 
 
 def _show_periods(tg: TelegramClient, actor, token: str) -> None:
     videos = _active_videos()
-    people = _person_map(videos)
-    person = None if token == "all" else people.get(token)
-    if token != "all" and person is None:
+    people_map = _person_map(videos)
+    group_token = token if token in {"all", "authors", "montage", "voice"} else None
+    person = None if group_token else people_map.get(token)
+    if group_token is None and person is None:
         tg.send_message(actor.chat_id, "Список сотрудников изменился. Откройте сверку заново: /author_report")
         return
+
     rows = [
         [(label, f"ar:p:{token}:{period}")]
-        for label, period in _period_options(videos, person)
+        for label, period in _period_options(videos, person, group_token)
     ]
-    rows.append([("← К выбору сотрудника", "ar:start")])
-    target = "всех сотрудников" if person is None else _person_label(person)
+    rows.append([("← К списку", "ar:start")])
+
+    if group_token in {"all", "authors"}:
+        target = "всех авторов"
+    elif group_token == "montage":
+        target = "монтажёров без авторства"
+    elif group_token == "voice":
+        target = "сотрудников только на озвучке"
+    else:
+        target = _person_label(person)
+
     tg.send_message(
         actor.chat_id,
         f"Проверяем: {target}.\n\nВыберите период. Месяцы считаются по дате публикации ролика:",
@@ -333,15 +429,13 @@ def _send_reports(tg: TelegramClient, actor, token: str, period: str) -> None:
     all_videos = _active_videos()
     videos = [video for video in all_videos if _period_filter(video, period)]
     people_map = _person_map(all_videos)
-    if token == "all":
-        people = sorted(
-            {
-                person
-                for person in people_map.values()
-                if _person_activity_items(videos, person)
-            },
-            key=lambda item: (item[0].casefold(), item[1].casefold()),
-        )
+
+    if token in {"all", "authors", "montage", "voice"}:
+        people = [
+            person
+            for person in _group_people(all_videos, token)
+            if _person_activity_items(videos, person)
+        ]
     else:
         person = people_map.get(token)
         if person is None:
@@ -410,6 +504,8 @@ def handle_callback(callback: dict[str, Any]) -> bool:
     except Exception:
         pass
 
+    if data == "ar:noop":
+        return True
     if data == "ar:start":
         start_author_report(tg, actor)
         return True
