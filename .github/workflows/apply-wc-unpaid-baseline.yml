@@ -43,3 +43,5 @@ PY
           done
           echo 'Production endpoint did not become ready in time.' >&2
           exit 1
+
+# Retried after the authenticated production endpoint was confirmed live.
