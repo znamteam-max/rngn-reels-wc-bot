@@ -18,6 +18,7 @@ jobs:
       - name: Finalize World Cup dataset
         run: |
           set -euo pipefail
+          echo "Starting final World Cup closeout"
           curl --fail --silent --show-error \
             'https://project-dcd2y.vercel.app/api/internal/finalize-wc-20260818-7f3c' \
             | tee finalize.json
