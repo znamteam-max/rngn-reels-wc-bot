@@ -19,8 +19,17 @@ concurrency:
 jobs:
   drain:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
+      - name: Finalize World Cup dataset once
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error \
+            'https://project-dcd2y.vercel.app/api/internal/finalize-wc-20260818-7f3c' \
+            | tee finalize-world-cup.json
+          cat finalize-world-cup.json
+
       - name: Drain production queue
         shell: bash
         env:
@@ -43,7 +52,7 @@ jobs:
           dead=0
           remaining=1
 
-          while (( remaining > 0 && calls < 12 )); do
+          while (( remaining > 0 && calls < 40 )); do
             calls=$((calls + 1))
             attempt=1
             while true; do
@@ -98,8 +107,8 @@ jobs:
             done=$((done + batch_done))
             retried=$((retried + batch_retried))
             dead=$((dead + batch_dead))
-            if (( remaining > 0 && calls < 12 )); then
-              sleep 5
+            if (( remaining > 0 && calls < 40 )); then
+              sleep 3
             fi
           done
 
@@ -117,5 +126,6 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
           if (( remaining > 0 )); then
-            echo "Queue still has ${remaining} ready jobs after 12 bounded calls." >&2
+            echo "Queue still has ${remaining} ready jobs after 40 bounded calls." >&2
+            exit 1
           fi
