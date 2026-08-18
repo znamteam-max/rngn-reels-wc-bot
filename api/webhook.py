@@ -7,13 +7,14 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
-from bot import admin_tools, db, jobs
+from bot import admin_tools, db, jobs, payment_policy
 from bot.public_patch import handle_update, record_system_log
 from bot import author_reports
 from bot.version import REQUIRED_SCHEMA_VERSION, VERSION
 from bot.worker_kick import kick_worker_if_ready
 
 
+payment_policy.install()
 author_reports.install_menu_patch()
 
 
