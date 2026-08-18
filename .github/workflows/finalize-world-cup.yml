@@ -1,0 +1,51 @@
+name: Finalize World Cup 2026
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/finalize-world-cup.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Finalize World Cup dataset
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error \
+            'https://project-dcd2y.vercel.app/api/internal/finalize-wc-20260818-7f3c' \
+            | tee finalize.json
+          python - <<'PY'
+          import json
+          p=json.load(open('finalize.json', encoding='utf-8'))
+          assert p.get('ok') is True, p
+          print(json.dumps(p, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Drain reconciliation jobs
+        env:
+          WORKER_URL: https://project-dcd2y.vercel.app/api/cron/process-jobs
+          OIDC_AUDIENCE: rngn-reels-wc-worker
+        run: |
+          set -euo pipefail
+          OIDC_RESPONSE="$(curl --fail --silent --show-error \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUDIENCE}")"
+          OIDC_TOKEN="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<<"${OIDC_RESPONSE}")"
+          echo "::add-mask::${OIDC_TOKEN}"
+          for i in $(seq 1 40); do
+            status="$(curl --silent --show-error --request POST \
+              --header "Authorization: Bearer ${OIDC_TOKEN}" \
+              --output worker.json --write-out '%{http_code}' "${WORKER_URL}")"
+            test "${status}" = "200"
+            cat worker.json
+            remaining="$(python -c 'import json; print(json.load(open("worker.json")).get("remaining_ready",0))')"
+            if [ "${remaining}" = "0" ]; then break; fi
+            sleep 3
+          done
