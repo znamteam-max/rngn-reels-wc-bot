@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from bot.config import get_settings, missing_env_names, optional_missing_env_names
-from bot import db, jobs
+from bot import admin_tools, db, jobs
 from bot.public_patch import handle_update, record_system_log
 from bot.version import REQUIRED_SCHEMA_VERSION, VERSION
 from bot.worker_kick import kick_worker_if_ready
@@ -137,7 +137,12 @@ class handler(BaseHTTPRequestHandler):
             return
 
         try:
-            handle_update(update)
+            handled = False
+            message = update.get("message")
+            if isinstance(message, dict):
+                handled = admin_tools.handle_message(message)
+            if not handled:
+                handle_update(update)
             jobs.finish_telegram_update(int(update_id))
             _kick_worker_safely("webhook_tail")
         except Exception as exc:
