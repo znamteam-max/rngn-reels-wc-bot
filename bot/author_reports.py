@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-from collections import defaultdict
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from bot import db, reconciliation
-from bot.config import get_settings
 from bot.telegram import TelegramClient, inline_keyboard
 
 
@@ -25,6 +23,13 @@ MONTH_NAMES_RU = {
     12: "декабрь",
 }
 
+ROLES = ("author", "montage", "voice")
+ROLE_TITLES = {
+    "author": "📝 КАК АВТОР",
+    "montage": "🎬 КАК МОНТАЖЁР",
+    "voice": "🎙 ОЗВУЧКА",
+}
+
 _MENU_PATCHED = False
 
 
@@ -36,18 +41,22 @@ def _active_videos() -> list[dict[str, Any]]:
     )
 
 
-def _author_key(video: dict[str, Any]) -> tuple[str, str] | None:
+def _role_key(video: dict[str, Any], role: str) -> tuple[str, str] | None:
     try:
-        person = reconciliation._person_key(video, "author")
+        person = reconciliation._person_key(video, role)
     except Exception:
         person = None
     if person:
         return str(person[0]), str(person[1] or "").lstrip("@")
-    name = str(video.get("author_name") or "").strip()
+    name = str(video.get(f"{role}_name") or "").strip()
     if not name:
         return None
-    username = str(video.get("author_username") or "").strip().lstrip("@")
+    username = str(video.get(f"{role}_username") or "").strip().lstrip("@")
     return name, username
+
+
+def _author_key(video: dict[str, Any]) -> tuple[str, str] | None:
+    return _role_key(video, "author")
 
 
 def _author_token(person: tuple[str, str]) -> str:
@@ -68,6 +77,25 @@ def _person_label(person: tuple[str, str]) -> str:
     return f"{name} (@{username})" if username else name
 
 
+def _person_activity_items(
+    videos: list[dict[str, Any]],
+    person: tuple[str, str],
+) -> list[dict[str, Any]]:
+    return [
+        video
+        for video in videos
+        if any(_role_key(video, role) == person for role in ROLES)
+    ]
+
+
+def _role_items(
+    videos: list[dict[str, Any]],
+    person: tuple[str, str],
+    role: str,
+) -> list[dict[str, Any]]:
+    return [video for video in videos if _role_key(video, role) == person]
+
+
 def _month_label(value: str) -> str:
     try:
         year, month = value.split("-", 1)
@@ -76,10 +104,13 @@ def _month_label(value: str) -> str:
         return value
 
 
-def _period_options(videos: list[dict[str, Any]], person: tuple[str, str] | None) -> list[tuple[str, str]]:
+def _period_options(
+    videos: list[dict[str, Any]],
+    person: tuple[str, str] | None,
+) -> list[tuple[str, str]]:
     selected = videos
     if person is not None:
-        selected = [video for video in videos if _author_key(video) == person]
+        selected = _person_activity_items(videos, person)
     months = sorted(
         {month for video in selected if (month := reconciliation.publish_month(video))},
         reverse=True,
@@ -139,47 +170,47 @@ def _status_counts(items: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
-def _project_breakdown(items: list[dict[str, Any]]) -> list[str]:
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for item in items:
-        grouped[str(item.get("project_name") or "Без проекта")].append(item)
-    if len(grouped) <= 1:
+def _role_block(role: str, items: list[dict[str, Any]]) -> list[str]:
+    if not items:
         return []
-    lines = ["", "По проектам:"]
-    for project_name, project_items in sorted(grouped.items()):
-        counts = _status_counts(project_items)
-        lines.append(
-            f"• {project_name}: {counts['submitted']} подано, {counts['approved']} одобрено"
-        )
-    return lines
-
-
-def build_forwardable_report(
-    person: tuple[str, str],
-    period: str,
-    items: list[dict[str, Any]],
-) -> str:
     counts = _status_counts(items)
-    lines = [
-        "📊 СВЕРКА ЗАЯВОК",
-        f"Автор: {_person_label(person)}",
-        f"Период: {_period_label(period, items)}",
-        "",
-        f"Подано заявок: {counts['submitted']}",
+    first_label = "Подано заявок" if role == "author" else "Работ в заявках"
+    return [
+        ROLE_TITLES[role],
+        f"{first_label}: {counts['submitted']}",
         f"Обработано: {counts['processed']}",
         f"Одобрено и учтено в отчёте: {counts['approved']}",
         f"Ждёт проверки: {counts['pending']}",
         f"На доработке: {counts['revision']}",
         f"Дубликаты: {counts['duplicate']}",
-        "",
-        "Из одобренных:",
-        f"• обычные Reels: {counts['approved_regular']}",
-        f"• Big Recap: {counts['approved_bigrecap']}",
+        f"Обычные Reels — одобрено: {counts['approved_regular']}",
+        f"Big Recap — одобрено: {counts['approved_bigrecap']}",
     ]
-    lines.extend(_project_breakdown(items))
+
+
+def build_forwardable_report(
+    person: tuple[str, str],
+    period: str,
+    videos: list[dict[str, Any]],
+) -> str:
+    activity_items = _person_activity_items(videos, person)
+    lines = [
+        "📊 СВЕРКА РАБОТ",
+        f"Сотрудник: {_person_label(person)}",
+        f"Период: {_period_label(period, activity_items)}",
+    ]
+
+    for role in ROLES:
+        items = _role_items(videos, person, role)
+        block = _role_block(role, items)
+        if block:
+            lines.append("")
+            lines.extend(block)
+
     lines.extend(
         [
             "",
+            "Роли считаются отдельно: если человек был и автором, и монтажёром одного ролика, работа отображается в обеих строках.",
             "Период для месячных выборок считается по дате публикации ролика.",
         ]
     )
@@ -201,7 +232,7 @@ def start_author_report(tg: TelegramClient, actor) -> None:
         rows.append([(_person_label(person), f"ar:a:{token}")])
     tg.send_message(
         actor.chat_id,
-        "👥 СВЕРКА ПО АВТОРАМ\n\nВыберите автора. Если выбрать «Все авторы», бот пришлёт отдельное пересылаемое сообщение по каждому.",
+        "👥 СВЕРКА ПО АВТОРАМ\n\nВыберите автора. В его сообщении отдельно будут показаны работа автором, монтаж и озвучка, если она есть. Если выбрать «Все авторы», бот пришлёт отдельное пересылаемое сообщение по каждому.",
         inline_keyboard(rows),
     )
 
@@ -227,11 +258,16 @@ def _show_periods(tg: TelegramClient, actor, token: str) -> None:
 
 
 def _send_reports(tg: TelegramClient, actor, token: str, period: str) -> None:
-    videos = [video for video in _active_videos() if _period_filter(video, period)]
-    authors = _author_map(_active_videos())
+    all_videos = _active_videos()
+    videos = [video for video in all_videos if _period_filter(video, period)]
+    authors = _author_map(all_videos)
     if token == "all":
         people = sorted(
-            {person for video in videos if (person := _author_key(video))},
+            {
+                person
+                for person in authors.values()
+                if _person_activity_items(videos, person)
+            },
             key=lambda item: (item[0].casefold(), item[1].casefold()),
         )
     else:
@@ -242,7 +278,7 @@ def _send_reports(tg: TelegramClient, actor, token: str, period: str) -> None:
         people = [person]
 
     if not people:
-        tg.send_message(actor.chat_id, "За выбранный период заявок нет.")
+        tg.send_message(actor.chat_id, "За выбранный период работ нет.")
         return
 
     if len(people) > 1:
@@ -253,16 +289,15 @@ def _send_reports(tg: TelegramClient, actor, token: str, period: str) -> None:
 
     sent = 0
     for person in people:
-        items = [video for video in videos if _author_key(video) == person]
-        if not items:
+        if not _person_activity_items(videos, person):
             continue
-        tg.send_message(actor.chat_id, build_forwardable_report(person, period, items))
+        tg.send_message(actor.chat_id, build_forwardable_report(person, period, videos))
         sent += 1
 
     tg.send_message(
         actor.chat_id,
         f"Готово: {sent} отчёт(ов).",
-        inline_keyboard([[('Сверить ещё', 'ar:start')]]),
+        inline_keyboard([[("Сверить ещё", "ar:start")]]),
     )
 
 
