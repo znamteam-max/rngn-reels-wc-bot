@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from typing import Any
 
-from bot import admin_queue, db, reconciliation, sheet_layout, sheets
+from bot import admin_queue, db, reconciliation, sheets
 from bot.config import get_settings
 from bot.messages import format_video_card
 from bot.telegram import TelegramClient
@@ -147,6 +147,12 @@ def _author_key(video: dict[str, Any]) -> tuple[str, str]:
     )
 
 
+def _payment_label(payment: dict[str, Any] | None) -> str:
+    if payment is None:
+        return "Не отмечено"
+    return "Выплачено" if bool(payment.get("is_paid")) else "Не выплачено"
+
+
 def build_author_submission_rows(videos: list[dict[str, Any]]) -> list[list[str]]:
     grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for video in videos:
@@ -192,17 +198,17 @@ def build_payment_rows(
     )
     for video in approved:
         video_id = int(video["id"])
-        payment = payments.get(video_id) or {}
+        payment = payments.get(video_id)
         payout_month, late = payout_schedule(video)
         name, _ = _author_key(video)
-        paid_at = payment.get("paid_at")
+        paid_at = (payment or {}).get("paid_at")
         if isinstance(paid_at, datetime) and paid_at.tzinfo is not None:
             paid_at = paid_at.astimezone(get_settings().tz)
-        paid_by_username = str(payment.get("paid_by_username") or "").lstrip("@")
+        paid_by_username = str((payment or {}).get("paid_by_username") or "").lstrip("@")
         paid_by = (
             f"@{paid_by_username}"
             if paid_by_username
-            else str(payment.get("paid_by_tg_id") or "")
+            else str((payment or {}).get("paid_by_tg_id") or "")
         )
         rows.append(
             [
@@ -215,7 +221,7 @@ def build_payment_rows(
                 str(video.get("created_at") or ""),
                 payout_month,
                 "Да" if late else "Нет",
-                "Выплачено" if payment.get("is_paid") else "Не выплачено",
+                _payment_label(payment),
                 paid_at.isoformat(sep=" ", timespec="minutes") if isinstance(paid_at, datetime) else str(paid_at or ""),
                 paid_by,
                 str(video.get("instagram_url") or ""),
@@ -233,7 +239,7 @@ def _video_payment_values(
     if video.get("status") != "approved":
         paid_label = "Не готово к выплате"
     else:
-        paid_label = "Выплачено" if payment and payment.get("is_paid") else "Не выплачено"
+        paid_label = _payment_label(payment)
     paid_at = (payment or {}).get("paid_at")
     if isinstance(paid_at, datetime) and paid_at.tzinfo is not None:
         paid_at = paid_at.astimezone(get_settings().tz)
@@ -325,7 +331,11 @@ def _preferred_sheet_order(properties: dict[str, dict[str, Any]]) -> list[str]:
     today = datetime.now(get_settings().tz).date()
     current_month = today.strftime("%Y-%m")
     previous_month = _month_start(today)
-    previous_month = date(previous_month.year - 1, 12, 1) if previous_month.month == 1 else date(previous_month.year, previous_month.month - 1, 1)
+    previous_month = (
+        date(previous_month.year - 1, 12, 1)
+        if previous_month.month == 1
+        else date(previous_month.year, previous_month.month - 1, 1)
+    )
     previous_month_name = previous_month.strftime("%Y-%m")
     preferred = [
         "Работа авторов",
@@ -371,14 +381,14 @@ def _reorder_reporting_tabs(service, spreadsheet_id: str) -> None:
         ).execute()
 
 
-def sync_reporting_sheets() -> dict[str, Any]:
+def sync_reporting_sheets(*, service=None) -> dict[str, Any]:
     ensure_payment_schema()
     settings = get_settings()
     if not settings.google_sheets_spreadsheet_id:
         raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured")
     videos = _active_videos()
     payments = _payment_map()
-    service = sheets._service()
+    service = service or sheets._service()
     spreadsheet_id = settings.google_sheets_spreadsheet_id
 
     sheets._ensure_named_sheets(
@@ -430,16 +440,20 @@ def sync_reporting_sheets() -> dict[str, Any]:
                 payments,
             )
     _reorder_reporting_tabs(service, spreadsheet_id)
+    approved_ids = [int(video["id"]) for video in videos if video.get("status") == "approved"]
+    paid = sum(bool((payments.get(video_id) or {}).get("is_paid")) for video_id in approved_ids)
+    explicit_unpaid = sum(
+        video_id in payments and not bool(payments[video_id].get("is_paid"))
+        for video_id in approved_ids
+    )
+    unmarked = sum(video_id not in payments for video_id in approved_ids)
     return {
         "videos": len(videos),
         "authors_rows": len(author_rows),
         "payment_rows": len(payment_rows),
-        "paid": sum(bool(row.get("is_paid")) for row in payments.values()),
-        "unpaid_approved": sum(
-            video.get("status") == "approved"
-            and not bool((payments.get(int(video["id"])) or {}).get("is_paid"))
-            for video in videos
-        ),
+        "paid": paid,
+        "explicit_unpaid": explicit_unpaid,
+        "unmarked": unmarked,
     }
 
 
@@ -722,21 +736,30 @@ def show_payments(tg: TelegramClient, actor, raw_month: str) -> None:
     payments = _payment_map()
     due = [video for video in videos if payout_schedule(video)[0] == month]
     paid = [video for video in due if (payments.get(int(video["id"])) or {}).get("is_paid")]
+    explicit_unpaid = [
+        video
+        for video in due
+        if int(video["id"]) in payments and not bool(payments[int(video["id"])].get("is_paid"))
+    ]
+    unmarked = [video for video in due if int(video["id"]) not in payments]
     late = [video for video in due if payout_schedule(video)[1]]
-    unpaid = [video for video in due if not (payments.get(int(video["id"])) or {}).get("is_paid")]
     lines = [
         f"Выплаты за {month}",
         "",
         f"К выплате: {len(due)}",
-        f"Уже выплачено: {len(paid)}",
-        f"Не выплачено: {len(unpaid)}",
+        f"Выплачено: {len(paid)}",
+        f"Явно не выплачено: {len(explicit_unpaid)}",
+        f"Статус ещё не отмечен: {len(unmarked)}",
         f"Перенесено сюда из-за дедлайна: {len(late)}",
     ]
-    if unpaid:
-        lines.extend(["", "Не выплачено:"])
-        for video in unpaid[:30]:
+    needs_attention = [*explicit_unpaid, *unmarked]
+    if needs_attention:
+        lines.extend(["", "Требуют отметки:"])
+        for video in needs_attention[:30]:
             name, _ = _author_key(video)
-            lines.append(f"#{video['id']} · {name} · {video.get('publish_date') or 'без даты'}")
+            lines.append(
+                f"#{video['id']} · {name} · {video.get('publish_date') or 'без даты'} · {_payment_label(payments.get(int(video['id'])))}"
+            )
     tg.send_message(actor.chat_id, "\n".join(lines)[:3900])
 
 
@@ -786,7 +809,7 @@ def set_paid(tg: TelegramClient, actor, raw_id: str, *, paid: bool) -> None:
         )
     tg.send_message(
         actor.chat_id,
-        f"#{video_id}: {'ВЫПЛАЧЕНО' if paid else 'снова НЕ ВЫПЛАЧЕНО'}. Месяц выплаты: {payout_schedule(video)[0] or '—'}.",
+        f"#{video_id}: {'ВЫПЛАЧЕНО' if paid else 'НЕ ВЫПЛАЧЕНО'}. Месяц выплаты: {payout_schedule(video)[0] or '—'}.\nЧтобы сразу обновить Google Sheets: /sync_reporting",
     )
 
 
@@ -805,8 +828,36 @@ def sync_reporting_command(tg: TelegramClient, actor) -> None:
         f"Строк по авторам: {result['authors_rows']}\n"
         f"Approved для выплат: {result['payment_rows']}\n"
         f"Выплачено: {result['paid']}\n"
-        f"Не выплачено: {result['unpaid_approved']}",
+        f"Явно не выплачено: {result['explicit_unpaid']}\n"
+        f"Не отмечено: {result['unmarked']}",
     )
+
+
+def show_admin_help(tg: TelegramClient, actor) -> None:
+    if not _require_admin(tg, actor):
+        return
+    lines = [
+        "Админские команды",
+        "",
+        "/queue_status — состояние FIFO-очереди",
+        "/queue_open — показать текущую pending-заявку текстом",
+        "/resend_pending — восстановить очередь и сразу показать активную заявку",
+        "/queue_recreate — заново создать карточку активной заявки (superadmin)",
+        "/queue_debug — диагностика FIFO",
+        "/queue_trace ID — история очереди по ролику (superadmin)",
+        "/video ID — показать любой ролик из базы",
+        "/errors [N] — последние ошибки jobs/Telegram/system logs",
+        "/jobs_failed [N] — failed/dead фоновые задания",
+        "/logs [N] — последние системные события",
+        "/worker_status — состояние фонового worker",
+        "/jobs_status — очередь фоновых заданий",
+        "/author_months [YYYY-MM] — сколько заявок подал и обработал каждый автор",
+        "/payments [YYYY-MM] — сводка выплат за расчётный месяц",
+        "/paid ID — отметить ролик выплаченным",
+        "/unpaid ID — явно отметить ролик невыплаченным",
+        "/sync_reporting — пересобрать «Заявки по авторам» и «Выплаты» в Google Sheets",
+    ]
+    tg.send_message(actor.chat_id, "\n".join(lines))
 
 
 def handle_message(message: dict[str, Any]) -> bool:
@@ -829,6 +880,7 @@ def handle_message(message: dict[str, Any]) -> bool:
         "/paid",
         "/unpaid",
         "/sync_reporting",
+        "/admin_help",
         "/resend_pending",
     }
     if command not in handled:
@@ -857,6 +909,8 @@ def handle_message(message: dict[str, Any]) -> bool:
         set_paid(tg, actor, rest, paid=False)
     elif command == "/sync_reporting":
         sync_reporting_command(tg, actor)
+    elif command == "/admin_help":
+        show_admin_help(tg, actor)
     elif command == "/resend_pending":
         if not _require_admin(tg, actor):
             return True
