@@ -84,8 +84,11 @@ def _merge_person(current: tuple[str, str], candidate: tuple[str, str]) -> tuple
     candidate_name, candidate_username = candidate
     if not current_username and candidate_username:
         return candidate
-    if current_username and candidate_username and current_username.casefold() == candidate_username.casefold():
-        # Keep the first role's display name, but never lose the username.
+    if (
+        current_username
+        and candidate_username
+        and current_username.casefold() == candidate_username.casefold()
+    ):
         return current_name, current_username
     return current
 
@@ -98,7 +101,11 @@ def _canonical_people(videos: list[dict[str, Any]]) -> list[tuple[str, str]]:
             if not candidate:
                 continue
             matched_index = next(
-                (index for index, person in enumerate(people) if _same_person(candidate, person)),
+                (
+                    index
+                    for index, person in enumerate(people)
+                    if _same_person(candidate, person)
+                ),
                 None,
             )
             if matched_index is None:
@@ -132,14 +139,19 @@ def _has_role(videos: list[dict[str, Any]], person: tuple[str, str], role: str) 
 
 
 def _author_people(videos: list[dict[str, Any]]) -> list[tuple[str, str]]:
-    return [person for person in _canonical_people(videos) if _has_role(videos, person, "author")]
+    return [
+        person
+        for person in _canonical_people(videos)
+        if _has_role(videos, person, "author")
+    ]
 
 
 def _montage_only_people(videos: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return [
         person
         for person in _canonical_people(videos)
-        if _has_role(videos, person, "montage") and not _has_role(videos, person, "author")
+        if _has_role(videos, person, "montage")
+        and not _has_role(videos, person, "author")
     ]
 
 
@@ -160,7 +172,11 @@ def _person_activity_items(
 
 
 def _video_kind(video: dict[str, Any]) -> str:
-    return "bigrecap" if str(video.get("video_type") or "").lower() == "bigrecap" else "regular"
+    return (
+        "bigrecap"
+        if str(video.get("video_type") or "").lower() == "bigrecap"
+        else "regular"
+    )
 
 
 def _month_label(value: str) -> str:
@@ -194,10 +210,16 @@ def _period_options(
         selected = [
             video
             for video in videos
-            if any(_roles_for_person(video, group_person) for group_person in group_people)
+            if any(
+                _roles_for_person(video, group_person) for group_person in group_people
+            )
         ]
     months = sorted(
-        {month for video in selected if (month := reconciliation.publish_month(video))},
+        {
+            month
+            for video in selected
+            if (month := reconciliation.publish_month(video))
+        },
         reverse=True,
     )
     options: list[tuple[str, str]] = [
@@ -248,7 +270,9 @@ def _status_counts(items: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
-def _approved_items(items: list[dict[str, Any]], kind: str | None = None) -> list[dict[str, Any]]:
+def _approved_items(
+    items: list[dict[str, Any]], kind: str | None = None
+) -> list[dict[str, Any]]:
     result = [video for video in items if video.get("status") == "approved"]
     if kind is not None:
         result = [video for video in result if _video_kind(video) == kind]
@@ -285,7 +309,9 @@ def _append_kind_breakdown(
             lines.append(f"• {ROLE_COMBO_LABELS[combo]}: {value}")
     combo_total = sum(combo_counts.values())
     if combo_total != len(items):
-        lines.append(f"• Не удалось определить сочетание ролей: {len(items) - combo_total}")
+        lines.append(
+            f"• Не удалось определить сочетание ролей: {len(items) - combo_total}"
+        )
 
 
 def build_forwardable_report(
@@ -335,20 +361,12 @@ def build_forwardable_report(
     return "\n".join(lines)
 
 
-def _append_people_buttons(
-    rows: list[list[tuple[str, str]]],
-    *,
-    title: str,
-    all_label: str,
-    all_token: str,
-    people: list[tuple[str, str]],
-) -> None:
-    if not people:
-        return
-    rows.append([(title, "ar:noop")])
-    rows.append([(all_label, f"ar:a:{all_token}")])
-    for person in people:
-        rows.append([(_person_label(person), f"ar:a:{_person_token(person)}")])
+def _group_meta(group_token: str) -> tuple[str, str]:
+    if group_token == "authors":
+        return "✍️ АВТОРЫ", "👥 Все авторы"
+    if group_token == "montage":
+        return "🎬 МОНТАЖЁРЫ", "🎬 Все монтажёры"
+    return "🎙 ОЗВУЧКА", "🎙 Все по озвучке"
 
 
 def start_author_report(tg: TelegramClient, actor) -> None:
@@ -357,41 +375,58 @@ def start_author_report(tg: TelegramClient, actor) -> None:
     if not h.require_admin(tg, actor):
         return
     videos = _active_videos()
-    authors = _author_people(videos)
-    montage_only = _montage_only_people(videos)
-    voice_only = _voice_only_people(videos)
-    if not authors and not montage_only and not voice_only:
+    if not _canonical_people(videos):
         tg.send_message(actor.chat_id, "Участников работ в базе пока нет.")
         return
 
-    rows: list[list[tuple[str, str]]] = []
-    _append_people_buttons(
-        rows,
-        title="✍️ АВТОРЫ",
-        all_label="👥 Все авторы",
-        all_token="authors",
-        people=authors,
+    rows = [
+        [("✍️ Авторы", "ar:g:authors")],
+        [("🎬 Монтажёры", "ar:g:montage")],
+        [("🎙 Озвучка", "ar:g:voice")],
+    ]
+    tg.send_message(
+        actor.chat_id,
+        "👥 СВЕРКА РАБОТ\n\nВыберите раздел:",
+        inline_keyboard(rows),
     )
-    _append_people_buttons(
-        rows,
-        title="🎬 МОНТАЖЁРЫ",
-        all_label="🎬 Все монтажёры",
-        all_token="montage",
-        people=montage_only,
-    )
-    _append_people_buttons(
-        rows,
-        title="🎙 ОЗВУЧКА",
-        all_label="🎙 Все по озвучке",
-        all_token="voice",
-        people=voice_only,
-    )
+
+
+def _show_people_group(tg: TelegramClient, actor, group_token: str) -> None:
+    if group_token not in {"authors", "montage", "voice"}:
+        tg.send_message(actor.chat_id, "Раздел устарел. Откройте /author_report заново.")
+        return
+
+    videos = _active_videos()
+    people = _group_people(videos, group_token)
+    title, all_label = _group_meta(group_token)
+    if not people:
+        tg.send_message(
+            actor.chat_id,
+            f"{title}\n\nВ этом разделе пока никого нет.",
+            inline_keyboard([[('← К разделам', 'ar:start')]]),
+        )
+        return
+
+    rows: list[list[tuple[str, str]]] = [
+        [(all_label, f"ar:a:{group_token}")]
+    ]
+    for person in people:
+        rows.append([(_person_label(person), f"ar:a:{_person_token(person)}")])
+    rows.append([("← К разделам", "ar:start")])
 
     tg.send_message(
         actor.chat_id,
-        "👥 СВЕРКА РАБОТ\n\nСначала идут авторы. Ниже отдельно — люди, которые занимались монтажом, но ни разу не были авторами. Если есть сотрудники только на озвучке, они вынесены в третий блок.",
+        f"{title}\n\nВыберите человека или получите отдельные отчёты по всему разделу:",
         inline_keyboard(rows),
     )
+
+
+def _group_for_person(videos: list[dict[str, Any]], person: tuple[str, str]) -> str:
+    if _has_role(videos, person, "author"):
+        return "authors"
+    if _has_role(videos, person, "montage"):
+        return "montage"
+    return "voice"
 
 
 def _show_periods(tg: TelegramClient, actor, token: str) -> None:
@@ -400,14 +435,21 @@ def _show_periods(tg: TelegramClient, actor, token: str) -> None:
     group_token = token if token in {"all", "authors", "montage", "voice"} else None
     person = None if group_token else people_map.get(token)
     if group_token is None and person is None:
-        tg.send_message(actor.chat_id, "Список сотрудников изменился. Откройте сверку заново: /author_report")
+        tg.send_message(
+            actor.chat_id,
+            "Список сотрудников изменился. Откройте сверку заново: /author_report",
+        )
         return
 
     rows = [
         [(label, f"ar:p:{token}:{period}")]
         for label, period in _period_options(videos, person, group_token)
     ]
-    rows.append([("← К списку", "ar:start")])
+    back_group = group_token if group_token and group_token != "all" else None
+    if person is not None:
+        back_group = _group_for_person(videos, person)
+    back_callback = f"ar:g:{back_group}" if back_group else "ar:start"
+    rows.append([("← К списку", back_callback)])
 
     if group_token in {"all", "authors"}:
         target = "всех авторов"
@@ -439,7 +481,10 @@ def _send_reports(tg: TelegramClient, actor, token: str, period: str) -> None:
     else:
         person = people_map.get(token)
         if person is None:
-            tg.send_message(actor.chat_id, "Сотрудник больше не найден. Откройте сверку заново: /author_report")
+            tg.send_message(
+                actor.chat_id,
+                "Сотрудник больше не найден. Откройте сверку заново: /author_report",
+            )
             return
         people = [person]
 
@@ -495,7 +540,9 @@ def handle_callback(callback: dict[str, Any]) -> bool:
     tg = TelegramClient()
     if not h.is_admin(actor.tg_id):
         try:
-            tg.answer_callback_query(callback["id"], "Только для админов.", show_alert=True)
+            tg.answer_callback_query(
+                callback["id"], "Только для админов.", show_alert=True
+            )
         except Exception:
             pass
         return True
@@ -509,13 +556,19 @@ def handle_callback(callback: dict[str, Any]) -> bool:
     if data == "ar:start":
         start_author_report(tg, actor)
         return True
+    if data.startswith("ar:g:"):
+        _show_people_group(tg, actor, data.split(":", 2)[2])
+        return True
     if data.startswith("ar:a:"):
         _show_periods(tg, actor, data.split(":", 2)[2])
         return True
     if data.startswith("ar:p:"):
         parts = data.split(":", 3)
         if len(parts) != 4:
-            tg.send_message(actor.chat_id, "Кнопка устарела. Откройте /author_report заново.")
+            tg.send_message(
+                actor.chat_id,
+                "Кнопка устарела. Откройте /author_report заново.",
+            )
             return True
         _send_reports(tg, actor, parts[2], parts[3])
         return True
@@ -568,7 +621,11 @@ def initialize_world_cup_unpaid_baseline() -> dict[str, Any]:
             after_data={"approved_world_cup": total, "affected": affected},
         )
     reporting = admin_tools.sync_reporting_sheets()
-    return {"approved_world_cup": total, "affected": affected, "reporting": reporting}
+    return {
+        "approved_world_cup": total,
+        "affected": affected,
+        "reporting": reporting,
+    }
 
 
 def install_menu_patch() -> None:
@@ -599,7 +656,9 @@ def install_menu_patch() -> None:
         if h.is_superadmin(actor.tg_id):
             rows.append([("Сбросить FIFO-очередь", "cmd:reset_admin_queue")])
             status = "вкл" if public_patch._hearing_mode_enabled() else "выкл"
-            rows.append([(f"👂 Режим «А?» сейчас: {status}", "fun:hearing:status")])
+            rows.append(
+                [(f"👂 Режим «А?» сейчас: {status}", "fun:hearing:status")]
+            )
             rows.append(
                 [
                     ("Включить режим «А?»", "fun:hearing:on"),
