@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+import json
+from http.server import BaseHTTPRequestHandler
+from typing import Any
+
+from bot.config import get_settings
+from bot.multiplatform_metrics import sync_multiplatform_metrics
+
+
+def _json_bytes(payload: dict[str, Any]) -> bytes:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+class handler(BaseHTTPRequestHandler):
+    def _send_json(self, status: int, payload: dict[str, Any]) -> None:
+        body = _json_bytes(payload)
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _run(self) -> None:
+        settings = get_settings()
+        if not settings.cron_secret:
+            self._send_json(500, {"ok": False, "error": "CRON_SECRET not configured"})
+            return
+        if self.headers.get("Authorization") != f"Bearer {settings.cron_secret}":
+            self._send_json(401, {"ok": False, "error": "unauthorized"})
+            return
+        try:
+            result = sync_multiplatform_metrics()
+        except Exception as exc:
+            self._send_json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:500]})
+            return
+        self._send_json(200, result)
+
+    def do_GET(self) -> None:
+        self._run()
+
+    def do_POST(self) -> None:
+        self._run()
+
+    def do_HEAD(self) -> None:
+        self._run()
