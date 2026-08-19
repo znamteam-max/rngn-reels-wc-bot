@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler
 from typing import Any
@@ -12,6 +13,8 @@ from bot.links import extract_youtube_id
 from bot.youtube_metrics import YouTubeAPIError, fetch_youtube_statistics
 
 WORLD_CUP_CODE = "world_cup_2026"
+YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+YOUTUBE_ID_PREFIX_RE = re.compile(r"^([A-Za-z0-9_-]{11})(?:$|[^A-Za-z0-9_-])")
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
@@ -54,15 +57,20 @@ def _world_cup_youtube_rows() -> list[dict[str, Any]]:
 
 def _resolve_id(row: dict[str, Any]) -> str | None:
     direct = str(row.get("youtube_id") or "").strip()
-    if direct:
+    if YOUTUBE_ID_RE.fullmatch(direct):
         return direct
+
     url = str(row.get("youtube_url") or "").strip()
-    if not url:
-        return None
-    try:
-        return extract_youtube_id(url)
-    except Exception:
-        return None
+    if url:
+        try:
+            from_url = extract_youtube_id(url)
+        except Exception:
+            from_url = None
+        if from_url and YOUTUBE_ID_RE.fullmatch(from_url):
+            return from_url
+
+    prefix = YOUTUBE_ID_PREFIX_RE.match(direct)
+    return prefix.group(1) if prefix else None
 
 
 def build_report() -> dict[str, Any]:
