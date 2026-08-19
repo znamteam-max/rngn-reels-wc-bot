@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.wc-youtube-live-trigger'
+      - '.github/workflows/wc-youtube-live.yml'
 
 permissions:
   contents: write
@@ -29,24 +30,16 @@ jobs:
           TOKEN="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<<"${RESPONSE}")"
           echo "::add-mask::${TOKEN}"
           printf '%s' "${TOKEN}" > /tmp/oidc_token
-      - name: Wait for Vercel deployment and capture metrics
+      - name: Capture metrics
         shell: bash
         run: |
           set -euo pipefail
           TOKEN="$(cat /tmp/oidc_token)"
-          ok=0
-          for attempt in $(seq 1 36); do
-            status="$(curl --silent --show-error --request POST \
-              --header "Authorization: Bearer ${TOKEN}" \
-              --output /tmp/report.json --write-out '%{http_code}' "${ENDPOINT}" || true)"
-            echo "attempt=${attempt} status=${status}"
-            if [ "${status}" = "200" ]; then
-              ok=1
-              break
-            fi
-            sleep 10
-          done
-          test "${ok}" = "1"
+          status="$(curl --silent --show-error --request POST \
+            --header "Authorization: Bearer ${TOKEN}" \
+            --output /tmp/report.json --write-out '%{http_code}' "${ENDPOINT}" || true)"
+          echo "status=${status}"
+          test "${status}" = "200"
           python - <<'PY'
           import json
           p=json.load(open('/tmp/report.json', encoding='utf-8'))
