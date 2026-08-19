@@ -14,8 +14,8 @@
   },
   "crons": [
     {
-      "path": "/api/cron/youtube-metrics",
-      "schedule": "0 3 * * *"
+      "path": "/api/cron/multiplatform-metrics",
+      "schedule": "5 3 * * *"
     },
     {
       "path": "/api/cron/reporting",
@@ -24,10 +24,6 @@
     {
       "path": "/api/cron/daily-report",
       "schedule": "0 6 * * *"
-    },
-    {
-      "path": "/api/internal/finalize-wc-20260818-7f3c",
-      "schedule": "2 14 * * *"
     }
   ]
 }
