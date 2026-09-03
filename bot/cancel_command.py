@@ -9,12 +9,16 @@ from bot.telegram import TelegramClient
 COMMAND = "/cancel"
 
 
-def handle_message(message: dict[str, Any]) -> bool:
+def is_cancel_message(message: dict[str, Any]) -> bool:
     text = str(message.get("text") or "").strip()
     if not text.startswith("/"):
         return False
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
-    if command != COMMAND:
+    return command == COMMAND
+
+
+def handle_message(message: dict[str, Any]) -> bool:
+    if not is_cancel_message(message):
         return False
 
     from bot import handlers as h
