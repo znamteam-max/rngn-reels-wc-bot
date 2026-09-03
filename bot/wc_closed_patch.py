@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from bot import content_core_integration, period_report, project_workflow_patch
+from bot import (
+    content_core_integration,
+    flexible_first_link,
+    period_report,
+    project_workflow_patch,
+)
 
 
 WORLD_CUP_CODE = "world_cup_2026"
@@ -33,4 +38,5 @@ def install(author_reports) -> None:
 
     _install_period_report(author_reports)
     project_workflow_patch.install()
+    flexible_first_link.install()
     content_core_integration.install_submission_hooks()
