@@ -6,18 +6,30 @@ from datetime import date
 from bot import content_core_integration as core
 from bot import period_report
 from bot import project_workflow_patch as workflow
+from bot import vm_active_rules
+from scripts import setup_bot_ui
 
 
-class ProjectWorkflowV1033Tests(unittest.TestCase):
+class ProjectWorkflowV1035Tests(unittest.TestCase):
     def test_vzyal_myach_author_roster_is_explicit(self) -> None:
+        vm_active_rules.ensure_vm_roster()
         self.assertEqual(
             [item["display_name"] for item in workflow.VM_AUTHOR_ROSTER],
-            ["Артём Тихонов", "Знамбо", "Матвей Юдкин", "Сергей Абаев"],
+            [
+                "Артём Тихонов",
+                "Знамбо",
+                "Матвей Юдкин",
+                "Сергей Абаев",
+                "Даня Немыкин",
+            ],
         )
         self.assertEqual(
             [item["display_username"] for item in workflow.VM_AUTHOR_ROSTER],
-            ["tikhonov32", "ZnamBo", None, "SergeAbaka"],
+            ["tikhonov32", "ZnamBo", None, "SergeAbaka", "Ohluckylucky"],
         )
+
+    def test_bigrecap_is_not_registered_as_new_command(self) -> None:
+        self.assertNotIn("new_bigrecap", [command for command, _ in setup_bot_ui.COMMANDS])
 
     def test_aircut_marker_is_backward_compatible(self) -> None:
         self.assertTrue(
