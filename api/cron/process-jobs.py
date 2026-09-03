@@ -5,7 +5,12 @@ import json
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from bot import content_core_integration, content_core_multicore, project_workflow_patch
+from bot import (
+    content_core_attribution,
+    content_core_integration,
+    content_core_multicore,
+    project_workflow_patch,
+)
 from bot.config import get_settings
 from bot.github_oidc import GitHubOIDCError, validate_github_oidc_token
 from bot.job_worker import process_jobs
@@ -13,6 +18,7 @@ from bot.job_worker import process_jobs
 
 project_workflow_patch.install()
 content_core_multicore.install()
+content_core_attribution.install()
 content_core_integration.install_worker()
 
 
