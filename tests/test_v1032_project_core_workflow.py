@@ -8,7 +8,7 @@ from bot import period_report
 from bot import project_workflow_patch as workflow
 
 
-class ProjectWorkflowV1032Tests(unittest.TestCase):
+class ProjectWorkflowV1033Tests(unittest.TestCase):
     def test_vzyal_myach_author_roster_is_explicit(self) -> None:
         self.assertEqual(
             [item["display_name"] for item in workflow.VM_AUTHOR_ROSTER],
