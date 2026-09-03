@@ -5,9 +5,13 @@ import json
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
+from bot import content_core_integration
 from bot.config import get_settings
 from bot.github_oidc import GitHubOIDCError, validate_github_oidc_token
 from bot.job_worker import process_jobs
+
+
+content_core_integration.install_worker()
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
