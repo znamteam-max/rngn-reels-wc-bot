@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import io
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from bot import author_reports, db, multiplatform_metrics
@@ -13,10 +13,10 @@ from bot.telegram import TelegramClient
 
 COMMANDS = {"/period_report", "/report_period", "/export_period"}
 PLATFORMS = ("instagram", "youtube", "tiktok", "vk")
-PLATFORM_LABELS = {
-    "instagram": "Instagram",
-    "youtube": "YouTube",
-    "tiktok": "TikTok",
+PLATFORM_SHORT = {
+    "instagram": "IG",
+    "youtube": "YT",
+    "tiktok": "TT",
     "vk": "VK",
 }
 
@@ -65,8 +65,6 @@ def _month_bounds(today: date) -> tuple[date, date]:
         next_month = date(today.year + 1, 1, 1)
     else:
         next_month = date(today.year, today.month + 1, 1)
-    from datetime import timedelta
-
     return start, next_month - timedelta(days=1)
 
 
@@ -103,8 +101,7 @@ def _as_date(value: Any) -> date | None:
 def _work_type(video: dict[str, Any]) -> str:
     if str(video.get("video_type") or "").lower() == "bigrecap":
         return "bigrecap"
-    comment = str(video.get("comment") or "").casefold()
-    if "отрез из эфира" in comment:
+    if "отрез из эфира" in str(video.get("comment") or "").casefold():
         return "aircut"
     return "reel"
 
@@ -151,6 +148,28 @@ def _core_links(video_ids: list[int]) -> tuple[dict[int, dict[str, Any]], dict[i
     return video_links, dict(publications)
 
 
+def _new_author_totals() -> dict[str, int]:
+    totals = {"reels": 0, "known": 0}
+    for platform in PLATFORMS:
+        totals[platform] = 0
+        totals[f"{platform}_supplied"] = 0
+        totals[f"{platform}_measured"] = 0
+    return totals
+
+
+def _platform_summary(totals: dict[str, int], platform: str) -> str:
+    short = PLATFORM_SHORT[platform]
+    supplied = totals[f"{platform}_supplied"]
+    measured = totals[f"{platform}_measured"]
+    if supplied == 0:
+        return f"{short} —"
+    if measured == 0:
+        return f"{short} missing 0/{supplied}"
+    views = f"{totals[platform]:,}".replace(",", " ")
+    suffix = "" if measured == supplied else f" ({measured}/{supplied})"
+    return f"{short} {views}{suffix}"
+
+
 def build_export(start: date, end: date) -> tuple[list[dict[str, Any]], str, bytes]:
     videos = [
         video
@@ -165,9 +184,7 @@ def build_export(start: date, end: date) -> tuple[list[dict[str, Any]], str, byt
     core_video_links, core_publication_links = _core_links(video_ids)
 
     rows: list[dict[str, Any]] = []
-    author_totals: dict[tuple[str, str], dict[str, int]] = defaultdict(
-        lambda: {"reels": 0, "known": 0, "instagram": 0, "youtube": 0, "tiktok": 0, "vk": 0}
-    )
+    author_totals: dict[tuple[str, str], dict[str, int]] = defaultdict(_new_author_totals)
 
     for video in videos:
         video_id = int(video["id"])
@@ -211,8 +228,12 @@ def build_export(start: date, end: date) -> tuple[list[dict[str, Any]], str, byt
         totals["reels"] += 1
         totals["known"] += int(metric["total_known_views"])
         for platform in PLATFORMS:
+            platform_url = str(video.get(f"{platform}_url") or "").strip()
             snapshot = latest.get((video_id, platform))
+            if platform_url:
+                totals[f"{platform}_supplied"] += 1
             if snapshot is not None:
+                totals[f"{platform}_measured"] += 1
                 totals[platform] += int(snapshot.get("views") or 0)
 
     output = io.StringIO(newline="")
@@ -225,7 +246,7 @@ def build_export(start: date, end: date) -> tuple[list[dict[str, Any]], str, byt
         f"📊 ОТЧЁТ {start.strftime('%d.%m.%Y')}–{end.strftime('%d.%m.%Y')}",
         f"Одобренных работ: {len(rows)}",
         "",
-        "По авторам (текущие известные просмотры роликов, опубликованных в периоде):",
+        "По авторам: текущие известные просмотры работ, опубликованных в выбранном периоде.",
     ]
     if not author_totals:
         lines.append("Нет одобренных работ за этот период.")
@@ -234,10 +255,9 @@ def build_export(start: date, end: date) -> tuple[list[dict[str, Any]], str, byt
             author_totals.items(), key=lambda item: (-item[1]["known"], item[0][0].casefold())
         ):
             label = f"{name} (@{username})" if username else name
-            lines.append(
-                f"• {label}: {totals['reels']} работ · {totals['known']:,} известных просмотров "
-                f"(IG {totals['instagram']:,} · YT {totals['youtube']:,} · TT {totals['tiktok']:,} · VK {totals['vk']:,})".replace(",", " ")
-            )
+            known = f"{totals['known']:,}".replace(",", " ")
+            platform_text = " · ".join(_platform_summary(totals, platform) for platform in PLATFORMS)
+            lines.append(f"• {label}: {totals['reels']} работ · {known} известных просмотров\n  {platform_text}")
     lines.extend(
         [
             "",
