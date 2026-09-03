@@ -1,9 +1,25 @@
 from __future__ import annotations
 
-from bot import content_core_integration, project_workflow_patch
+from bot import content_core_integration, period_report, project_workflow_patch
 
 
 WORLD_CUP_CODE = "world_cup_2026"
+_REPORT_PATCHED = False
+
+
+def _install_period_report(author_reports) -> None:
+    global _REPORT_PATCHED
+    if _REPORT_PATCHED:
+        return
+    original_handle_message = author_reports.handle_message
+
+    def handle_message(message):
+        if period_report.handle_message(message):
+            return True
+        return original_handle_message(message)
+
+    author_reports.handle_message = handle_message
+    _REPORT_PATCHED = True
 
 
 def install(author_reports) -> None:
@@ -15,6 +31,6 @@ def install(author_reports) -> None:
     reporting dataset.
     """
 
-    del author_reports
+    _install_period_report(author_reports)
     project_workflow_patch.install()
     content_core_integration.install_submission_hooks()
