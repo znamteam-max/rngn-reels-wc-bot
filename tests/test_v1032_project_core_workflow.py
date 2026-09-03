@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
 
 from bot import content_core_integration as core
+from bot import period_report
 from bot import project_workflow_patch as workflow
 
 
@@ -81,6 +83,25 @@ class ProjectWorkflowV1032Tests(unittest.TestCase):
     def test_content_core_integration_does_not_push_people_or_roles(self) -> None:
         self.assertFalse(hasattr(core, "_sync_attributions"))
         self.assertNotIn("production-attribution", " ".join(core._urls()))
+
+    def test_period_report_defaults_to_current_month(self) -> None:
+        self.assertEqual(
+            period_report.parse_period("", today=date(2026, 9, 3)),
+            (date(2026, 9, 1), date(2026, 9, 30)),
+        )
+
+    def test_period_report_accepts_and_normalizes_range(self) -> None:
+        self.assertEqual(
+            period_report.parse_period(
+                "30.09.2026 01.09.2026", today=date(2026, 9, 3)
+            ),
+            (date(2026, 9, 1), date(2026, 9, 30)),
+        )
+
+    def test_period_report_missing_platform_is_not_zero(self) -> None:
+        totals = period_report._new_author_totals()
+        totals["instagram_supplied"] = 1
+        self.assertEqual(period_report._platform_summary(totals, "instagram"), "IG missing 0/1")
 
 
 if __name__ == "__main__":
