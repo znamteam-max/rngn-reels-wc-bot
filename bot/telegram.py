@@ -32,16 +32,8 @@ class TelegramClient:
         self.base_url = f"https://api.telegram.org/bot{self.settings.bot_token}"
         self.timeout = timeout
 
-    def _request(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
-        try:
-            response = requests.post(
-                f"{self.base_url}/{method}",
-                json=payload,
-                timeout=self.timeout,
-            )
-        except requests.RequestException as exc:
-            raise RuntimeError("Telegram API request failed") from exc
-
+    @staticmethod
+    def _parse_response(response: requests.Response) -> dict[str, Any]:
         try:
             data = response.json()
         except ValueError as exc:
@@ -56,6 +48,17 @@ class TelegramClient:
                 int(retry_after) if retry_after is not None else None,
             )
         return data
+
+    def _request(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            response = requests.post(
+                f"{self.base_url}/{method}",
+                json=payload,
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError("Telegram API request failed") from exc
+        return self._parse_response(response)
 
     def send_message(
         self,
@@ -72,6 +75,29 @@ class TelegramClient:
         if reply_markup:
             payload["reply_markup"] = reply_markup
         return self._request("sendMessage", payload)
+
+    def send_document_bytes(
+        self,
+        chat_id: int | str,
+        filename: str,
+        content: bytes,
+        *,
+        caption: str | None = None,
+        content_type: str = "text/csv",
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"chat_id": str(chat_id)}
+        if caption:
+            data["caption"] = caption
+        try:
+            response = requests.post(
+                f"{self.base_url}/sendDocument",
+                data=data,
+                files={"document": (filename, content, content_type)},
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError("Telegram API request failed") from exc
+        return self._parse_response(response)
 
     def edit_message_text(
         self,
