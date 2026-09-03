@@ -16,6 +16,7 @@ DANYA_NEMYKIN: dict[str, Any] = {
     "sort_weight": 60,
 }
 
+VM_ONLY_USERNAMES = {"sergeabaka", "ohluckylucky"}
 _INSTALLED = False
 
 
@@ -84,6 +85,7 @@ def install() -> None:
         return
 
     ensure_vm_roster()
+    original_ask_people = h.ask_people
     original_handle_message = h.handle_message
     original_handle_callback = h.handle_callback
 
@@ -109,6 +111,38 @@ def install() -> None:
         if h.is_superadmin(actor.tg_id):
             rows.append([("Сбросить FIFO-очередь", "cmd:reset_admin_queue")])
         tg.send_message(actor.chat_id, text, inline_keyboard(rows))
+
+    def ask_people(
+        tg: TelegramClient,
+        actor: h.Actor,
+        role: str,
+        show_voice_decision: bool = True,
+    ) -> None:
+        if role != "author":
+            original_ask_people(tg, actor, role, show_voice_decision)
+            return
+
+        project_code = workflow._project_code_from_session(actor)
+        if project_code == workflow.VM_PROJECT_CODE:
+            original_ask_people(tg, actor, role, show_voice_decision)
+            return
+        if project_code:
+            people = [
+                person
+                for person in h.get_people("author")
+                if str(person.get("username") or "").casefold()
+                not in VM_ONLY_USERNAMES
+            ]
+            rows = workflow._author_rows([(None, person) for person in people])
+            rows.append([("Нет в списке", "pm:a")])
+            label = (
+                "Выберите автора · ЧМ 2026."
+                if project_code == workflow.WORLD_CUP_PROJECT_CODE
+                else "Выберите автора."
+            )
+            tg.send_message(actor.chat_id, label, inline_keyboard(rows))
+            return
+        original_ask_people(tg, actor, role, show_voice_decision)
 
     def handle_message(message: dict[str, Any]) -> None:
         actor = h._actor_from_message(message)
@@ -143,6 +177,7 @@ def install() -> None:
 
     h._send_main_menu = send_main_menu
     h.send_help = _send_help
+    h.ask_people = ask_people
     h.handle_message = handle_message
     h.handle_callback = handle_callback
     _INSTALLED = True
