@@ -9,6 +9,28 @@ from bot import content_core_integration as core
 _INSTALLED = False
 
 
+def _publication_links_by_platform(video_id: int) -> dict[str, list[str]]:
+    rows = db.fetch_all(
+        """
+        SELECT platform, content_core_publication_id
+        FROM content_core_publication_links
+        WHERE video_id = %s
+        ORDER BY platform, content_core_publication_id
+        """,
+        (int(video_id),),
+    )
+    result: dict[str, list[str]] = {}
+    for row in rows:
+        platform = str(row.get("platform") or "").strip()
+        publication_id = str(row.get("content_core_publication_id") or "").strip()
+        if not platform or not publication_id:
+            continue
+        result.setdefault(platform, [])
+        if publication_id not in result[platform]:
+            result[platform].append(publication_id)
+    return result
+
+
 def install() -> None:
     """Treat Core technical-project publications as one bot production item.
 
@@ -34,7 +56,8 @@ def install() -> None:
             video = core._load_video(video_id)
             if not video:
                 raise
-            publication_links = core._refresh_publication_links(video)
+            core._refresh_publication_links(video)
+            publication_links = _publication_links_by_platform(video_id)
             submitted_platforms = {
                 platform for platform, _ in core._submitted_urls(video)
             }
