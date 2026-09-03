@@ -78,6 +78,10 @@ class ProjectWorkflowV1032Tests(unittest.TestCase):
             "raw-a",
         )
 
+    def test_content_core_integration_does_not_push_people_or_roles(self) -> None:
+        self.assertFalse(hasattr(core, "_sync_attributions"))
+        self.assertNotIn("production-attribution", " ".join(core._urls()))
+
 
 if __name__ == "__main__":
     unittest.main()
