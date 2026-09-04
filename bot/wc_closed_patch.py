@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from bot import (
+    admin_revision_comment,
     content_core_integration,
     flexible_first_link,
     period_report,
@@ -41,4 +42,5 @@ def install(author_reports) -> None:
     project_workflow_patch.install()
     flexible_first_link.install()
     vm_active_rules.install()
+    admin_revision_comment.install()
     content_core_integration.install_submission_hooks()
