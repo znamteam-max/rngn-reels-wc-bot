@@ -27,6 +27,31 @@ def _dimension_request(sheet_id: int, start: int, end: int, pixels: int) -> dict
     }
 
 
+def _row_height_request(sheet_id: int, start: int, end: int, pixels: int) -> dict[str, Any]:
+    return {
+        "updateDimensionProperties": {
+            "range": {
+                "sheetId": sheet_id,
+                "dimension": "ROWS",
+                "startIndex": start,
+                "endIndex": end,
+            },
+            "properties": {"pixelSize": pixels},
+            "fields": "pixelSize",
+        }
+    }
+
+
+def _no_wrap_request(sheet_id: int) -> dict[str, Any]:
+    return {
+        "repeatCell": {
+            "range": {"sheetId": sheet_id},
+            "cell": {"userEnteredFormat": {"wrapStrategy": "OVERFLOW_CELL"}},
+            "fields": "userEnteredFormat.wrapStrategy",
+        }
+    }
+
+
 def finalize_layout(*, service=None) -> dict[str, int]:
     settings = get_settings()
     if not settings.google_sheets_spreadsheet_id:
@@ -45,6 +70,21 @@ def finalize_layout(*, service=None) -> dict[str, int]:
         requests.append({"deleteSheet": {"sheetId": int(item["sheetId"])}})
 
     project_titles = set(reporting_sheet_v2.PROJECT_TAB_BY_CODE.values())
+    visible_titles = {
+        *project_titles,
+        reporting_sheet_v2.REPORT_SHEET,
+        reporting_sheet_v2.PROJECTS_SHEET,
+        *reporting_sheet_v2.OPERATIONS_SHEETS,
+    }
+    for title in visible_titles:
+        item = properties.get(title)
+        if not item:
+            continue
+        sheet_id = int(item["sheetId"])
+        requests.append(_no_wrap_request(sheet_id))
+        if title not in reporting_sheet_v2.OPERATIONS_SHEETS:
+            requests.append(_row_height_request(sheet_id, 0, 1, 28))
+
     for title in project_titles:
         item = properties.get(title)
         if not item:
