@@ -11,6 +11,7 @@ from bot import (
     payment_policy,
     reporting_sheet_style,
     reporting_sheet_v2,
+    short_tiktok_metrics,
 )
 from bot.config import get_settings
 from bot.github_oidc import GitHubOIDCError, validate_github_oidc_token
@@ -55,6 +56,7 @@ class handler(BaseHTTPRequestHandler):
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
         try:
+            short_tiktok_metrics.install()
             result = admin_tools.sync_reporting_sheets()
             active_videos = admin_tools._active_videos()
             v2 = reporting_sheet_v2.sync(active_videos)
