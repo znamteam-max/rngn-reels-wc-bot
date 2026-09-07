@@ -18,7 +18,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BASE='https://project-dcd2y.vercel.app/api/ops/august_aircuts_9f6a4c2e?key=9f6a4c2e7b814d5fa3c1e908d26b7a51&mode='
+          BASE='https://project-dcd2y.vercel.app/api/admin/migrate?aircut_backfill=9f6a4c2e7b814d5fa3c1e908d26b7a51&mode='
 
           for attempt in $(seq 1 60); do
             PREVIEW="$(curl -fsS --max-time 15 "${BASE}preview" 2>/dev/null || true)"
