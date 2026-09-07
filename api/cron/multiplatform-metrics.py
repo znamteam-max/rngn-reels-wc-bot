@@ -5,7 +5,7 @@ import json
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from bot import cross_platform_discovery, multiplatform_metrics, short_tiktok_metrics
+from bot import cross_platform_discovery, multiplatform_metrics, short_tiktok_metrics, title_cross_platform_discovery
 from bot.config import get_settings
 from bot.github_oidc import GitHubOIDCError, validate_github_oidc_token
 
@@ -48,6 +48,10 @@ class handler(BaseHTTPRequestHandler):
             return
         try:
             approved = multiplatform_metrics._approved_videos()
+            title_discovery = title_cross_platform_discovery.refresh(approved)
+            # Title discovery can fill links from Content Core videos-v2. Reload
+            # before the older caption fallback so it only sees truly missing platforms.
+            approved = multiplatform_metrics._approved_videos()
             discovery = cross_platform_discovery.refresh(approved)
             # Discovery can fill previously missing URLs/IDs, so reload the rows
             # before resolving share links and running the exact metrics matcher.
@@ -58,6 +62,7 @@ class handler(BaseHTTPRequestHandler):
             self._send_json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:500]})
             return
         result["source"] = source
+        result["title_discovery"] = title_discovery
         result["discovery"] = discovery
         result["short_tiktok"] = short_tiktok
         self._send_json(200, result)
