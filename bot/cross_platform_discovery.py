@@ -65,11 +65,7 @@ def _tokens(value: Any) -> list[str]:
     text = re.sub(r"https?://\S+", " ", text)
     text = re.sub(r"[@#][\w.-]+", " ", text, flags=re.UNICODE)
     text = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE)
-    return [
-        token
-        for token in text.split()
-        if len(token) >= 3 and token not in STOP_WORDS
-    ][:28]
+    return [token for token in text.split() if len(token) >= 3 and token not in STOP_WORDS][:28]
 
 
 def _normalized(value: Any) -> str:
@@ -182,11 +178,8 @@ def _candidate_safe_url(platform: str, row: dict[str, str]) -> tuple[str, str] |
     platform_id = _row_platform_id(row)
     if not platform_id:
         return None
-    if platform == "vk":
-        # Do not turn a generic wall-post URL into a clip identity. Existing
-        # Core VK data may still represent wall counters rather than clip counters.
-        if not re.search(r"(?:clip|video)-?\d+_\d+", url, re.I):
-            return None
+    if platform == "vk" and not re.search(r"(?:clip|video)-?\d+_\d+", url, re.I):
+        return None
     return url, platform_id
 
 
@@ -202,10 +195,7 @@ def _eligible_video(video: dict[str, Any], now: datetime) -> bool:
     return any(not _text(video.get(url_field)) for url_field, _ in PLATFORM_FIELDS.values())
 
 
-def _source_rows(
-    video: dict[str, Any],
-    rows_by_key: dict[tuple[str, str], list[dict[str, str]]],
-) -> list[dict[str, str]]:
+def _source_rows(video: dict[str, Any], rows_by_key: dict[tuple[str, str], list[dict[str, str]]]) -> list[dict[str, str]]:
     found: dict[str, dict[str, str]] = {}
     for key in _known_keys(video):
         for row in rows_by_key.get(key, []):
@@ -232,13 +222,7 @@ def _match_score(reference_captions: list[str], candidate_caption: str) -> tuple
     return best_score, best_common, exact
 
 
-def _choose_candidate(
-    *,
-    platform: str,
-    video: dict[str, Any],
-    source_rows: list[dict[str, str]],
-    all_rows: list[dict[str, str]],
-) -> tuple[dict[str, str] | None, str]:
+def _choose_candidate(*, platform: str, video: dict[str, Any], source_rows: list[dict[str, str]], all_rows: list[dict[str, str]]) -> tuple[dict[str, str] | None, str]:
     published = _video_dt(video)
     if published is None:
         return None, "no_publish_date"
@@ -246,12 +230,9 @@ def _choose_candidate(
     references = [_text(row.get("caption")) for row in source_rows if _text(row.get("caption"))]
     if not references:
         return None, "no_reference_caption"
-
     candidates: dict[str, tuple[dict[str, str], float, float, int, bool]] = {}
     for row in all_rows:
-        if _text(row.get("platform")) != platform:
-            continue
-        if _family(row.get("project")) != family:
+        if _text(row.get("platform")) != platform or _family(row.get("project")) != family:
             continue
         candidate_dt = _dt(row.get("published_at"))
         if candidate_dt is None:
@@ -264,29 +245,63 @@ def _choose_candidate(
             continue
         _, platform_id = safe
         score, common, exact = _match_score(references, _text(row.get("caption")))
-        qualifies = exact or score >= HIGH_SCORE or (score >= NEAR_SCORE and common >= 3)
-        if not qualifies:
+        if not (exact or score >= HIGH_SCORE or (score >= NEAR_SCORE and common >= 3)):
             continue
         previous = candidates.get(platform_id)
         item = (row, score, distance, common, exact)
         if previous is None or (score, -distance, common) > (previous[1], -previous[2], previous[3]):
             candidates[platform_id] = item
-
-    ranked = sorted(
-        candidates.values(),
-        key=lambda item: (1 if item[4] else 0, item[1], item[3], -item[2]),
-        reverse=True,
-    )
+    ranked = sorted(candidates.values(), key=lambda item: (1 if item[4] else 0, item[1], item[3], -item[2]), reverse=True)
     if not ranked:
         return None, "unmatched"
     if len(ranked) > 1:
-        top = ranked[0]
-        second = ranked[1]
-        top_rank = (1 if top[4] else 0, top[1])
-        second_rank = (1 if second[4] else 0, second[1])
-        if top_rank[0] == second_rank[0] and abs(top_rank[1] - second_rank[1]) < AMBIGUITY_MARGIN:
+        top, second = ranked[0], ranked[1]
+        if (1 if top[4] else 0) == (1 if second[4] else 0) and abs(top[1] - second[1]) < AMBIGUITY_MARGIN:
             return None, "ambiguous"
     return ranked[0][0], "matched"
+
+
+def _top_suggestions(*, platform: str, video: dict[str, Any], source_rows: list[dict[str, str]], all_rows: list[dict[str, str]], limit: int = 3) -> list[dict[str, Any]]:
+    published = _video_dt(video)
+    if published is None:
+        return []
+    family = _family(video.get("project_name") or video.get("project_code"))
+    references = [_text(row.get("caption")) for row in source_rows if _text(row.get("caption"))]
+    if not references:
+        return []
+    ranked: list[tuple[float, int, float, dict[str, str]]] = []
+    for row in all_rows:
+        if _text(row.get("platform")) != platform or _family(row.get("project")) != family:
+            continue
+        candidate_dt = _dt(row.get("published_at"))
+        if candidate_dt is None:
+            continue
+        distance = _hours(published, candidate_dt)
+        if distance > 7 * 24 or not _text(row.get("url")):
+            continue
+        score, common, exact = _match_score(references, _text(row.get("caption")))
+        ranked.append((1.0 if exact else score, common, distance, row))
+    ranked.sort(key=lambda item: (item[0], item[1], -item[2]), reverse=True)
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for score, common, distance, row in ranked:
+        key = _text(row.get("url")) or _text(row.get("publication_id"))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append({
+            "url": _text(row.get("url")),
+            "caption": _text(row.get("caption"))[:180],
+            "project": _text(row.get("project")),
+            "published_at": _text(row.get("published_at")),
+            "score": round(score, 3),
+            "common_tokens": common,
+            "hours": round(distance, 1),
+            "views": _text(row.get("views")),
+        })
+        if len(result) >= limit:
+            break
+    return result
 
 
 def _persist(video_id: int, additions: dict[str, tuple[str, str]]) -> int:
@@ -313,26 +328,14 @@ def _persist(video_id: int, additions: dict[str, tuple[str, str]]) -> int:
 def refresh(videos: list[dict[str, Any]]) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     targets = [video for video in videos if _eligible_video(video, now)]
-    result: dict[str, Any] = {
-        "videos_scanned": len(targets),
-        "links_added": 0,
-        "videos_updated": 0,
-        "matched": 0,
-        "ambiguous": 0,
-        "unmatched": 0,
-        "no_source": 0,
-        "mirror_rows": 0,
-        "details": [],
-    }
+    result: dict[str, Any] = {"videos_scanned": len(targets), "links_added": 0, "videos_updated": 0, "matched": 0, "ambiguous": 0, "unmatched": 0, "no_source": 0, "mirror_rows": 0, "details": []}
     if not targets:
         return result
-
     try:
         rows = _fetch_rows()
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"[:300]
         return result
-
     result["mirror_rows"] = len(rows)
     rows_by_key: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
@@ -342,32 +345,34 @@ def refresh(videos: list[dict[str, Any]]) -> dict[str, Any]:
         platform_id = _row_platform_id(row)
         if platform_id:
             rows_by_key[(platform, platform_id)].append(row)
-
     for video in targets:
         source = _source_rows(video, rows_by_key)
-        detail: dict[str, Any] = {"video_id": int(video["id"]), "added": {}, "status": {}}
+        detail: dict[str, Any] = {
+            "video_id": int(video["id"]),
+            "added": {},
+            "status": {},
+            "source_captions": [_text(row.get("caption"))[:180] for row in source if _text(row.get("caption"))][:3],
+            "suggestions": {},
+        }
         if not source:
             result["no_source"] += 1
             detail["status"]["source"] = "not_found"
             result["details"].append(detail)
             continue
-
         additions: dict[str, tuple[str, str]] = {}
         for platform, (url_field, _) in PLATFORM_FIELDS.items():
             if _text(video.get(url_field)):
                 continue
-            candidate, status = _choose_candidate(
-                platform=platform,
-                video=video,
-                source_rows=source,
-                all_rows=rows,
-            )
+            candidate, status = _choose_candidate(platform=platform, video=video, source_rows=source, all_rows=rows)
             detail["status"][platform] = status
             if status == "ambiguous":
                 result["ambiguous"] += 1
             elif status != "matched":
                 result["unmatched"] += 1
             if candidate is None:
+                suggestions = _top_suggestions(platform=platform, video=video, source_rows=source, all_rows=rows)
+                if suggestions:
+                    detail["suggestions"][platform] = suggestions
                 continue
             safe = _candidate_safe_url(platform, candidate)
             if safe is None:
@@ -375,12 +380,10 @@ def refresh(videos: list[dict[str, Any]]) -> dict[str, Any]:
             additions[platform] = safe
             detail["added"][platform] = safe[0]
             result["matched"] += 1
-
         if additions:
             changed = _persist(int(video["id"]), additions)
             if changed:
                 result["videos_updated"] += 1
                 result["links_added"] += len(additions)
         result["details"].append(detail)
-
     return result
