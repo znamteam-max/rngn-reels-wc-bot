@@ -20,38 +20,20 @@ jobs:
         shell: bash
         run: python -m pip install -r requirements.txt
 
-      - name: Inspect supplied links
+      - name: Inspect supplied VK links
         shell: bash
         run: |
           python - <<'PY'
           import csv, io, json, requests
           from bot import multiplatform_metrics
-          from bot.links import normalize_youtube, normalize_vk
 
-          youtube = [
-              'https://www.youtube.com/shorts/XnJ5OVMksw8',
-              'https://www.youtube.com/shorts/VOh8Z9l2SyY',
-              'https://www.youtube.com/shorts/YSLJi4Lnul8',
-              'https://www.youtube.com/shorts/Cz_KAH-StsQ',
+          wanted_ids = [
+              '456262542',
+              '456262491',
+              '456262433',
+              '456262393',
+              '456262387',
           ]
-          vk = [
-              'https://vk.ru/clips/got_ball?z=clip-202211208_456262542&feedType=ownerFeed&owner=-202211208',
-              'https://vk.ru/clips/got_ball?z=clip-202211208_456262491&feedType=ownerFeed&owner=-202211208',
-              'https://vk.ru/clips/got_ball?z=clip-202211208_456262433&feedType=ownerFeed&owner=-202211208',
-              'https://vk.ru/clips/got_ball?z=clip-202211208_456262393&feedType=ownerFeed&owner=-202211208',
-              'https://vk.ru/clips/got_ball?z=clip-202211208_456262387&feedType=ownerFeed&owner=-202211208',
-          ]
-
-          print('YOUTUBE OEMBED')
-          for url in youtube:
-              vid = normalize_youtube(url).external_id
-              try:
-                  r = requests.get('https://www.youtube.com/oembed', params={'url': f'https://www.youtube.com/watch?v={vid}', 'format': 'json'}, timeout=20)
-                  r.raise_for_status()
-                  data = r.json()
-                  print(json.dumps({'id': vid, 'title': data.get('title'), 'author_name': data.get('author_name')}, ensure_ascii=False))
-              except Exception as exc:
-                  print(json.dumps({'id': vid, 'error': f'{type(exc).__name__}: {exc}'}, ensure_ascii=False))
 
           bridge = multiplatform_metrics.CONTENT_CORE_BRIDGE_URL
           prefix, _, rest = bridge.partition('/mirror/')
@@ -60,40 +42,26 @@ jobs:
           r = requests.get(publications_url, timeout=60)
           r.raise_for_status()
           rows = list(csv.DictReader(io.StringIO(r.text), delimiter='\t'))
+          print('HEADERS', json.dumps(rows[0].keys() if rows else [], ensure_ascii=False, default=list))
 
-          wanted = set()
-          for url in youtube:
-              wanted.add(('youtube', normalize_youtube(url).external_id or ''))
-          for url in vk:
-              info = normalize_vk(url)
-              wanted.add(('vk', multiplatform_metrics._normalize_vk_id(info.external_id or info.url)))
-
-          print('CONTENT CORE EXACT ROWS')
+          found = 0
           for row in rows:
-              platform = str(row.get('platform') or '').strip()
-              url = str(row.get('url') or '').strip()
-              external = str(row.get('external_post_id') or '').strip()
-              pid = ''
-              try:
-                  if platform == 'youtube':
-                      pid = normalize_youtube(url).external_id or external
-                  elif platform == 'vk':
-                      info = normalize_vk(url) if url else None
-                      pid = multiplatform_metrics._normalize_vk_id((info.external_id or info.url) if info else external)
-              except Exception:
-                  if platform == 'vk':
-                      pid = multiplatform_metrics._normalize_vk_id(external or url)
-              if (platform, pid) not in wanted:
+              blob = ' '.join(str(value or '') for value in row.values())
+              matched = [item for item in wanted_ids if item in blob]
+              if not matched:
                   continue
+              found += 1
               print(json.dumps({
-                  'platform': platform,
-                  'id': pid,
+                  'matched_ids': matched,
+                  'platform': row.get('platform'),
                   'publication_id': row.get('publication_id'),
                   'raw_video_id': row.get('raw_video_id'),
                   'project': row.get('project'),
                   'published_at': row.get('published_at'),
+                  'external_post_id': row.get('external_post_id'),
                   'url': row.get('url'),
                   'caption': row.get('caption'),
                   'views': row.get('views'),
               }, ensure_ascii=False))
+          print('FOUND', found)
           PY
