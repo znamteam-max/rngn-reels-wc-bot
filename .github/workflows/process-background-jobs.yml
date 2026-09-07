@@ -1,9 +1,6 @@
 name: Process background jobs
 
 on:
-  push:
-    paths:
-      - "ops/world_cup_close.trigger"
   schedule:
     - cron: "2-57/5 * * * *"
   workflow_dispatch:
@@ -21,15 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Finalize World Cup dataset once
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --silent --show-error \
-            'https://project-dcd2y.vercel.app/api/internal/finalize-wc-20260818-7f3c' \
-            | tee finalize-world-cup.json
-          cat finalize-world-cup.json
-
       - name: Drain production queue
         shell: bash
         env:
