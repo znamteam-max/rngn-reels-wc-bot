@@ -12,6 +12,7 @@ from bot import db, multiplatform_metrics
 
 
 VIDEO_MIRROR_SUFFIX = "/videos-v2.tsv"
+DASHBOARD_VIDEOS_URL = "https://rngn-content-dashboard.rngn-znamteam.workers.dev/api/videos"
 TIKTOK_URL_COLUMN = "TikTok URL"
 PLATFORM_URL_COLUMNS = {
     "instagram": "Instagram URL",
@@ -65,7 +66,7 @@ def install() -> None:
     _INSTALLED = True
 
 
-def _core_row_id(row: dict[str, str], platform: str) -> str:
+def _core_row_id(row: dict[str, Any], platform: str) -> str:
     url = _text(row.get(PLATFORM_URL_COLUMNS[platform]))
     if not url:
         return ""
@@ -73,7 +74,7 @@ def _core_row_id(row: dict[str, str], platform: str) -> str:
     return _ORIGINAL_PLATFORM_ID(probe, platform)
 
 
-def _core_tiktok_id(row: dict[str, str]) -> str:
+def _core_tiktok_id(row: dict[str, Any]) -> str:
     url = _text(row.get(TIKTOK_URL_COLUMN))
     if not url:
         return ""
@@ -88,6 +89,41 @@ def _known_keys(video: dict[str, Any]) -> set[tuple[str, str]]:
         if value:
             keys.add((platform, value))
     return keys
+
+
+def _fetch_core_rows() -> tuple[list[dict[str, Any]], str]:
+    """Fetch linked Core videos, preferring the legacy TSV but surviving its 503s.
+
+    The Content Core dashboard reads the same D1 database with a newer linear
+    grouping implementation and keeps a short-lived cache. It is therefore a
+    safe read-only fallback when the older videos-v2 mirror exceeds Worker CPU.
+    """
+    mirror_error: Exception | None = None
+    try:
+        response = requests.get(_videos_v2_url(), timeout=45)
+        response.raise_for_status()
+        return list(csv.DictReader(io.StringIO(response.text), delimiter="\t")), "mirror"
+    except requests.RequestException as exc:
+        mirror_error = exc
+
+    try:
+        response = requests.get(DASHBOARD_VIDEOS_URL, timeout=45)
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload.get("rows") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise RuntimeError("Content Core dashboard /api/videos returned no rows")
+        clean_rows = [row for row in rows if isinstance(row, dict)]
+        if not clean_rows:
+            raise RuntimeError("Content Core dashboard /api/videos returned empty rows")
+        return clean_rows, "dashboard"
+    except Exception as dashboard_error:
+        if mirror_error is not None:
+            raise RuntimeError(
+                f"Content Core video lookup failed: mirror={type(mirror_error).__name__}; "
+                f"dashboard={type(dashboard_error).__name__}"
+            ) from dashboard_error
+        raise
 
 
 def _persist_resolved(resolved: dict[int, str]) -> int:
@@ -110,7 +146,7 @@ def _persist_resolved(resolved: dict[int, str]) -> int:
     return changed
 
 
-def refresh(videos: list[dict[str, Any]]) -> dict[str, int]:
+def refresh(videos: list[dict[str, Any]]) -> dict[str, Any]:
     install()
     targets = [
         video
@@ -125,13 +161,12 @@ def refresh(videos: list[dict[str, Any]]) -> dict[str, int]:
             "persisted": 0,
             "ambiguous": 0,
             "unmatched": 0,
+            "source": "none",
         }
 
-    response = requests.get(_videos_v2_url(), timeout=45)
-    response.raise_for_status()
-    rows = list(csv.DictReader(io.StringIO(response.text), delimiter="\t"))
+    rows, source = _fetch_core_rows()
 
-    rows_by_key: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    rows_by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         for platform in ("instagram", "youtube", "vk"):
             value = _core_row_id(row, platform)
@@ -142,7 +177,7 @@ def refresh(videos: list[dict[str, Any]]) -> dict[str, int]:
     ambiguous = 0
     unmatched = 0
     for video in targets:
-        candidates: dict[str, dict[str, str]] = {}
+        candidates: dict[str, dict[str, Any]] = {}
         for key in _known_keys(video):
             for row in rows_by_key.get(key, []):
                 tiktok_id = _core_tiktok_id(row)
@@ -164,4 +199,5 @@ def refresh(videos: list[dict[str, Any]]) -> dict[str, int]:
         "persisted": persisted,
         "ambiguous": ambiguous,
         "unmatched": unmatched,
+        "source": source,
     }
