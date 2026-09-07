@@ -56,8 +56,6 @@ def _player_payload(text: str) -> dict[str, Any]:
     marker = '"apiPrefetchCache"'
     pos = text.find(marker)
     while pos >= 0:
-        # In the direct-assignment variant the root `{` is immediately before
-        # apiPrefetchCache. Try nearby opening braces from nearest to farthest.
         left = max(0, pos - 4096)
         brace_positions = [idx for idx in range(left, pos + 1) if text[idx] == "{"]
         for start in reversed(brace_positions):
@@ -98,8 +96,44 @@ def _stats_from_item(item: dict[str, Any], *, owner_id: int, video_id: int) -> V
     )
 
 
+def _response_stats_from_text(text: str, expected_identity: str) -> VkClipStats | None:
+    """Decode the exact video.get response even when VK changes the page shell."""
+    owner_text, video_text = expected_identity.split("_", 1)
+    owner_id = int(owner_text)
+    video_id = int(video_text)
+    request_re = re.compile(r'"videos"\s*:\s*"' + re.escape(expected_identity) + r'"')
+    for request_match in request_re.finditer(text):
+        limit = min(len(text), request_match.end() + 30000)
+        response_pos = text.find('"response"', request_match.end(), limit)
+        if response_pos < 0:
+            continue
+        colon = text.find(":", response_pos + len('"response"'), limit)
+        if colon < 0:
+            continue
+        start = colon + 1
+        while start < limit and text[start].isspace():
+            start += 1
+        if start >= limit or text[start] != "{":
+            continue
+        response = _decode_object_at(text, start)
+        if not response:
+            continue
+        for item in response.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            stats = _stats_from_item(item, owner_id=owner_id, video_id=video_id)
+            if stats is not None:
+                stats.raw_data["parser"] = "video_get_response_fallback"
+                return stats
+    return None
+
+
 def _fallback_stats_from_text(text: str, expected_identity: str) -> VkClipStats | None:
-    """Recover counters from a VK video.get JSON fragment if page shell changed."""
+    """Last-resort bounded counter recovery around the exact VK identity."""
+    exact = _response_stats_from_text(text, expected_identity)
+    if exact is not None:
+        return exact
+
     owner_text, video_text = expected_identity.split("_", 1)
     owner_id = int(owner_text)
     video_id = int(video_text)
