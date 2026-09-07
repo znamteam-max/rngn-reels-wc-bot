@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Inspect supplied VK clip pages
+      - name: Extract supplied VK clip JSON metadata
         shell: bash
         run: |
           python - <<'PY'
@@ -24,40 +24,40 @@ jobs:
 
           ids = ['456262542','456262491','456262433','456262393','456262387']
           headers = {'User-Agent': 'Mozilla/5.0'}
+          key_re = re.compile(r'"(md_title|md_description|title|description|name|text|date|views|views_count)"\s*:\s*("(?:\\.|[^"\\])*")', re.I)
           for clip_id in ids:
-              urls = [
-                  f'https://vkvideo.ru/video_ext.php?oid=-202211208&id={clip_id}',
-                  f'https://vk.com/video-202211208_{clip_id}',
-                  f'https://vk.ru/video-202211208_{clip_id}',
-              ]
-              out = {'id': clip_id, 'attempts': []}
-              for url in urls:
+              url = f'https://vkvideo.ru/video_ext.php?oid=-202211208&id={clip_id}'
+              r = requests.get(url, headers=headers, timeout=30)
+              r.raise_for_status()
+              text = r.text
+              values = []
+              seen = set()
+              for m in key_re.finditer(text):
+                  key = m.group(1)
                   try:
-                      r = requests.get(url, headers=headers, timeout=25, allow_redirects=True)
-                      text = r.text
-                      meta = {}
-                      for key in ('og:title','og:description','twitter:title','twitter:description'):
-                          patterns = [
-                              rf'<meta[^>]+property=["\']{re.escape(key)}["\'][^>]+content=["\']([^"\']*)',
-                              rf'<meta[^>]+content=["\']([^"\']*)["\'][^>]+property=["\']{re.escape(key)}["\']',
-                              rf'<meta[^>]+name=["\']{re.escape(key)}["\'][^>]+content=["\']([^"\']*)',
-                          ]
-                          for p in patterns:
-                              m = re.search(p, text, re.I)
-                              if m:
-                                  meta[key] = html.unescape(m.group(1))[:500]
-                                  break
-                      title = ''
-                      mt = re.search(r'<title[^>]*>(.*?)</title>', text, re.I|re.S)
-                      if mt:
-                          title = html.unescape(re.sub(r'\s+', ' ', mt.group(1))).strip()[:500]
-                      out['attempts'].append({
-                          'url': url, 'status': r.status_code, 'final_url': r.url,
-                          'title': title, 'meta': meta,
-                          'contains_id': clip_id in text,
-                          'length': len(text),
-                      })
-                  except Exception as exc:
-                      out['attempts'].append({'url': url, 'error': f'{type(exc).__name__}: {exc}'})
-              print(json.dumps(out, ensure_ascii=False))
+                      value = json.loads(m.group(2))
+                  except Exception:
+                      continue
+                  value = html.unescape(str(value)).strip()
+                  if not value or value in seen or len(value) > 700:
+                      continue
+                  seen.add(value)
+                  values.append({'key': key, 'value': value})
+              # Also surface compact snippets around the clip id and likely player metadata keys.
+              snippets = []
+              for needle in (clip_id, 'md_title', 'video_title', 'description', 'author_name'):
+                  start = 0
+                  count = 0
+                  while count < 3:
+                      pos = text.find(needle, start)
+                      if pos < 0:
+                          break
+                      left = max(0, pos - 250)
+                      right = min(len(text), pos + 600)
+                      snippet = re.sub(r'\s+', ' ', html.unescape(text[left:right])).strip()
+                      if snippet not in snippets:
+                          snippets.append(snippet)
+                      start = pos + len(needle)
+                      count += 1
+              print(json.dumps({'id': clip_id, 'values': values[:80], 'snippets': snippets[:10]}, ensure_ascii=False))
           PY
