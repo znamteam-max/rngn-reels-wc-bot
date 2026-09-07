@@ -5,6 +5,7 @@ import io
 import re
 from collections import defaultdict
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -20,6 +21,12 @@ PLATFORM_URL_COLUMNS = {
     "vk": "VK URL",
 }
 SHORT_TIKTOK_RE = re.compile(r"https?://(?:www\.)?tiktok\.com/t/([^/?#]+)", re.I)
+TIKTOK_VIDEO_RE = re.compile(r"/video/(\d+)(?:[/?#]|$)", re.I)
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/152.0.0.0 Safari/537.36"
+)
 
 _ORIGINAL_PLATFORM_ID = multiplatform_metrics._platform_id
 _INSTALLED = False
@@ -41,6 +48,43 @@ def _videos_v2_url() -> str:
 
 def _is_short_tiktok(video: dict[str, Any]) -> bool:
     return bool(SHORT_TIKTOK_RE.search(_text(video.get("tiktok_url"))))
+
+
+def _numeric_tiktok_id(url: str) -> str:
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if host != "tiktok.com" and not host.endswith(".tiktok.com"):
+        return ""
+    match = TIKTOK_VIDEO_RE.search(parsed.path)
+    return match.group(1) if match else ""
+
+
+def _resolve_short_url(url: str) -> str:
+    """Resolve an author-supplied TikTok share URL to its exact numeric video id.
+
+    We only accept a final URL that remains on a TikTok hostname and contains
+    the canonical /video/<digits> path. A final 403/429 is still acceptable for
+    identity purposes because requests has already followed TikTok's redirect
+    chain and response.url is the canonical location.
+    """
+    if not SHORT_TIKTOK_RE.search(url):
+        return ""
+    try:
+        response = requests.get(
+            url,
+            headers={"User-Agent": USER_AGENT},
+            allow_redirects=True,
+            stream=True,
+            timeout=20,
+        )
+        try:
+            return _numeric_tiktok_id(str(response.url or ""))
+        finally:
+            response.close()
+    except requests.RequestException:
+        return ""
 
 
 def platform_id(video: dict[str, Any], platform: str) -> str:
@@ -92,12 +136,7 @@ def _known_keys(video: dict[str, Any]) -> set[tuple[str, str]]:
 
 
 def _fetch_core_rows() -> tuple[list[dict[str, Any]], str]:
-    """Fetch linked Core videos, preferring the legacy TSV but surviving its 503s.
-
-    The Content Core dashboard reads the same D1 database with a newer linear
-    grouping implementation and keeps a short-lived cache. It is therefore a
-    safe read-only fallback when the older videos-v2 mirror exceeds Worker CPU.
-    """
+    """Read linked Core videos if direct TikTok resolution did not work."""
     mirror_error: Exception | None = None
     try:
         response = requests.get(_videos_v2_url(), timeout=45)
@@ -146,6 +185,36 @@ def _persist_resolved(resolved: dict[int, str]) -> int:
     return changed
 
 
+def _resolve_from_core(
+    videos: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+) -> tuple[dict[int, str], int, int]:
+    rows_by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        for platform in ("instagram", "youtube", "vk"):
+            value = _core_row_id(row, platform)
+            if value:
+                rows_by_key[(platform, value)].append(row)
+
+    resolved: dict[int, str] = {}
+    ambiguous = 0
+    unmatched = 0
+    for video in videos:
+        candidates: set[str] = set()
+        for key in _known_keys(video):
+            for row in rows_by_key.get(key, []):
+                tiktok_id = _core_tiktok_id(row)
+                if tiktok_id:
+                    candidates.add(tiktok_id)
+        if len(candidates) == 1:
+            resolved[int(video["id"])] = next(iter(candidates))
+        elif len(candidates) > 1:
+            ambiguous += 1
+        else:
+            unmatched += 1
+    return resolved, ambiguous, unmatched
+
+
 def refresh(videos: list[dict[str, Any]]) -> dict[str, Any]:
     install()
     targets = [
@@ -159,45 +228,61 @@ def refresh(videos: list[dict[str, Any]]) -> dict[str, Any]:
             "short_links": 0,
             "resolved": 0,
             "persisted": 0,
+            "direct_resolved": 0,
+            "core_resolved": 0,
             "ambiguous": 0,
             "unmatched": 0,
+            "core_lookup_failed": 0,
             "source": "none",
         }
 
-    rows, source = _fetch_core_rows()
-
-    rows_by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        for platform in ("instagram", "youtube", "vk"):
-            value = _core_row_id(row, platform)
-            if value:
-                rows_by_key[(platform, value)].append(row)
-
     resolved: dict[int, str] = {}
+    remaining: list[dict[str, Any]] = []
+    for video in targets:
+        tiktok_id = _resolve_short_url(_text(video.get("tiktok_url")))
+        if tiktok_id:
+            resolved[int(video["id"])] = tiktok_id
+        else:
+            remaining.append(video)
+
+    direct_resolved = len(resolved)
+    core_resolved = 0
     ambiguous = 0
     unmatched = 0
-    for video in targets:
-        candidates: dict[str, dict[str, Any]] = {}
-        for key in _known_keys(video):
-            for row in rows_by_key.get(key, []):
-                tiktok_id = _core_tiktok_id(row)
-                if tiktok_id:
-                    candidates[tiktok_id] = row
-        if len(candidates) == 1:
-            resolved[int(video["id"])] = next(iter(candidates))
-        elif len(candidates) > 1:
-            ambiguous += 1
-        else:
-            unmatched += 1
+    core_lookup_failed = 0
+    core_source = ""
+
+    if remaining:
+        try:
+            rows, core_source = _fetch_core_rows()
+            core_matches, ambiguous, unmatched = _resolve_from_core(remaining, rows)
+            resolved.update(core_matches)
+            core_resolved = len(core_matches)
+        except Exception:
+            # Do not discard exact IDs already resolved from the submitted links
+            # merely because Content Core's heavier read endpoints are degraded.
+            core_lookup_failed = 1
+            unmatched = len(remaining)
 
     _CANONICAL_TIKTOK_BY_VIDEO_ID.clear()
     _CANONICAL_TIKTOK_BY_VIDEO_ID.update(resolved)
     persisted = _persist_resolved(resolved)
+
+    sources: list[str] = []
+    if direct_resolved:
+        sources.append("redirect")
+    if core_resolved and core_source:
+        sources.append(core_source)
+    source = "+".join(sources) if sources else (core_source or "none")
+
     return {
         "short_links": len(targets),
         "resolved": len(resolved),
         "persisted": persisted,
+        "direct_resolved": direct_resolved,
+        "core_resolved": core_resolved,
         "ambiguous": ambiguous,
         "unmatched": unmatched,
+        "core_lookup_failed": core_lookup_failed,
         "source": source,
     }
