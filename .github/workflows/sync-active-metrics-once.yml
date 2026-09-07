@@ -20,20 +20,20 @@ jobs:
       REPORTING_URL: https://project-dcd2y.vercel.app/api/cron/reporting
       OIDC_AUDIENCE: rngn-reels-wc-worker
     steps:
-      - name: Wait for production v1.0.40
+      - name: Wait for production v1.0.41
         shell: bash
         run: |
           set -euo pipefail
           for attempt in $(seq 1 90); do
             BODY="$(curl --fail --silent --show-error --max-time 15 "${HEALTH_URL}" || true)"
             VERSION="$(jq -r '.version // ""' <<<"${BODY}" 2>/dev/null || true)"
-            if [[ "${VERSION}" == "1.0.40" ]]; then
-              echo "Production v1.0.40 is ready."
+            if [[ "${VERSION}" == "1.0.41" ]]; then
+              echo "Production v1.0.41 is ready."
               exit 0
             fi
             sleep 10
           done
-          echo "Timed out waiting for v1.0.40" >&2
+          echo "Timed out waiting for v1.0.41" >&2
           exit 1
 
       - name: Get GitHub OIDC token
@@ -61,7 +61,7 @@ jobs:
           cat /tmp/metrics.json
           echo
           test "${STATUS}" = "200"
-          jq -e '.ok == true' /tmp/metrics.json >/dev/null
+          jq -e '.ok == true and .short_tiktok.short_links >= 1 and .short_tiktok.resolved >= 1' /tmp/metrics.json >/dev/null
 
       - name: Refresh human reporting after Sheets quota window
         shell: bash

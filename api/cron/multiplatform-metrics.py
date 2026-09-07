@@ -5,9 +5,9 @@ import json
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
+from bot import multiplatform_metrics, short_tiktok_metrics
 from bot.config import get_settings
 from bot.github_oidc import GitHubOIDCError, validate_github_oidc_token
-from bot.multiplatform_metrics import sync_multiplatform_metrics
 
 
 def _json_bytes(payload: dict[str, Any]) -> bytes:
@@ -47,11 +47,14 @@ class handler(BaseHTTPRequestHandler):
             self._send_json(401, {"ok": False, "error": "unauthorized"})
             return
         try:
-            result = sync_multiplatform_metrics()
+            approved = multiplatform_metrics._approved_videos()
+            short_tiktok = short_tiktok_metrics.refresh(approved)
+            result = multiplatform_metrics.sync_multiplatform_metrics()
         except Exception as exc:
             self._send_json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:500]})
             return
         result["source"] = source
+        result["short_tiktok"] = short_tiktok
         self._send_json(200, result)
 
     def do_GET(self) -> None:
