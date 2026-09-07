@@ -16,48 +16,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract supplied VK clip JSON metadata
+      - name: Install Python dependencies
+        shell: bash
+        run: python -m pip install -r requirements.txt
+
+      - name: Read source Instagram captions
         shell: bash
         run: |
           python - <<'PY'
-          import html, json, re, requests
+          import csv, io, json, requests
+          from bot import multiplatform_metrics
 
-          ids = ['456262542','456262491','456262433','456262393','456262387']
-          headers = {'User-Agent': 'Mozilla/5.0'}
-          key_re = re.compile(r'"(md_title|md_description|title|description|name|text|date|views|views_count)"\s*:\s*("(?:\\.|[^"\\])*")', re.I)
-          for clip_id in ids:
-              url = f'https://vkvideo.ru/video_ext.php?oid=-202211208&id={clip_id}'
-              r = requests.get(url, headers=headers, timeout=30)
-              r.raise_for_status()
-              text = r.text
-              values = []
-              seen = set()
-              for m in key_re.finditer(text):
-                  key = m.group(1)
-                  try:
-                      value = json.loads(m.group(2))
-                  except Exception:
+          wanted = {'DbwC0kAthzg': 363, 'Dbxi8ZnNcdN': 371}
+          bridge = multiplatform_metrics.CONTENT_CORE_BRIDGE_URL
+          prefix, _, rest = bridge.partition('/mirror/')
+          token = rest.split('/', 1)[0]
+          url = f"{prefix.rstrip('/')}/mirror/{token}/publications.tsv"
+          r = requests.get(url, timeout=60)
+          r.raise_for_status()
+          rows = csv.DictReader(io.StringIO(r.text), delimiter='\t')
+          found = 0
+          for row in rows:
+              if str(row.get('platform') or '') != 'instagram':
+                  continue
+              blob = ' '.join(str(v or '') for v in row.values())
+              for shortcode, video_id in wanted.items():
+                  if shortcode not in blob:
                       continue
-                  value = html.unescape(str(value)).strip()
-                  if not value or value in seen or len(value) > 700:
-                      continue
-                  seen.add(value)
-                  values.append({'key': key, 'value': value})
-              # Also surface compact snippets around the clip id and likely player metadata keys.
-              snippets = []
-              for needle in (clip_id, 'md_title', 'video_title', 'description', 'author_name'):
-                  start = 0
-                  count = 0
-                  while count < 3:
-                      pos = text.find(needle, start)
-                      if pos < 0:
-                          break
-                      left = max(0, pos - 250)
-                      right = min(len(text), pos + 600)
-                      snippet = re.sub(r'\s+', ' ', html.unescape(text[left:right])).strip()
-                      if snippet not in snippets:
-                          snippets.append(snippet)
-                      start = pos + len(needle)
-                      count += 1
-              print(json.dumps({'id': clip_id, 'values': values[:80], 'snippets': snippets[:10]}, ensure_ascii=False))
+                  found += 1
+                  print(json.dumps({
+                      'video_id': video_id,
+                      'instagram_id': shortcode,
+                      'published_at': row.get('published_at'),
+                      'caption': row.get('caption'),
+                      'url': row.get('url'),
+                  }, ensure_ascii=False))
+          print('FOUND', found)
           PY
