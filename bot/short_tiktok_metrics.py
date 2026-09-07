@@ -8,7 +8,7 @@ from typing import Any
 
 import requests
 
-from bot import multiplatform_metrics
+from bot import db, multiplatform_metrics
 
 
 VIDEO_MIRROR_SUFFIX = "/videos-v2.tsv"
@@ -50,10 +50,9 @@ def platform_id(video: dict[str, Any], platform: str) -> str:
     canonical = _CANONICAL_TIKTOK_BY_VIDEO_ID.get(video_id)
     if canonical:
         return canonical
-    # For reporting/coverage, a supplied short TikTok URL still counts as a
-    # supplied publication even when a fresh serverless process has not loaded
-    # the Content Core alias map. This sentinel is never written as a metric ID
-    # because the metrics endpoint calls refresh() before matching.
+    # A short TikTok share URL is still a supplied publication for coverage.
+    # The metrics endpoint calls refresh() before matching, so this sentinel is
+    # never persisted as a platform metric identifier.
     match = SHORT_TIKTOK_RE.search(_text(video.get("tiktok_url")))
     return f"short:{match.group(1)}" if match else ""
 
@@ -91,6 +90,26 @@ def _known_keys(video: dict[str, Any]) -> set[tuple[str, str]]:
     return keys
 
 
+def _persist_resolved(resolved: dict[int, str]) -> int:
+    if not resolved:
+        return 0
+    changed = 0
+    with db.transaction() as conn:
+        with conn.cursor() as cur:
+            for video_id, tiktok_id in resolved.items():
+                cur.execute(
+                    """
+                    UPDATE videos
+                    SET tiktok_id = %s, updated_at = now()
+                    WHERE id = %s
+                      AND COALESCE(tiktok_id, '') = ''
+                    """,
+                    (tiktok_id, video_id),
+                )
+                changed += int(cur.rowcount or 0)
+    return changed
+
+
 def refresh(videos: list[dict[str, Any]]) -> dict[str, int]:
     install()
     targets = [
@@ -100,7 +119,13 @@ def refresh(videos: list[dict[str, Any]]) -> dict[str, int]:
     ]
     if not targets:
         _CANONICAL_TIKTOK_BY_VIDEO_ID.clear()
-        return {"short_links": 0, "resolved": 0, "ambiguous": 0, "unmatched": 0}
+        return {
+            "short_links": 0,
+            "resolved": 0,
+            "persisted": 0,
+            "ambiguous": 0,
+            "unmatched": 0,
+        }
 
     response = requests.get(_videos_v2_url(), timeout=45)
     response.raise_for_status()
@@ -132,9 +157,11 @@ def refresh(videos: list[dict[str, Any]]) -> dict[str, int]:
 
     _CANONICAL_TIKTOK_BY_VIDEO_ID.clear()
     _CANONICAL_TIKTOK_BY_VIDEO_ID.update(resolved)
+    persisted = _persist_resolved(resolved)
     return {
         "short_links": len(targets),
         "resolved": len(resolved),
+        "persisted": persisted,
         "ambiguous": ambiguous,
         "unmatched": unmatched,
     }
