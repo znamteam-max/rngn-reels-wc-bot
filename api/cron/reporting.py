@@ -4,7 +4,7 @@ import json
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from bot import admin_tools, payment_policy
+from bot import admin_tools, payment_policy, reporting_sheet_v2
 from bot.config import get_settings
 
 
@@ -35,10 +35,11 @@ class handler(BaseHTTPRequestHandler):
             return
         try:
             result = admin_tools.sync_reporting_sheets()
+            v2 = reporting_sheet_v2.sync(admin_tools._active_videos())
         except Exception as exc:
             self._send_json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]})
             return
-        self._send_json(200, {"ok": True, **result})
+        self._send_json(200, {"ok": True, **result, "reporting_v2": v2})
 
     def do_HEAD(self) -> None:
         self.do_GET()
