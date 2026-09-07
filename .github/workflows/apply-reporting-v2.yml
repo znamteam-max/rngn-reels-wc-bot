@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Wait for v1.0.39 production and rebuild reporting sheets
+      - name: Rebuild reporting sheets and expose failures
         shell: bash
         env:
           HEALTH_URL: https://project-dcd2y.vercel.app/api/health
@@ -44,11 +44,16 @@ jobs:
           OIDC_TOKEN="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert isinstance(value,str) and value; print(value)' <<<"${OIDC_RESPONSE}")"
           echo "::add-mask::${OIDC_TOKEN}"
 
-          curl --fail --silent --show-error --max-time 300 \
+          STATUS="$(curl --silent --show-error --max-time 300 \
             --request POST \
             --header "Authorization: Bearer ${OIDC_TOKEN}" \
-            "${REPORTING_URL}" \
-            | tee reporting-v2.json
-
-          jq -e '.ok == true and .reporting_v2.active_projects >= 1 and .reporting_layout.stale_tabs_deleted >= 0' reporting-v2.json >/dev/null
+            --output reporting-v2.json \
+            --write-out '%{http_code}' \
+            "${REPORTING_URL}")"
+          echo "Reporting HTTP ${STATUS}"
           cat reporting-v2.json
+          echo
+          if [[ ! "${STATUS}" =~ ^2 ]]; then
+            exit 2
+          fi
+          jq -e '.ok == true and .reporting_v2.active_projects >= 1 and .reporting_layout.stale_tabs_deleted >= 0' reporting-v2.json >/dev/null
