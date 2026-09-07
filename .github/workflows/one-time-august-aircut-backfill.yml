@@ -1,0 +1,48 @@
+name: One-time August aircut backfill
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/one-time-august-aircut-backfill.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Wait for production, preview candidates, then apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://project-dcd2y.vercel.app/api/ops/august_aircuts_9f6a4c2e?key=9f6a4c2e7b814d5fa3c1e908d26b7a51&mode='
+
+          for attempt in $(seq 1 60); do
+            PREVIEW="$(curl -fsS --max-time 15 "${BASE}preview" 2>/dev/null || true)"
+            if jq -e '.ok == true' <<<"$PREVIEW" >/dev/null 2>&1; then
+              echo "PREVIEW=$PREVIEW"
+              COUNT="$(jq -r '.candidate_count' <<<"$PREVIEW")"
+              FIRST_ID="$(jq -r '.candidates[0].id // 0' <<<"$PREVIEW")"
+              if [[ "$COUNT" != "8" ]]; then
+                echo "Expected exactly 8 pending Vzyal Myach August candidates, got $COUNT"
+                exit 2
+              fi
+              if [[ "$FIRST_ID" != "351" ]]; then
+                echo "Safety stop: expected #351 to be the first candidate, got #$FIRST_ID"
+                exit 3
+              fi
+
+              APPLY="$(curl -fsS --max-time 30 "${BASE}apply")"
+              echo "APPLY=$APPLY"
+              jq -e '.ok == true and .candidate_count == 8 and .candidates[0].id == 351' <<<"$APPLY" >/dev/null
+              exit 0
+            fi
+            echo "Production endpoint not ready yet (attempt $attempt/60)"
+            sleep 10
+          done
+
+          echo "Timed out waiting for the v1.0.38 production endpoint"
+          exit 4
