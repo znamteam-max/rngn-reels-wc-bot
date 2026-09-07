@@ -6,6 +6,7 @@ from bot import (
     flexible_first_link,
     period_report,
     project_workflow_patch,
+    revision_type_switch,
     vm_active_rules,
 )
 
@@ -43,4 +44,5 @@ def install(author_reports) -> None:
     flexible_first_link.install()
     vm_active_rules.install()
     admin_revision_comment.install()
+    revision_type_switch.install()
     content_core_integration.install_submission_hooks()
