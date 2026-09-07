@@ -5,7 +5,13 @@ import json
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from bot import admin_tools, payment_policy, reporting_sheet_style, reporting_sheet_v2
+from bot import (
+    active_author_performance,
+    admin_tools,
+    payment_policy,
+    reporting_sheet_style,
+    reporting_sheet_v2,
+)
 from bot.config import get_settings
 from bot.github_oidc import GitHubOIDCError, validate_github_oidc_token
 
@@ -50,7 +56,9 @@ class handler(BaseHTTPRequestHandler):
             return
         try:
             result = admin_tools.sync_reporting_sheets()
-            v2 = reporting_sheet_v2.sync(admin_tools._active_videos())
+            active_videos = admin_tools._active_videos()
+            v2 = reporting_sheet_v2.sync(active_videos)
+            author_performance = active_author_performance.sync(active_videos)
             layout = reporting_sheet_style.finalize_layout()
         except Exception as exc:
             self._send_json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]})
@@ -62,6 +70,7 @@ class handler(BaseHTTPRequestHandler):
                 "source": source,
                 **result,
                 "reporting_v2": v2,
+                "author_performance": author_performance,
                 "reporting_layout": layout,
             },
         )
