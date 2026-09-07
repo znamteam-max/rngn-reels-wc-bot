@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from bot import (
     admin_revision_comment,
+    aircut_presentation,
     content_core_integration,
     flexible_first_link,
     period_report,
@@ -45,4 +46,5 @@ def install(author_reports) -> None:
     vm_active_rules.install()
     admin_revision_comment.install()
     revision_type_switch.install()
+    aircut_presentation.install()
     content_core_integration.install_submission_hooks()
