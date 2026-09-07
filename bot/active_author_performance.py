@@ -139,6 +139,12 @@ def _dimension_request(sheet_id: int, start: int, end: int, pixels: int) -> dict
     }
 
 
+def _target_sheet_index(properties: dict[str, dict[str, Any]]) -> int:
+    # The author summary is the entry point for payroll review and must stay
+    # the leftmost visible tab even after automated reporting rebuilds.
+    return 0
+
+
 def sync(videos: list[dict[str, Any]], *, service=None) -> dict[str, int]:
     settings = get_settings()
     if not settings.google_sheets_spreadsheet_id:
@@ -161,8 +167,7 @@ def sync(videos: list[dict[str, Any]], *, service=None) -> dict[str, int]:
     item = properties.get(SHEET_NAME)
     if item:
         sheet_id = int(item["sheetId"])
-        report = properties.get(reporting_sheet_v2.REPORT_SHEET)
-        target_index = int(report.get("index", 0)) + 1 if report else 0
+        target_index = _target_sheet_index(properties)
         requests: list[dict[str, Any]] = [
             {"clearBasicFilter": {"sheetId": sheet_id}},
             {
