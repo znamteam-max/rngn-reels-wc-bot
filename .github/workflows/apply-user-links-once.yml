@@ -1,0 +1,111 @@
+name: Apply supplied cross-platform links once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-user-links-once.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      HEALTH_URL: https://project-dcd2y.vercel.app/api/health
+      METRICS_URL: https://project-dcd2y.vercel.app/api/cron/multiplatform-metrics
+      REPORTING_URL: https://project-dcd2y.vercel.app/api/cron/reporting
+      OIDC_AUDIENCE: rngn-reels-wc-worker
+    steps:
+      - name: Wait for production v1.0.47
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 90); do
+            BODY="$(curl --fail --silent --show-error --max-time 15 "${HEALTH_URL}" || true)"
+            VERSION="$(jq -r '.version // ""' <<<"${BODY}" 2>/dev/null || true)"
+            if [[ "${VERSION}" == "1.0.47" ]]; then
+              echo "Production v1.0.47 is ready."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Timed out waiting for v1.0.47" >&2
+          exit 1
+
+      - name: Get GitHub OIDC token
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESPONSE="$(curl --fail --silent --show-error \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUDIENCE}")"
+          TOKEN="$(python -c 'import json,sys; value=json.load(sys.stdin).get("value"); assert value; print(value)' <<<"${RESPONSE}")"
+          echo "::add-mask::${TOKEN}"
+          printf '%s' "${TOKEN}" > /tmp/oidc_token
+
+      - name: Apply links and collect metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat /tmp/oidc_token)"
+          cat > /tmp/payload.json <<'JSON'
+          {
+            "manual_links": [
+              {"video_id":366,"platform":"youtube","url":"https://www.youtube.com/shorts/XnJ5OVMksw8"},
+              {"video_id":370,"platform":"youtube","url":"https://www.youtube.com/shorts/VOh8Z9l2SyY"},
+              {"video_id":367,"platform":"youtube","url":"https://www.youtube.com/shorts/YSLJi4Lnul8"},
+              {"video_id":368,"platform":"youtube","url":"https://www.youtube.com/shorts/Cz_KAH-StsQ"},
+              {"video_id":363,"platform":"vk","url":"https://vk.ru/clips/got_ball?z=clip-202211208_456262387&feedType=ownerFeed&owner=-202211208"},
+              {"video_id":371,"platform":"vk","url":"https://vk.ru/clips/got_ball?z=clip-202211208_456262393&feedType=ownerFeed&owner=-202211208"},
+              {"video_id":364,"platform":"vk","url":"https://vk.ru/clips/got_ball?z=clip-202211208_456262433&feedType=ownerFeed&owner=-202211208"},
+              {"video_id":366,"platform":"vk","url":"https://vk.ru/clips/got_ball?z=clip-202211208_456262491&feedType=ownerFeed&owner=-202211208"},
+              {"video_id":370,"platform":"vk","url":"https://vk.ru/clips/got_ball?z=clip-202211208_456262542&feedType=ownerFeed&owner=-202211208"}
+            ]
+          }
+          JSON
+
+          for attempt in 1 2 3; do
+            STATUS="$(curl --silent --show-error --max-time 360 \
+              --request POST \
+              --header "Authorization: Bearer ${TOKEN}" \
+              --header "Content-Type: application/json" \
+              --data-binary @/tmp/payload.json \
+              --output /tmp/metrics.json \
+              --write-out '%{http_code}' \
+              "${METRICS_URL}")"
+            cat /tmp/metrics.json
+            echo
+            if [[ "${STATUS}" = "200" ]]; then
+              jq -e '.ok == true and .manual_links.rejected == 0 and ((.manual_links.applied + .manual_links.noop) == 9)' /tmp/metrics.json >/dev/null
+              jq -e '[.vk_live.details[] | select((.video_id == 363 or .video_id == 371 or .video_id == 364 or .video_id == 366 or .video_id == 370) and .status == "ok")] | length == 5' /tmp/metrics.json >/dev/null
+              exit 0
+            fi
+            if [[ "${attempt}" != "3" ]]; then sleep 70; fi
+          done
+          exit 2
+
+      - name: Refresh human reporting after Sheets quota window
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat /tmp/oidc_token)"
+          sleep 70
+          for attempt in 1 2 3; do
+            STATUS="$(curl --silent --show-error --max-time 360 \
+              --request POST \
+              --header "Authorization: Bearer ${TOKEN}" \
+              --output /tmp/reporting.json \
+              --write-out '%{http_code}' \
+              "${REPORTING_URL}")"
+            cat /tmp/reporting.json
+            echo
+            if [[ "${STATUS}" = "200" ]] && jq -e '.ok == true and .author_performance.rows >= 1' /tmp/reporting.json >/dev/null; then
+              exit 0
+            fi
+            if [[ "${attempt}" != "3" ]]; then sleep 70; fi
+          done
+          exit 2
