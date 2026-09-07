@@ -5,7 +5,7 @@ import json
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from bot import multiplatform_metrics, short_tiktok_metrics
+from bot import cross_platform_discovery, multiplatform_metrics, short_tiktok_metrics
 from bot.config import get_settings
 from bot.github_oidc import GitHubOIDCError, validate_github_oidc_token
 
@@ -48,12 +48,17 @@ class handler(BaseHTTPRequestHandler):
             return
         try:
             approved = multiplatform_metrics._approved_videos()
+            discovery = cross_platform_discovery.refresh(approved)
+            # Discovery can fill previously missing URLs/IDs, so reload the rows
+            # before resolving share links and running the exact metrics matcher.
+            approved = multiplatform_metrics._approved_videos()
             short_tiktok = short_tiktok_metrics.refresh(approved)
             result = multiplatform_metrics.sync_multiplatform_metrics()
         except Exception as exc:
             self._send_json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:500]})
             return
         result["source"] = source
+        result["discovery"] = discovery
         result["short_tiktok"] = short_tiktok
         self._send_json(200, result)
 
