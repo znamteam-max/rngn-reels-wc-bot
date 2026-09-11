@@ -43,14 +43,12 @@ jobs:
           text=text.replace(old,new)
           path.write_text(text,encoding='utf-8')
           PY
-          grep -F '_fetch_core_rows(lookback_days=3)' bot/multiplatform_metrics.py >/dev/null
-          grep -F 'params["since"]' bot/multiplatform_metrics.py >/dev/null
-      - name: Add regression test
+      - name: Add and run source-level regression guard
         shell: bash
         run: |
+          set -euo pipefail
           cat > tests/test_content_core_incremental_bridge.py <<'PY'
           from __future__ import annotations
-
           from pathlib import Path
 
           SOURCE = (Path(__file__).resolve().parents[1] / "bot" / "multiplatform_metrics.py").read_text(encoding="utf-8")
@@ -61,8 +59,16 @@ jobs:
               assert "timedelta(days=days)" in SOURCE
               assert "max(1, min(31" in SOURCE
           PY
-      - name: Run targeted tests
-        run: python -m pytest -q tests/test_content_core_incremental_bridge.py
+          python - <<'PY'
+          from pathlib import Path
+          source=Path('bot/multiplatform_metrics.py').read_text(encoding='utf-8')
+          assert '_fetch_core_rows(lookback_days=3)' in source
+          assert 'params["since"]' in source
+          assert 'timedelta(days=days)' in source
+          assert 'max(1, min(31' in source
+          print('incremental bridge source guard: ok')
+          PY
+          python -m py_compile bot/multiplatform_metrics.py
       - name: Commit patch
         shell: bash
         run: |
