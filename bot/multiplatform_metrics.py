@@ -6,7 +6,7 @@ import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 import requests
@@ -315,15 +315,20 @@ def _upsert_snapshot(
                 )
 
 
-def _fetch_core_rows() -> list[dict[str, str]]:
-    response = requests.get(CONTENT_CORE_BRIDGE_URL, timeout=40)
+def _fetch_core_rows(*, lookback_days: int | None = None) -> list[dict[str, str]]:
+    params: dict[str, str] = {}
+    if lookback_days is not None:
+        days = max(1, min(31, int(lookback_days)))
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        params["since"] = since.isoformat().replace("+00:00", "Z")
+    response = requests.get(CONTENT_CORE_BRIDGE_URL, params=params or None, timeout=40)
     response.raise_for_status()
     return list(csv.DictReader(io.StringIO(response.text), delimiter="\t"))
 
 
 def sync_content_core_platforms(videos: list[dict[str, Any]], summary: SyncSummary) -> None:
     exact, conflicts = _build_exact_index(videos)
-    rows = _fetch_core_rows()
+    rows = _fetch_core_rows(lookback_days=3)
     summary.core_rows = len(rows)
     for row in rows:
         platform = _text(row.get("platform"))
