@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from typing import Any
 
 import requests
@@ -233,6 +234,40 @@ def _set_link_state(
     )
 
 
+def _publication_id_from_attach_text(text: str) -> str:
+    match = re.search(r"(?:^|[·\s])publication_id=([^\s·]+)", str(text or ""))
+    return match.group(1).strip() if match else ""
+
+
+def _record_attached_publication_link(
+    video: dict[str, Any],
+    platform: str,
+    publication_id: str,
+    url: str,
+) -> bool:
+    platform_id = multiplatform_metrics._platform_id(video, platform)
+    if not publication_id or not platform_id:
+        return False
+    ensure_schema()
+    db.execute(
+        """
+        INSERT INTO content_core_publication_links (
+            video_id, content_core_publication_id, platform,
+            platform_video_id, url, first_seen_at, last_seen_at
+        )
+        VALUES (%s, %s, %s, %s, %s, now(), now())
+        ON CONFLICT (video_id, content_core_publication_id)
+        DO UPDATE SET
+            platform = EXCLUDED.platform,
+            platform_video_id = EXCLUDED.platform_video_id,
+            url = EXCLUDED.url,
+            last_seen_at = now()
+        """,
+        (int(video["id"]), publication_id, platform, platform_id, url or None),
+    )
+    return True
+
+
 def _attach_url(target: str, platform: str, url: str) -> tuple[bool, int, str]:
     del platform
     _, attach_url, _ = _urls()
@@ -329,6 +364,7 @@ def sync_approved_video(video_id: int) -> dict[str, Any]:
 
     submitted = _submitted_urls(video)
     results: list[dict[str, Any]] = []
+    publication_links = 0
     pending = False
     conflicts: list[str] = []
     for platform, url in submitted:
@@ -345,12 +381,21 @@ def sync_approved_video(video_id: int) -> dict[str, Any]:
                 }
             )
             continue
+        publication_id = _publication_id_from_attach_text(text) if ok else ""
+        link_recorded = False
+        if publication_id:
+            link_recorded = _record_attached_publication_link(
+                video, platform, publication_id, url
+            )
+            publication_links += int(link_recorded)
         results.append(
             {
                 "platform": platform,
                 "ok": ok,
                 "status": status_code,
                 "response": text,
+                "publication_id": publication_id or None,
+                "link_recorded": link_recorded,
             }
         )
         if ok:
@@ -371,12 +416,6 @@ def sync_approved_video(video_id: int) -> dict[str, Any]:
             details={"attachments": results, "candidates": candidates},
         )
         raise ContentCoreConflict(error)
-
-    publication_links = 0
-    try:
-        publication_links = _refresh_publication_links(video)
-    except Exception as exc:
-        results.append({"publication_link_refresh_error": _safe_error(exc)})
 
     status = "partial" if pending else "resolved"
     _set_link_state(
